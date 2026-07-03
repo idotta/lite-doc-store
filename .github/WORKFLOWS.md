@@ -151,10 +151,10 @@ Enable these settings in your repository:
 Add these badges to your README:
 
 ```markdown
-[![CI](https://github.com/idotta/jsonb-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/jsonb-store/actions/workflows/ci.yml)
-[![Code Quality](https://github.com/idotta/jsonb-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/jsonb-store/actions/workflows/code-quality.yml)
+[![CI](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml)
+[![Code Quality](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml)
 [![NuGet](https://img.shields.io/nuget/v/LiteDocumentStore.svg)](https://www.nuget.org/packages/LiteDocumentStore/)
-[![codecov](https://codecov.io/gh/idotta/jsonb-store/branch/main/graph/badge.svg)](https://codecov.io/gh/idotta/jsonb-store)
+[![codecov](https://codecov.io/gh/idotta/lite-doc-store/branch/main/graph/badge.svg)](https://codecov.io/gh/idotta/lite-doc-store)
 ```
 
 ## Troubleshooting

@@ -1,11 +1,11 @@
 # LiteDocumentStore
 
-[![CI](https://github.com/idotta/jsonb-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/jsonb-store/actions/workflows/ci.yml)
-[![Code Quality](https://github.com/idotta/jsonb-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/jsonb-store/actions/workflows/code-quality.yml)
+[![CI](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml)
+[![Code Quality](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml)
 [![NuGet](https://img.shields.io/nuget/v/LiteDocumentStore.svg)](https://www.nuget.org/packages/LiteDocumentStore/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance, single-file application data format using C#, SQLite (Microsoft.Data.Sqlite), and Dapper.
+A high-performance, single-file application data format using C# and SQLite (Microsoft.Data.Sqlite). Objects are stored in SQLite's binary **JSONB** format and the store is Native-AOT / trim compatible.
 
 # Core Architecture
 
@@ -16,7 +16,7 @@ A single SQLite .db file acting as an "Application File Format".
 Treat SQLite as a hybrid relational/document store. JSON data is stored in **JSONB format** (binary JSON introduced in SQLite 3.45+) for optimal storage efficiency and query performance.
 
 ## Data Access Layer
-Use Dapper for next-to-zero mapping overhead.
+Raw ADO.NET over `Microsoft.Data.Sqlite` — parameters bound explicitly, results read by ordinal (no ORM, no runtime reflection or IL generation), so the library stays Native-AOT / trim safe.
 
 ## Custom Logic
 Automatic JSON serialization/deserialization of C# objects into SQLite BLOB columns using JSONB format.
@@ -46,7 +46,7 @@ dotnet build
 
 ## Features
 
-- ✅ **Generic Repository Pattern**: Type-safe CRUD operations with automatic table naming
+- ✅ **Document Store API** (`IDocumentStore`): Type-safe CRUD operations with automatic table naming
 - ✅ **Async/Await**: All database operations are fully async
 - ✅ **JSONB Format**: Uses SQLite 3.45+ JSONB for binary-optimized JSON storage
 - ✅ **Virtual Columns**: Index JSON properties for up to 1,300x faster queries
@@ -55,13 +55,48 @@ dotnet build
 - ✅ **Zero SQL Injection Risk**: Table names derived from types, not user input
 - ✅ **Cross-Platform**: Works on Windows, Linux, and macOS
 - ✅ **.NET 10**: Built on the latest .NET platform
+- ✅ **Native-AOT / Trim Compatible**: `<IsAotCompatible>true</IsAotCompatible>`; serialization goes through `System.Text.Json` `JsonTypeInfo<T>`
 - ✅ **Comprehensive Tests**: Unit and integration tests with xUnit
+
+## Quick Start
+
+Register the store through dependency injection and resolve `IDocumentStore`:
+
+```csharp
+using LiteDocumentStore;
+using Microsoft.Extensions.DependencyInjection;
+
+var services = new ServiceCollection();
+services.AddLiteDocumentStore(options =>
+{
+    options.ConnectionString = "Data Source=app.db";
+    options.EnableWalMode = true;
+    // For Native-AOT, supply source-generated metadata:
+    // options.SerializerOptions = new JsonSerializerOptions { TypeInfoResolver = MyJsonContext.Default };
+});
+
+await using var provider = services.BuildServiceProvider();
+var store = provider.GetRequiredService<IDocumentStore>();
+
+await store.CreateTableAsync<Customer>();
+await store.UpsertAsync("c1", new Customer { Name = "Ada", Email = "ada@example.com" });
+
+var customer = await store.GetAsync<Customer>("c1");
+
+// Query documents by JSON path + value
+var byName = await store.QueryAsync<Customer, string>("$.Name", "Ada");
+
+// For ranges, joins, or virtual-column seeks, drop to raw SQL via the escape hatch:
+var conn = store.Connection; // Microsoft.Data.Sqlite SqliteConnection
+```
+
+Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStoreOptions)`.
 
 ## Dependencies
 
 - .NET 10
-- Dapper
 - Microsoft.Data.Sqlite
+- Microsoft.Extensions.DependencyInjection.Abstractions / Logging.Abstractions
 
 ## JSONB Storage Benefits
 

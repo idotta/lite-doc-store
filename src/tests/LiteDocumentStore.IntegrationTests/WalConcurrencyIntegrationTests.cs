@@ -1,4 +1,3 @@
-using Dapper;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -58,7 +57,7 @@ public class WalConcurrencyIntegrationTests : IDisposable
         await store.CreateTableAsync<Person>();
 
         // Assert - Verify WAL mode is enabled
-        var journalMode = store.Connection.QueryFirstOrDefault<string>("PRAGMA journal_mode");
+        var journalMode = await store.Connection.QueryFirstStringAsync("PRAGMA journal_mode");
         Assert.Equal("wal", journalMode, StringComparer.OrdinalIgnoreCase);
 
         // Verify WAL file is created

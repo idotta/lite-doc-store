@@ -1,5 +1,5 @@
-using System.Data;
-using Dapper;
+using System.Globalization;
+using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -25,9 +25,6 @@ public sealed class MigrationRunner
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         _logger = logger ?? NullLogger<MigrationRunner>.Instance;
-
-        // Register DateTimeOffset handler for Dapper if not already registered
-        SqlMapper.AddTypeHandler(new DateTimeOffsetHandler());
     }
 
     /// <summary>
@@ -55,12 +52,30 @@ public sealed class MigrationRunner
         await EnsureMigrationTableExistsAsync().ConfigureAwait(false);
 
         var sql = $@"
-            SELECT version as Version, name as Name, applied_at as AppliedAt 
-            FROM [{MigrationTableName}] 
+            SELECT version, name, applied_at
+            FROM [{MigrationTableName}]
             ORDER BY version";
 
         _logger.LogDebug("Retrieving applied migrations");
-        var records = await _connection.QueryAsync<MigrationHistoryRecord>(sql).ConfigureAwait(false);
+
+        await using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+
+        var records = new List<MigrationHistoryRecord>();
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            records.Add(new MigrationHistoryRecord
+            {
+                Version = reader.GetInt64(0),
+                Name = reader.GetString(1),
+                AppliedAt = DateTimeOffset.Parse(
+                    reader.GetString(2),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind)
+            });
+        }
+
         return records;
     }
 
@@ -107,17 +122,18 @@ public sealed class MigrationRunner
             // Execute the migration
             await migration.UpAsync(_connection).ConfigureAwait(false);
 
-            // Record the migration
+            // Record the migration. Commands created on the connection automatically enlist
+            // in the active transaction. Persist DateTimeOffset as an ISO-8601 round-trip string.
             var sql = $@"
-                INSERT INTO [{MigrationTableName}] (version, name, applied_at) 
+                INSERT INTO [{MigrationTableName}] (version, name, applied_at)
                 VALUES (@Version, @Name, @AppliedAt)";
 
-            await _connection.ExecuteAsync(sql, new
-            {
-                Version = migration.Version,
-                Name = migration.Name,
-                AppliedAt = DateTimeOffset.UtcNow
-            }, transaction).ConfigureAwait(false);
+            await _connection.ExecuteAsync(
+                sql,
+                ("Version", migration.Version),
+                ("Name", migration.Name),
+                ("AppliedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)))
+                .ConfigureAwait(false);
 
             transaction.Commit();
             _logger.LogInformation("Migration {Version} applied successfully", migration.Version);
@@ -170,7 +186,7 @@ public sealed class MigrationRunner
 
         // Check if this migration is actually applied
         var checkSql = $@"SELECT COUNT(*) FROM [{MigrationTableName}] WHERE version = @Version";
-        var isApplied = await _connection.ExecuteScalarAsync<int>(checkSql, new { Version = migration.Version })
+        var isApplied = await _connection.ExecuteScalarAsync<int>(checkSql, ("Version", migration.Version))
             .ConfigureAwait(false) > 0;
 
         if (!isApplied)
@@ -188,9 +204,9 @@ public sealed class MigrationRunner
             // Execute the rollback
             await migration.DownAsync(_connection).ConfigureAwait(false);
 
-            // Remove the migration record
+            // Remove the migration record (enlists in the active transaction automatically)
             var deleteSql = $@"DELETE FROM [{MigrationTableName}] WHERE version = @Version";
-            await _connection.ExecuteAsync(deleteSql, new { Version = migration.Version }, transaction)
+            await _connection.ExecuteAsync(deleteSql, ("Version", migration.Version))
                 .ConfigureAwait(false);
 
             transaction.Commit();
@@ -229,17 +245,29 @@ public sealed class MigrationRunner
         }
 
         var migrationDict = migrations.ToDictionary(m => m.Version);
-        var rolledBackCount = 0;
 
+        // Fail before mutating anything: every migration in the rollback range must have a
+        // definition. Rolling back only part of the range would leave the schema and the history
+        // table in an inconsistent state, so refuse the whole operation instead of skipping.
+        var missingVersions = migrationsToRollback
+            .Where(record => !migrationDict.ContainsKey(record.Version))
+            .Select(record => record.Version)
+            .ToList();
+
+        if (missingVersions.Count > 0)
+        {
+            var versions = string.Join(", ", missingVersions);
+            _logger.LogError(
+                "Cannot roll back to version {Target}: missing migration definition(s) for version(s) {Versions}",
+                targetVersion, versions);
+            throw new LiteDocumentStoreException(
+                $"Cannot roll back to version {targetVersion}: missing migration definition(s) for version(s) {versions}. No migrations were rolled back.");
+        }
+
+        var rolledBackCount = 0;
         foreach (var record in migrationsToRollback)
         {
-            if (!migrationDict.TryGetValue(record.Version, out var migration))
-            {
-                _logger.LogWarning("Migration {Version} is applied but definition not found, skipping rollback",
-                    record.Version);
-                continue;
-            }
-
+            var migration = migrationDict[record.Version];
             var rolledBack = await RollbackMigrationAsync(migration).ConfigureAwait(false);
             if (rolledBack)
             {

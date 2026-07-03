@@ -2,7 +2,6 @@ using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using Xunit;
-using Dapper;
 
 namespace LiteDocumentStore.IntegrationTests;
 
@@ -53,7 +52,7 @@ public class ExceptionIntegrationTests : IDisposable
         // Manually insert invalid JSON
         await _connection.ExecuteAsync(
             "INSERT INTO [StrictModel] (id, data) VALUES (@Id, jsonb(@Data))",
-            new { Id = "test-1", Data = "{\"RequiredInt\": \"not-a-number\"}" });
+            ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}"));
 
         // Act & Assert - Deserialization should fail because "not-a-number" cannot be parsed as int
         var exception = await Assert.ThrowsAnyAsync<Exception>(

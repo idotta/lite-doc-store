@@ -1,5 +1,5 @@
 using System.Data;
-using Dapper;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -8,15 +8,15 @@ namespace LiteDocumentStore;
 
 /// <summary>
 /// A high-performance document store for storing JSON objects in SQLite.
-/// Uses Dapper for minimal mapping overhead and supports JSON document storage using JSONB format (SQLite 3.45+).
-/// Can optionally own and manage the lifecycle of its SqliteConnection.
+/// Uses raw ADO.NET (Microsoft.Data.Sqlite) with explicit parameter binding and JSONB
+/// storage (SQLite 3.45+). Can optionally own and manage the lifecycle of its SqliteConnection.
 /// </summary>
 internal sealed class DocumentStore : IDocumentStore
 {
     private readonly SqliteConnection _connection;
     private readonly ITableNamingConvention _tableNamingConvention;
     private readonly ILogger<DocumentStore> _logger;
-    private readonly VirtualColumnCache _virtualColumnCache;
+    private readonly JsonSerializerOptions _serializerOptions;
     private readonly bool _ownsConnection;
     private bool _disposed;
 
@@ -27,16 +27,21 @@ internal sealed class DocumentStore : IDocumentStore
     /// <param name="tableNamingConvention">Table naming convention (defaults to DefaultTableNamingConvention)</param>
     /// <param name="logger">Logger for diagnostics (optional)</param>
     /// <param name="ownsConnection">Whether this store owns and should dispose the connection (default: false)</param>
+    /// <param name="serializerOptions">
+    /// JSON serializer options. For AOT, back these with a source-generated JsonSerializerContext.
+    /// When null, a reflection-based fallback is used (non-AOT only).
+    /// </param>
     public DocumentStore(
         SqliteConnection connection,
         ITableNamingConvention? tableNamingConvention = null,
         ILogger<DocumentStore>? logger = null,
-        bool ownsConnection = false)
+        bool ownsConnection = false,
+        JsonSerializerOptions? serializerOptions = null)
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         _tableNamingConvention = tableNamingConvention ?? new DefaultTableNamingConvention();
         _logger = logger ?? NullLogger<DocumentStore>.Instance;
-        _virtualColumnCache = new VirtualColumnCache(connection);
+        _serializerOptions = serializerOptions ?? JsonHelper.CreateDefaultReflectionOptions();
         _ownsConnection = ownsConnection;
     }
 
@@ -80,7 +85,7 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateCreateTableSql(tableName);
 
-        await _connection.ExecuteAsync(sql);
+        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -97,16 +102,10 @@ internal sealed class DocumentStore : IDocumentStore
         ArgumentNullException.ThrowIfNull(data);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data);
+        var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
         var sql = SqlGenerator.GenerateUpsertSql(tableName);
 
-        var affectedRows = await _connection.ExecuteAsync(sql, new
-        {
-            Id = id,
-            Data = jsonBytes
-        });
-
-        return affectedRows;
+        return await _connection.ExecuteAsync(sql, ("Id", id), ("Data", jsonBytes)).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -127,8 +126,7 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateBulkUpsertSql(tableName, itemsList.Count);
 
-        // Build dynamic parameters object
-        var parameters = new DynamicParameters();
+        var parameters = new (string, object?)[itemsList.Count * 2];
         for (int i = 0; i < itemsList.Count; i++)
         {
             // Validate all items
@@ -142,14 +140,12 @@ internal sealed class DocumentStore : IDocumentStore
             }
 
             var (id, data) = itemsList[i];
-            var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data);
-            parameters.Add($"Id{i}", id);
-            parameters.Add($"Data{i}", jsonBytes);
+            var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
+            parameters[i * 2] = ($"Id{i}", id);
+            parameters[(i * 2) + 1] = ($"Data{i}", jsonBytes);
         }
 
-        var affectedRows = await _connection.ExecuteAsync(sql, parameters);
-
-        return affectedRows;
+        return await _connection.ExecuteAsync(sql, parameters).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -166,7 +162,7 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetByIdSql(tableName);
 
-        var json = await _connection.QueryFirstOrDefaultAsync<string>(sql, new { Id = id });
+        var json = await _connection.QueryFirstStringAsync(sql, ("Id", id)).ConfigureAwait(false);
 
         if (string.IsNullOrEmpty(json))
         {
@@ -174,7 +170,7 @@ internal sealed class DocumentStore : IDocumentStore
             return default;
         }
 
-        return JsonHelper.Deserialize<T>(json);
+        return JsonHelper.Deserialize<T>(json, _serializerOptions);
     }
 
     /// <inheritdoc />
@@ -186,19 +182,8 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetAllSql(tableName);
 
-        var jsonResults = await _connection.QueryAsync<string>(sql);
-
-        var results = new List<T>();
-        foreach (var json in jsonResults)
-        {
-            var item = JsonHelper.Deserialize<T>(json);
-            if (item != null)
-            {
-                results.Add(item);
-            }
-        }
-
-        return results;
+        var jsonResults = await _connection.QueryStringsAsync(sql).ConfigureAwait(false);
+        return DeserializeResults<T>(jsonResults);
     }
 
     /// <inheritdoc />
@@ -215,7 +200,7 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateDeleteSql(tableName);
 
-        var affectedRows = await _connection.ExecuteAsync(sql, new { Id = id });
+        var affectedRows = await _connection.ExecuteAsync(sql, ("Id", id)).ConfigureAwait(false);
         var deleted = affectedRows > 0;
 
         if (!deleted)
@@ -253,16 +238,13 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateBulkDeleteSql(tableName, idsList.Count);
 
-        // Build dynamic parameters object
-        var parameters = new DynamicParameters();
+        var parameters = new (string, object?)[idsList.Count];
         for (int i = 0; i < idsList.Count; i++)
         {
-            parameters.Add($"Id{i}", idsList[i]);
+            parameters[i] = ($"Id{i}", idsList[i]);
         }
 
-        var affectedRows = await _connection.ExecuteAsync(sql, parameters);
-
-        return affectedRows;
+        return await _connection.ExecuteAsync(sql, parameters).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -279,7 +261,7 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateExistsSql(tableName);
 
-        return await _connection.ExecuteScalarAsync<bool>(sql, new { Id = id });
+        return await _connection.ExecuteScalarAsync<bool>(sql, ("Id", id)).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -291,7 +273,7 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateCountSql(tableName);
 
-        return await _connection.ExecuteScalarAsync<long>(sql);
+        return await _connection.ExecuteScalarAsync<long>(sql).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -310,48 +292,21 @@ internal sealed class DocumentStore : IDocumentStore
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateQueryByJsonPathSql(tableName, jsonPath);
 
-        var jsonResults = await _connection.QueryAsync<string>(sql, new { Value = value }).ConfigureAwait(false);
-        var documents = DeserializeResults<T>(jsonResults);
-        return documents;
-    }
-
-    /// <inheritdoc />
-    public async Task<IEnumerable<T>> QueryAsync<T>(System.Linq.Expressions.Expression<Func<T, bool>> predicate)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        EnsureConnectionOpen();
-
-        ArgumentNullException.ThrowIfNull(predicate);
-
-        var tableName = _tableNamingConvention.GetTableName<T>();
-
-        // Get virtual columns for this table to enable index usage
-        var virtualColumns = await _virtualColumnCache.GetAsync(tableName).ConfigureAwait(false);
-
-        // Translate the expression to SQL WHERE clause
-        var (whereClause, parameters) = ExpressionToJsonPath.TranslatePredicate(predicate, virtualColumns);
-        var sql = SqlGenerator.GenerateQueryWithWhereSql(tableName, whereClause);
-
-        var jsonResults = await _connection.QueryAsync<string>(sql, parameters).ConfigureAwait(false);
-        var documents = DeserializeResults<T>(jsonResults);
-
-        return documents;
+        var jsonResults = await _connection.QueryStringsAsync(sql, ("Value", value)).ConfigureAwait(false);
+        return DeserializeResults<T>(jsonResults);
     }
 
     /// <summary>
     /// Deserializes JSON results to a list of typed objects.
     /// Uses a single-pass loop to avoid LINQ overhead and multiple enumerator allocations.
     /// </summary>
-    private static List<T> DeserializeResults<T>(IEnumerable<string> jsonResults)
+    private List<T> DeserializeResults<T>(IReadOnlyCollection<string?> jsonResults)
     {
-        // Pre-size list if we can determine count without enumeration
-        var results = jsonResults is ICollection<string> collection
-            ? new List<T>(collection.Count)
-            : [];
+        var results = new List<T>(jsonResults.Count);
 
         foreach (var json in jsonResults)
         {
-            if (JsonHelper.Deserialize<T>(json) is { } item)
+            if (JsonHelper.Deserialize<T>(json, _serializerOptions) is { } item)
             {
                 results.Add(item);
             }
@@ -363,13 +318,13 @@ internal sealed class DocumentStore : IDocumentStore
     /// <inheritdoc />
     public async Task ExecuteInTransactionAsync(Func<IDbTransaction, Task> action)
     {
-        await ExecuteInTransactionCoreAsync(action);
+        await ExecuteInTransactionCoreAsync(action).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task ExecuteInTransactionAsync(Func<Task> action)
     {
-        await ExecuteInTransactionCoreAsync(_ => action());
+        await ExecuteInTransactionCoreAsync(_ => action()).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -380,14 +335,10 @@ internal sealed class DocumentStore : IDocumentStore
         ObjectDisposedException.ThrowIf(_disposed, this);
         EnsureConnectionOpen();
 
-        // Use existing transaction if any?
-        // _connection.BeginTransaction() requires the connection to be open.
-        // It throws if a transaction is already active on this connection (SQLite supports one transaction per connection unless using Savepoints).
-        // Since we don't control the connection, we should check if we can start a transaction.
-        // However, standard ADO.NET SqliteConnection.BeginTransaction() will fail if currently in a transaction.
-        // For now, naive implementation: try to begin.
-        // Ideally we should support nested transactions or check, but simpler first.
-
+        // BeginTransaction requires the connection to be open and throws if a transaction is
+        // already active (SQLite supports one transaction per connection). Commands created via
+        // SqliteConnection.CreateCommand automatically enlist in the active transaction, so the
+        // document operations invoked inside the action participate without extra wiring.
         using var transaction = _connection.BeginTransaction();
         try
         {
@@ -413,9 +364,9 @@ internal sealed class DocumentStore : IDocumentStore
         var finalIndexName = indexName ?? GenerateIndexName(tableName, pathString);
 
         // Check if index already exists
-        var indexExists = await _connection.QueryFirstOrDefaultAsync<int>(
+        var indexExists = await _connection.ExecuteScalarAsync<int>(
             SqlGenerator.GenerateCheckIndexExistsSql(),
-            new { IndexName = finalIndexName }).ConfigureAwait(false);
+            ("IndexName", finalIndexName)).ConfigureAwait(false);
 
         if (indexExists > 0)
         {
@@ -439,13 +390,13 @@ internal sealed class DocumentStore : IDocumentStore
         EnsureConnectionOpen();
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var pathStrings = jsonPaths.Select(ExtractJsonPath);
+        var pathStrings = jsonPaths.Select(ExtractJsonPath).ToList();
         var finalIndexName = indexName ?? GenerateCompositeIndexName(tableName, pathStrings);
 
         // Check if index already exists
-        var indexExists = await _connection.QueryFirstOrDefaultAsync<int>(
+        var indexExists = await _connection.ExecuteScalarAsync<int>(
             SqlGenerator.GenerateCheckIndexExistsSql(),
-            new { IndexName = finalIndexName }).ConfigureAwait(false);
+            ("IndexName", finalIndexName)).ConfigureAwait(false);
 
         if (indexExists > 0)
         {
@@ -461,6 +412,8 @@ internal sealed class DocumentStore : IDocumentStore
     /// Extracts the JSON path from a lambda expression.
     /// Supports simple property access (e.g., x => x.Email) and nested properties (e.g., x => x.Address.City).
     /// Uses property names as-is to match the default System.Text.Json serialization (PascalCase).
+    /// Only reads member names from the expression tree (no compilation or closure evaluation),
+    /// so it is AOT/trim safe.
     /// </summary>
     private static string ExtractJsonPath<T>(System.Linq.Expressions.Expression<Func<T, object>> expression)
     {
@@ -489,21 +442,7 @@ internal sealed class DocumentStore : IDocumentStore
         }
 
         // Use property names as-is to match default System.Text.Json serialization (PascalCase)
-        var jsonPath = "$." + string.Join(".", members);
-        return jsonPath;
-    }
-
-    /// <summary>
-    /// Converts a property name to camelCase for JSON path.
-    /// </summary>
-    private static string ToCamelCase(string str)
-    {
-        if (string.IsNullOrEmpty(str) || char.IsLower(str[0]))
-        {
-            return str;
-        }
-
-        return char.ToLowerInvariant(str[0]) + str[1..];
+        return "$." + string.Join(".", members);
     }
 
     /// <summary>
@@ -560,18 +499,15 @@ internal sealed class DocumentStore : IDocumentStore
             await _connection.ExecuteAsync(addColumnSql).ConfigureAwait(false);
         }
 
-        // Register the virtual column in cache (whether newly created or already existing)
-        _virtualColumnCache.Register(tableName, new VirtualColumnInfo(pathString, columnName, columnType));
-
         // Create index on the virtual column if requested
         if (createIndex)
         {
             var indexName = $"idx_{tableName}_{columnName}";
 
             // Check if index already exists
-            var indexExists = await _connection.QueryFirstOrDefaultAsync<int>(
+            var indexExists = await _connection.ExecuteScalarAsync<int>(
                 SqlGenerator.GenerateCheckIndexExistsSql(),
-                new { IndexName = indexName }).ConfigureAwait(false);
+                ("IndexName", indexName)).ConfigureAwait(false);
 
             if (indexExists > 0)
             {
@@ -583,48 +519,6 @@ internal sealed class DocumentStore : IDocumentStore
                 await _connection.ExecuteAsync(createIndexSql).ConfigureAwait(false);
             }
         }
-    }
-
-    /// <inheritdoc />
-    public async Task<IEnumerable<TResult>> SelectAsync<TSource, TResult>(
-        System.Linq.Expressions.Expression<Func<TSource, TResult>> selector)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        EnsureConnectionOpen();
-
-        ArgumentNullException.ThrowIfNull(selector);
-
-        var tableName = _tableNamingConvention.GetTableName<TSource>();
-        var fieldSelections = ExpressionToJsonPath.ExtractFieldSelections(selector);
-        var sql = SqlGenerator.GenerateSelectFieldsSql(tableName, fieldSelections);
-
-        var results = await _connection.QueryAsync<TResult>(sql).ConfigureAwait(false);
-        return results;
-    }
-
-    /// <inheritdoc />
-    public async Task<IEnumerable<TResult>> SelectAsync<TSource, TResult>(
-        System.Linq.Expressions.Expression<Func<TSource, bool>> predicate,
-        System.Linq.Expressions.Expression<Func<TSource, TResult>> selector)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        EnsureConnectionOpen();
-
-        ArgumentNullException.ThrowIfNull(predicate);
-        ArgumentNullException.ThrowIfNull(selector);
-
-        var tableName = _tableNamingConvention.GetTableName<TSource>();
-        var fieldSelections = ExpressionToJsonPath.ExtractFieldSelections(selector);
-
-        // Get virtual columns for this table to enable index usage
-        var virtualColumns = await _virtualColumnCache.GetAsync(tableName).ConfigureAwait(false);
-
-        var (whereClause, parameters) = ExpressionToJsonPath.TranslatePredicate(predicate, virtualColumns);
-        var sql = SqlGenerator.GenerateSelectFieldsWithWhereSql(tableName, fieldSelections, whereClause);
-
-        var results = await _connection.QueryAsync<TResult>(sql, parameters).ConfigureAwait(false);
-
-        return results;
     }
 
     /// <inheritdoc />
@@ -647,7 +541,7 @@ internal sealed class DocumentStore : IDocumentStore
             }
 
             // Verify SQLite version supports JSONB (3.45+)
-            var versionString = await _connection.QueryFirstOrDefaultAsync<string>(
+            var versionString = await _connection.QueryFirstStringAsync(
                 "SELECT sqlite_version()").ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(versionString))
@@ -672,7 +566,7 @@ internal sealed class DocumentStore : IDocumentStore
             }
 
             // Test basic query execution
-            await _connection.QueryFirstOrDefaultAsync<int>("SELECT 1").ConfigureAwait(false);
+            await _connection.ExecuteScalarAsync<long>("SELECT 1").ConfigureAwait(false);
 
             _logger.LogDebug("Health check passed: SQLite version {Version}", version);
             return true;
@@ -737,7 +631,7 @@ internal sealed class DocumentStore : IDocumentStore
             if (_connection.State == ConnectionState.Open)
             {
                 // Check if we're in WAL mode
-                var journalMode = await _connection.QueryFirstOrDefaultAsync<string>(
+                var journalMode = await _connection.QueryFirstStringAsync(
                     "PRAGMA journal_mode").ConfigureAwait(false);
 
                 if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
@@ -768,7 +662,7 @@ internal sealed class DocumentStore : IDocumentStore
             if (_connection.State == ConnectionState.Open)
             {
                 // Check if we're in WAL mode
-                var journalMode = _connection.QueryFirstOrDefault<string>("PRAGMA journal_mode");
+                var journalMode = _connection.QueryFirstString("PRAGMA journal_mode");
 
                 if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
                 {

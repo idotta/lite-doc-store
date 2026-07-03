@@ -88,38 +88,13 @@ Demonstrates that LiteDocumentStore is a HYBRID library - you get convenient doc
 
 **Perfect for**: Real-world applications needing both flexible schemas and relational queries
 
-**Key concept**: The `Connection` property gives you full Dapper access. You're never locked into just the document API - drop down to SQL anytime.
+**Key concept**: The `Connection` property exposes the raw `SqliteConnection` for full ADO.NET access. You're never locked into just the document API - drop down to SQL anytime.
 
 **Run time**: < 1 second
 
 ---
 
-### 4. [ProjectionQuery.cs](ProjectionQuery.cs)
-**Select only needed fields** - Reduce memory and improve performance
-
-Demonstrates how to extract specific JSON fields instead of deserializing entire documents:
-- Seeding 1,000 customers with rich nested data (Address, Contact, Preferences, OrderHistory, Metadata)
-- Benchmarking `GetAllAsync()` (full document deserialization)
-- Using `SelectAsync<TSource, TResult>()` for field projection
-- Projecting simple properties (Name, Email only)
-- Projecting nested properties (Address.City, Address.State)
-- Filtered projections with predicates
-- Complex aggregations with raw SQL
-
-**Memory & Performance**:
-- Full documents: All nested objects deserialized
-- Projection: Only specified fields extracted from JSON
-- Reduces memory footprint for list views and reports
-
-**Perfect for**: List views, reports, APIs returning summaries, reducing bandwidth
-
-**Key concept**: Projection uses `json_extract()` in SQL to retrieve only needed fields, avoiding full deserialization overhead.
-
-**Run time**: ~1-2 seconds
-
----
-
-### 5. [IndexManagement.cs](IndexManagement.cs)
+### 4. [IndexManagement.cs](IndexManagement.cs)
 **Optimize query performance with JSON indexes** - Avoid full table scans
 
 Shows how to create indexes on JSON properties for dramatic query speedups:
@@ -147,7 +122,7 @@ Shows how to create indexes on JSON properties for dramatic query speedups:
 
 ---
 
-### 6. [Migration.cs](Migration.cs)
+### 5. [Migration.cs](Migration.cs)
 **Schema versioning and evolution** - Track and apply schema changes
 
 Demonstrates a complete migration system for managing schema changes over time:
@@ -176,7 +151,7 @@ Demonstrates a complete migration system for managing schema changes over time:
 
 ---
 
-### 7. [TransactionBatching.cs](TransactionBatching.cs)
+### 6. [TransactionBatching.cs](TransactionBatching.cs)
 **Maximize performance with transactions** - 50x-100x speedup for bulk operations
 
 Demonstrates how transaction batching dramatically improves performance for bulk operations:
@@ -200,7 +175,7 @@ Demonstrates how transaction batching dramatically improves performance for bulk
 
 ---
 
-### 8. [MultiDatabase.cs](MultiDatabase.cs)
+### 7. [MultiDatabase.cs](MultiDatabase.cs)
 **Multiple databases with factory pattern** - Manage separate databases for tenants or domains
 
 Demonstrates using `IDocumentStoreFactory` to create and manage multiple independent database instances:
@@ -224,7 +199,7 @@ Demonstrates using `IDocumentStoreFactory` to create and manage multiple indepen
 
 ---
 
-### 9. [MultiDatabaseKeyed.cs](MultiDatabaseKeyed.cs)
+### 8. [MultiDatabaseKeyed.cs](MultiDatabaseKeyed.cs)
 **Multiple databases with keyed DI** - Type-safe dependency injection for multiple databases
 
 Demonstrates using keyed services (requires .NET 8+) to register and inject multiple database instances:
@@ -246,6 +221,32 @@ Demonstrates using keyed services (requires .NET 8+) to register and inject mult
 **Key concept**: Keyed services let the DI container manage multiple store instances with type-safe injection. Use `[FromKeyedServices("key")]` in constructors to inject the right store. Singleton lifetime is best for long-lived stores, Scoped for per-request isolation.
 
 **Run time**: ~1 second
+
+---
+
+### 9. [AotVerification.cs](AotVerification.cs)
+**Native AOT compatibility** - Reflection-free JSON with a source-generated context
+
+Proves the library runs under Native AOT / trimming by supplying a source-generated
+`JsonSerializerContext` and exercising the full document-store surface with no reflection-based
+serialization:
+- Defining a `[JsonSerializable]` partial `JsonSerializerContext`
+- Wiring it in via `DocumentStoreOptionsBuilder.WithSerializerOptions(...)`
+- Running CRUD, bulk writes, `CreateIndexAsync`, `QueryAsync<T,TValue>(jsonPath, value)`,
+  `CountAsync`/`ExistsAsync`, and `IsHealthyAsync`
+- Sets `#:property PublishAot=true` so it can be AOT-published directly
+
+**Run (JIT)**: `dotnet run AotVerification.cs`
+
+**Publish (AOT)**: `dotnet publish AotVerification.cs -r <your-RID>` (e.g. `win-x64`)
+
+**Perfect for**: Verifying AOT builds, learning the source-generated serialization setup
+
+**Key concept**: For AOT, set `SerializerOptions` to options backed by a source-generated
+context (`new JsonSerializerOptions { TypeInfoResolver = MyContext.Default }`). When no options
+are supplied, the store falls back to reflection-based serialization (non-AOT only).
+
+**Run time**: < 1 second
 
 ---
 
@@ -284,13 +285,13 @@ Each example follows this pattern:
 |---------|-----------|--------------|----------|---------|
 | QuickStart.cs | CRUD basics | 6 records | <1s | `UpsertAsync`, `GetAsync`, `DeleteAsync` |
 | TransactionBatching.cs | Bulk performance | 1K orders | ~5-10s | `ExecuteInTransactionAsync`, `UpsertManyAsync` |
-| VirtualColumn.cs | Query performance | 10K products | ~2-3s | `AddVirtualColumnAsync`, `QueryAsync` |
+| VirtualColumn.cs | Query performance | 10K products | ~2-3s | `AddVirtualColumnAsync`, `QueryAsync`, raw SQL |
 | HybridUsage.cs | SQL integration | Small | <1s | `Connection`, raw SQL |
-| ProjectionQuery.cs | Field selection | 1K customers | ~1-2s | `SelectAsync` |
 | IndexManagement.cs | Indexing | 5K customers | ~1-2s | `CreateIndexAsync`, `CreateCompositeIndexAsync` |
 | Migration.cs | Schema versioning | Small | ~1-2s | `MigrationRunner`, `SchemaIntrospector` |
 | MultiDatabase.cs | Factory pattern | Small | <1s | `IDocumentStoreFactory.Create` |
 | MultiDatabaseKeyed.cs | Keyed DI services | Small | ~1s | `AddKeyedLiteDocumentStore`, `[FromKeyedServices]` |
+| AotVerification.cs | Native AOT | 3 records | <1s | `WithSerializerOptions`, source-gen context |
 
 ## Feedback
 

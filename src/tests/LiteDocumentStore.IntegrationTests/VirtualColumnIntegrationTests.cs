@@ -1,4 +1,3 @@
-using Dapper;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -6,7 +5,7 @@ namespace LiteDocumentStore.IntegrationTests;
 
 /// <summary>
 /// Integration tests for virtual column functionality.
-/// Tests cover virtual column creation, caching, and query optimization.
+/// Tests cover virtual column creation and query optimization via the generated columns.
 /// </summary>
 public class VirtualColumnIntegrationTests : IDisposable
 {
@@ -39,16 +38,38 @@ public class VirtualColumnIntegrationTests : IDisposable
         }
     }
 
+    // Seeks the given WHERE clause against the Product table (typically hitting a virtual
+    // column) and loads each matching document through the public store API. Range/string
+    // predicates are no longer expressible through the store query API, so tests exercise the
+    // virtual columns via raw SQL and rehydrate documents by id.
+    private async Task<List<Product>> LoadProductsAsync(
+        string whereSql,
+        params (string Name, object? Value)[] parameters)
+    {
+        var ids = await _connection.QueryStringsAsync(
+            $"SELECT id FROM Product WHERE {whereSql}", parameters);
+
+        var products = new List<Product>();
+        foreach (var id in ids)
+        {
+            var product = await _store.GetAsync<Product>(id!);
+            Assert.NotNull(product);
+            products.Add(product);
+        }
+
+        return products;
+    }
+
     #region Virtual Column Creation Tests
 
     [Fact]
     public async Task AddVirtualColumnAsync_Debug_SQLiteSyntax()
     {
-        // Debug test to verify SQLite virtual column syntax works
+        // Debug test to verify SQLite generated (virtual) column syntax works
         using var memConnection = new SqliteConnection("Data Source=:memory:");
         await memConnection.OpenAsync();
 
-        var version = await memConnection.QueryFirstAsync<string>("SELECT sqlite_version()");
+        var version = await memConnection.QueryFirstStringAsync("SELECT sqlite_version()");
 
         await memConnection.ExecuteAsync(@"
             CREATE TABLE Test1 (
@@ -58,13 +79,14 @@ public class VirtualColumnIntegrationTests : IDisposable
                 c INTEGER GENERATED ALWAYS AS (a + b)
             )");
 
-        var cols1 = (await memConnection.QueryAsync("PRAGMA table_xinfo(Test1)")).ToList();
-        var colNames = cols1.Select(c => (string)c.name).ToList();
+        var introspector = new SchemaIntrospector(memConnection);
+        var columns = await introspector.GetColumnsAsync("Test1");
+        var colNames = columns.Select(c => c.Name).ToList();
 
         await memConnection.ExecuteAsync("INSERT INTO Test1 (id, a, b) VALUES (1, 10, 20)");
-        var result = await memConnection.QueryFirstOrDefaultAsync<dynamic>("SELECT id, a, b, c FROM Test1 WHERE id = 1");
+        var generated = await memConnection.ExecuteScalarAsync<long>("SELECT c FROM Test1 WHERE id = 1");
 
-        Assert.True(colNames.Contains("c") || result?.c != null,
+        Assert.True(colNames.Contains("c") || generated == 30,
             $"Generated column 'c' not found. Columns: [{string.Join(", ", colNames)}]. SQLite version: {version}");
     }
 
@@ -155,20 +177,19 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Price, "price", columnType: "REAL");
 
         // Assert - Query using virtual columns directly
-        var results = await _connection.QueryAsync<dynamic>(
-            "SELECT id, category, price FROM Product WHERE category = 'Electronics' ORDER BY price");
-        var resultList = results.ToList();
+        var categories = await _connection.QueryStringsAsync(
+            "SELECT category FROM Product WHERE category = 'Electronics' ORDER BY price");
 
-        Assert.Equal(2, resultList.Count);
-        Assert.Equal("Electronics", (string)resultList[0].category);
+        Assert.Equal(2, categories.Count);
+        Assert.Equal("Electronics", categories[0]);
     }
 
     #endregion
 
-    #region QueryAsync with Virtual Columns Tests
+    #region Virtual Column Querying Tests (raw SQL seeks over the generated columns)
 
     [Fact]
-    public async Task QueryAsync_WithVirtualColumn_UsesVirtualColumnInSql()
+    public async Task VirtualColumn_EqualitySeek_ReturnsMatchingDocuments()
     {
         // Arrange
         await _store.CreateTableAsync<Product>();
@@ -176,19 +197,18 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.UpsertAsync("p2", new Product { Name = "Gadget", Category = "Toys", Price = 49.99m });
         await _store.UpsertAsync("p3", new Product { Name = "Tool", Category = "Hardware", Price = 19.99m });
 
-        // Add virtual column
         await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category", createIndex: true);
 
-        // Act - QueryAsync should now use the virtual column
-        var results = await _store.QueryAsync<Product>(p => p.Category == "Electronics");
+        // Act
+        var results = await LoadProductsAsync("category = @Category", ("Category", "Electronics"));
 
         // Assert
         Assert.Single(results);
-        Assert.Equal("Widget", results.First().Name);
+        Assert.Equal("Widget", results[0].Name);
     }
 
     [Fact]
-    public async Task QueryAsync_WithVirtualColumn_SupportsRangeQueries()
+    public async Task VirtualColumn_RangeSeek_ReturnsMatchingDocuments()
     {
         // Arrange
         await _store.CreateTableAsync<Product>();
@@ -196,20 +216,19 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.UpsertAsync("p2", new Product { Name = "Medium", Category = "B", Price = 50.00m });
         await _store.UpsertAsync("p3", new Product { Name = "Expensive", Category = "C", Price = 100.00m });
 
-        // Add virtual column for Price
         await _store.AddVirtualColumnAsync<Product>(p => p.Price, "price", createIndex: true, columnType: "REAL");
 
-        // Act - QueryAsync should use virtual column for range query
-        var results = await _store.QueryAsync<Product>(p => p.Price > 30);
+        // Act
+        var results = await LoadProductsAsync("price > @Price", ("Price", 30.0));
 
         // Assert
-        Assert.Equal(2, results.Count());
+        Assert.Equal(2, results.Count);
         Assert.Contains(results, p => p.Name == "Medium");
         Assert.Contains(results, p => p.Name == "Expensive");
     }
 
     [Fact]
-    public async Task QueryAsync_WithVirtualColumn_SupportsStringMethods()
+    public async Task VirtualColumn_LikeSeek_ReturnsMatchingDocuments()
     {
         // Arrange
         await _store.CreateTableAsync<Product>();
@@ -217,19 +236,18 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.UpsertAsync("p2", new Product { Name = "Widget Basic", Category = "Electronics", Price = 19.99m });
         await _store.UpsertAsync("p3", new Product { Name = "Gadget", Category = "Toys", Price = 9.99m });
 
-        // Add virtual column
         await _store.AddVirtualColumnAsync<Product>(p => p.Name, "name_vc", createIndex: true);
 
-        // Act - QueryAsync with StartsWith
-        var results = await _store.QueryAsync<Product>(p => p.Name.StartsWith("Widget"));
+        // Act
+        var results = await LoadProductsAsync("name_vc LIKE @Pattern", ("Pattern", "Widget%"));
 
         // Assert
-        Assert.Equal(2, results.Count());
+        Assert.Equal(2, results.Count);
         Assert.All(results, p => Assert.StartsWith("Widget", p.Name));
     }
 
     [Fact]
-    public async Task QueryAsync_WithMultipleVirtualColumns_UsesAllColumns()
+    public async Task VirtualColumn_MultipleColumnSeek_ReturnsMatchingDocuments()
     {
         // Arrange
         await _store.CreateTableAsync<Product>();
@@ -237,81 +255,16 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.UpsertAsync("p2", new Product { Name = "Gadget", Category = "Electronics", Price = 49.99m });
         await _store.UpsertAsync("p3", new Product { Name = "Tool", Category = "Hardware", Price = 19.99m });
 
-        // Add multiple virtual columns
         await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category", createIndex: true);
         await _store.AddVirtualColumnAsync<Product>(p => p.Price, "price", createIndex: true, columnType: "REAL");
 
-        // Act - Query with both conditions
-        var results = await _store.QueryAsync<Product>(p => p.Category == "Electronics" && p.Price > 30);
-
-        // Assert
-        Assert.Single(results);
-        Assert.Equal("Gadget", results.First().Name);
-    }
-
-    #endregion
-
-    #region Virtual Column Cache Tests
-
-    [Fact]
-    public async Task QueryAsync_LoadsVirtualColumnsFromSchema()
-    {
-        // Arrange - Create virtual column with initial store
-        await _store.CreateTableAsync<Product>();
-        await _store.UpsertAsync("p1", new Product { Name = "Test", Category = "TestCat", Price = 10.00m });
-        await _store.AddVirtualColumnAsync<Product>(p => p.Name, "name_vc", createIndex: true);
-
-        // Create a NEW store instance (simulating app restart)
-        using var newStore = new DocumentStore(_connection);
-
-        // Act - Query should discover and use the virtual column from schema
-        var results = await newStore.QueryAsync<Product>(p => p.Name == "Test");
-
-        // Assert
-        Assert.Single(results);
-        Assert.Equal("TestCat", results.First().Category);
-    }
-
-    [Fact]
-    public async Task QueryAsync_CacheUpdatedWhenVirtualColumnAdded()
-    {
-        // Arrange
-        await _store.CreateTableAsync<Product>();
-        await _store.UpsertAsync("p1", new Product { Name = "Widget", Category = "Electronics", Price = 29.99m });
-
-        // First query - no virtual columns, uses json_extract
-        var results1 = await _store.QueryAsync<Product>(p => p.Category == "Electronics");
-        Assert.Single(results1);
-
-        // Add virtual column
-        await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category", createIndex: true);
-
-        // Second query - should now use virtual column
-        var results2 = await _store.QueryAsync<Product>(p => p.Category == "Electronics");
-        Assert.Single(results2);
-    }
-
-    [Fact]
-    public async Task QueryAsync_NestedVirtualColumn_IsDiscoveredFromSchema()
-    {
-        // Arrange
-        await _store.CreateTableAsync<ProductWithMetadata>();
-        await _store.UpsertAsync("p1", new ProductWithMetadata
-        {
-            Name = "Widget",
-            Metadata = new ProductMetadata { Brand = "Acme", Country = "USA" }
-        });
-        await _store.AddVirtualColumnAsync<ProductWithMetadata>(p => p.Metadata.Brand, "brand");
-
-        // Create new store
-        using var newStore = new DocumentStore(_connection);
-
         // Act
-        var results = await newStore.QueryAsync<ProductWithMetadata>(p => p.Metadata.Brand == "Acme");
+        var results = await LoadProductsAsync(
+            "category = @Category AND price > @Price", ("Category", "Electronics"), ("Price", 30.0));
 
         // Assert
         Assert.Single(results);
-        Assert.Equal("Widget", results.First().Name);
+        Assert.Equal("Gadget", results[0].Name);
     }
 
     #endregion
@@ -336,16 +289,16 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category", createIndex: true);
 
         // Act - Query using index
-        var result = await _connection.QueryFirstOrDefaultAsync<dynamic>(
-            "SELECT * FROM Product WHERE category = @Category",
-            new { Category = "Category 5" });
+        var match = await _connection.QueryFirstStringAsync(
+            "SELECT id FROM Product WHERE category = @Category",
+            ("Category", "Category 5"));
 
         // Assert
-        Assert.NotNull(result);
+        Assert.NotNull(match);
     }
 
     [Fact]
-    public async Task QueryAsync_WithIndex_ReturnsCorrectResults()
+    public async Task VirtualColumn_IndexedSeek_ReturnsCorrectResults()
     {
         // Arrange
         await _store.CreateTableAsync<Product>();
@@ -367,10 +320,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category", createIndex: true);
 
         // Act
-        var results = await _store.QueryAsync<Product>(p => p.Category == "Target");
+        var results = await LoadProductsAsync("category = @Category", ("Category", "Target"));
 
         // Assert
-        Assert.Equal(expectedProducts.Count, results.Count());
+        Assert.Equal(expectedProducts.Count, results.Count);
         Assert.All(results, p => Assert.Equal("Target", p.Category));
     }
 

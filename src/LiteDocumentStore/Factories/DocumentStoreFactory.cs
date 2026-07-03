@@ -57,7 +57,7 @@ internal sealed class DocumentStoreFactory : IDocumentStoreFactory
 
         var connection = _connectionFactory.CreateConnection(options);
 
-        return new DocumentStore(connection, namingConvention, logger, ownsConnection: true);
+        return new DocumentStore(connection, namingConvention, logger, ownsConnection: true, options.SerializerOptions);
     }
 
     /// <inheritdoc/>
@@ -71,6 +71,6 @@ internal sealed class DocumentStoreFactory : IDocumentStoreFactory
 
         var connection = await _connectionFactory.CreateConnectionAsync(options).ConfigureAwait(false);
 
-        return new DocumentStore(connection, namingConvention, logger, ownsConnection: true);
+        return new DocumentStore(connection, namingConvention, logger, ownsConnection: true, options.SerializerOptions);
     }
 }

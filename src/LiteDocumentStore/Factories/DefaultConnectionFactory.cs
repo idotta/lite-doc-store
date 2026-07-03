@@ -136,23 +136,3 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         };
     }
 }
-
-/// <summary>
-/// Extension methods for SqliteConnection to execute commands.
-/// </summary>
-internal static class SqliteConnectionExtensions
-{
-    public static void Execute(this SqliteConnection connection, string commandText)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        command.ExecuteNonQuery();
-    }
-
-    public static async Task ExecuteAsync(this SqliteConnection connection, string commandText)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-    }
-}

@@ -51,6 +51,22 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetColumnsAsync_TableNameWithClosingBracket_IsEscaped()
+    {
+        // Arrange - a table whose name contains ']' would break out of the [ ] identifier quoting
+        // in the PRAGMA statement if the bracket were not escaped.
+        await _connection.ExecuteAsync(
+            "CREATE TABLE \"weird]name\" (id TEXT PRIMARY KEY, val TEXT)");
+
+        // Act
+        var columns = (await _introspector.GetColumnsAsync("weird]name")).ToList();
+
+        // Assert - the PRAGMA resolved the real table rather than erroring or hitting the wrong one
+        Assert.Contains(columns, c => c.Name == "id");
+        Assert.Contains(columns, c => c.Name == "val");
+    }
+
+    [Fact]
     public async Task TableExistsAsync_WithExistingTable_ReturnsTrue()
     {
         // Arrange

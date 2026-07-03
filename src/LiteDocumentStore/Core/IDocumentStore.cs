@@ -164,55 +164,6 @@ public interface IDocumentStore : IAsyncDisposable, IDisposable
     Task<IEnumerable<T>> QueryAsync<T, TValue>(string jsonPath, TValue value);
 
     /// <summary>
-    /// Queries documents using a LINQ expression predicate that gets translated to SQLite json_extract() queries.
-    /// Supports property access, nested properties, comparisons, and logical operators.
-    /// </summary>
-    /// <typeparam name="T">Type of the objects to retrieve (also used as table name)</typeparam>
-    /// <param name="predicate">The predicate expression to filter documents</param>
-    /// <returns>An enumerable of deserialized objects matching the query</returns>
-    Task<IEnumerable<T>> QueryAsync<T>(System.Linq.Expressions.Expression<Func<T, bool>> predicate);
-
-    /// <summary>
-    /// Selects specific JSON fields from documents and projects them into a result type.
-    /// This is more efficient than retrieving entire documents when only certain fields are needed.
-    /// Uses json_extract() to retrieve only the specified fields from the JSONB data.
-    /// </summary>
-    /// <typeparam name="TSource">Type of the source documents (also used as table name)</typeparam>
-    /// <typeparam name="TResult">Type to project the selected fields into</typeparam>
-    /// <param name="selector">Expression selecting fields to project (e.g., x => new { x.Name, x.Email })</param>
-    /// <returns>An enumerable of projected objects with only the selected fields</returns>
-    /// <example>
-    /// <code>
-    /// // Select only name and email fields from Customer documents
-    /// var results = await store.SelectAsync&lt;Customer, CustomerDto&gt;(
-    ///     x => new CustomerDto { Name = x.Name, Email = x.Email });
-    /// </code>
-    /// </example>
-    Task<IEnumerable<TResult>> SelectAsync<TSource, TResult>(System.Linq.Expressions.Expression<Func<TSource, TResult>> selector);
-
-    /// <summary>
-    /// Selects specific JSON fields from documents that match a predicate and projects them into a result type.
-    /// Combines filtering and projection for optimal performance - only matching documents are retrieved and 
-    /// only specified fields are extracted.
-    /// </summary>
-    /// <typeparam name="TSource">Type of the source documents (also used as table name)</typeparam>
-    /// <typeparam name="TResult">Type to project the selected fields into</typeparam>
-    /// <param name="predicate">Expression to filter documents</param>
-    /// <param name="selector">Expression selecting fields to project</param>
-    /// <returns>An enumerable of projected objects with only the selected fields</returns>
-    /// <example>
-    /// <code>
-    /// // Select name and email from active customers only
-    /// var results = await store.SelectAsync&lt;Customer, CustomerDto&gt;(
-    ///     x => x.Active == true,
-    ///     x => new CustomerDto { Name = x.Name, Email = x.Email });
-    /// </code>
-    /// </example>
-    Task<IEnumerable<TResult>> SelectAsync<TSource, TResult>(
-        System.Linq.Expressions.Expression<Func<TSource, bool>> predicate,
-        System.Linq.Expressions.Expression<Func<TSource, TResult>> selector);
-
-    /// <summary>
     /// Gets the underlying SQLite connection for advanced operations and raw SQL access.
     /// This enables the hybrid experience where users can use both document storage
     /// and traditional relational database features.

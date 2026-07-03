@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace LiteDocumentStore;
 
 /// <summary>
@@ -166,6 +168,20 @@ public sealed class DocumentStoreOptionsBuilder
     public DocumentStoreOptionsBuilder WithTableNamingConvention(ITableNamingConvention convention)
     {
         _options.TableNamingConvention = convention;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the <see cref="JsonSerializerOptions"/> used to (de)serialize documents.
+    /// For Native AOT / trimming, back these options with a source-generated
+    /// <see cref="System.Text.Json.Serialization.JsonSerializerContext"/>, e.g.
+    /// <c>new JsonSerializerOptions { TypeInfoResolver = MyContext.Default }</c>.
+    /// </summary>
+    /// <param name="serializerOptions">The serializer options to use</param>
+    /// <returns>This builder for method chaining</returns>
+    public DocumentStoreOptionsBuilder WithSerializerOptions(JsonSerializerOptions serializerOptions)
+    {
+        _options.SerializerOptions = serializerOptions;
         return this;
     }
 

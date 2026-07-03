@@ -12,9 +12,8 @@ The goal is NOT an opaque document database. Users should seamlessly mix documen
 
 - **.NET 10** - Target framework
 - **SQLite 3.45+** - Required for JSONB support
-- **Microsoft.Data.Sqlite** - SQLite provider
-- **Dapper** - Micro-ORM for minimal mapping overhead
-- **System.Text.Json** - Fixed, optimized JSON serializer
+- **Microsoft.Data.Sqlite** - SQLite provider (raw ADO.NET; no ORM)
+- **System.Text.Json** - AOT-safe serializer via `JsonTypeInfo<T>`
 
 ## Key Architectural Principles
 
@@ -30,9 +29,9 @@ The goal is NOT an opaque document database. Users should seamlessly mix documen
 ```
 src/
 ├── LiteDocumentStore/                    # Main library
-│   ├── DocumentStore.cs           # Core repository implementation
-│   ├── SqliteJsonbTypeHandler.cs  # Dapper type handler for JSONB
-│   └── JsonHelper.cs              # Optimized JSON serialization
+│   ├── Core/DocumentStore.cs             # Core store implementation
+│   ├── Core/SqliteCommandExtensions.cs   # Raw ADO.NET helpers (replaced Dapper)
+│   └── Serialization/JsonHelper.cs       # AOT-safe JSON serialization
 └── tests/
     ├── LiteDocumentStore.UnitTests/      # Unit tests (mocked)
     └── LiteDocumentStore.IntegrationTests/ # Integration tests (real SQLite)
@@ -41,7 +40,8 @@ src/
 
 ## When Modifying This Project
 
-- Check `IMPLEMENTATION_CHECKLIST.md` for the roadmap
+- See `CLAUDE.md` at the repo root for the authoritative architecture guide
+- Keep the library AOT-clean: no reflection-based serialization, no `Expression.Compile`, no `dynamic`
 - All public APIs need XML documentation
 - New features need both unit and integration tests
 - Consider performance implications of every change

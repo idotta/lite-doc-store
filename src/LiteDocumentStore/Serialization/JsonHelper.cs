@@ -1,41 +1,52 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using LiteDocumentStore.Exceptions;
 
 namespace LiteDocumentStore;
 
 /// <summary>
-/// Internal helper for high-performance JSON serialization optimized for SQLite JSONB storage.
-/// Uses fixed, optimized JsonSerializerOptions for maximum performance.
+/// Internal helper for JSON serialization optimized for SQLite JSONB storage.
+/// All (de)serialization goes through the AOT-safe <see cref="JsonTypeInfo{T}"/> overloads,
+/// resolving the type metadata from the caller-provided <see cref="JsonSerializerOptions"/>.
+/// AOT consumers supply a source-generated <see cref="JsonSerializerContext"/> via
+/// <see cref="DocumentStoreOptions.SerializerOptions"/>; when none is supplied the store
+/// falls back to <see cref="CreateDefaultReflectionOptions"/> (non-AOT only).
 /// </summary>
 internal static class JsonHelper
 {
     /// <summary>
-    /// Optimized JSON serializer options for performance.
-    /// - PropertyNameCaseInsensitive = false (exact match for speed)
-    /// - DefaultIgnoreCondition = WhenWritingNull (smaller JSON)
-    /// - WriteIndented = false (compact output)
+    /// Builds the reflection-based fallback options used when the consumer does not supply
+    /// their own <see cref="JsonSerializerOptions"/>. This is the single quarantined spot for
+    /// reflection-based serialization: it is not AOT/trim safe and is only reached on the
+    /// fallback path. AOT consumers always provide a source-generated context and never hit it.
     /// </summary>
-    private static readonly JsonSerializerOptions Options = new()
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "Reflection-based JSON is the documented non-AOT fallback; AOT consumers supply a source-generated JsonSerializerContext via DocumentStoreOptions.SerializerOptions.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050",
+        Justification = "Reflection-based JSON is the documented non-AOT fallback; AOT consumers supply a source-generated JsonSerializerContext via DocumentStoreOptions.SerializerOptions.")]
+    public static JsonSerializerOptions CreateDefaultReflectionOptions()
     {
-        PropertyNameCaseInsensitive = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = false
-    };
+        return new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = false,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = false,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+        };
+    }
 
     /// <summary>
     /// Serializes an object to UTF-8 encoded JSON bytes for JSONB storage.
-    /// This is the most efficient path for SQLite JSONB operations.
     /// </summary>
-    /// <typeparam name="T">The type of object to serialize</typeparam>
-    /// <param name="value">The object to serialize</param>
-    /// <returns>UTF-8 encoded JSON bytes</returns>
     /// <exception cref="SerializationException">Thrown when serialization fails</exception>
-    public static byte[] SerializeToUtf8Bytes<T>(T value)
+    public static byte[] SerializeToUtf8Bytes<T>(T value, JsonSerializerOptions options)
     {
         try
         {
-            return JsonSerializer.SerializeToUtf8Bytes(value, Options);
+            var typeInfo = (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+            return JsonSerializer.SerializeToUtf8Bytes(value, typeInfo);
         }
         catch (JsonException ex)
         {
@@ -56,11 +67,8 @@ internal static class JsonHelper
     /// <summary>
     /// Deserializes UTF-8 encoded JSON bytes to a typed object.
     /// </summary>
-    /// <typeparam name="T">The type of object to deserialize to</typeparam>
-    /// <param name="utf8Json">The UTF-8 encoded JSON bytes</param>
-    /// <returns>The deserialized object, or default if input is empty</returns>
     /// <exception cref="SerializationException">Thrown when deserialization fails</exception>
-    public static T? Deserialize<T>(ReadOnlySpan<byte> utf8Json)
+    public static T? Deserialize<T>(ReadOnlySpan<byte> utf8Json, JsonSerializerOptions options)
     {
         if (utf8Json.IsEmpty)
         {
@@ -69,7 +77,8 @@ internal static class JsonHelper
 
         try
         {
-            return JsonSerializer.Deserialize<T>(utf8Json, Options);
+            var typeInfo = (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+            return JsonSerializer.Deserialize(utf8Json, typeInfo);
         }
         catch (JsonException ex)
         {
@@ -84,11 +93,8 @@ internal static class JsonHelper
     /// Deserializes a JSON string to a typed object.
     /// This overload handles string data from the database.
     /// </summary>
-    /// <typeparam name="T">The type of object to deserialize to</typeparam>
-    /// <param name="json">The JSON string</param>
-    /// <returns>The deserialized object, or default if input is null or empty</returns>
     /// <exception cref="SerializationException">Thrown when deserialization fails</exception>
-    public static T? Deserialize<T>(string? json)
+    public static T? Deserialize<T>(string? json, JsonSerializerOptions options)
     {
         if (string.IsNullOrEmpty(json))
         {
@@ -97,7 +103,8 @@ internal static class JsonHelper
 
         try
         {
-            return JsonSerializer.Deserialize<T>(json, Options);
+            var typeInfo = (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+            return JsonSerializer.Deserialize(json, typeInfo);
         }
         catch (JsonException ex)
         {

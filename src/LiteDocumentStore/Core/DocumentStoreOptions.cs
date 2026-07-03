@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace LiteDocumentStore;
 
 /// <summary>
@@ -63,6 +66,16 @@ public sealed class DocumentStoreOptions
     /// Useful for custom SQLite configuration.
     /// </summary>
     public List<string> AdditionalPragmas { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the <see cref="JsonSerializerOptions"/> used to (de)serialize documents.
+    /// For Native AOT / trimming, set this to options backed by a source-generated
+    /// <see cref="JsonSerializerContext"/>, e.g.
+    /// <c>new JsonSerializerOptions { TypeInfoResolver = MyContext.Default }</c>.
+    /// When null (the default), the store falls back to reflection-based serialization,
+    /// which works only in non-AOT scenarios.
+    /// </summary>
+    public JsonSerializerOptions? SerializerOptions { get; set; }
 
     /// <summary>
     /// Creates a new instance of DocumentStoreOptions with default settings.
@@ -148,6 +161,12 @@ public sealed class DocumentStoreOptions
     /// <summary>
     /// Creates a copy of the current options.
     /// </summary>
+    /// <remarks>
+    /// <see cref="SerializerOptions"/> is shared by reference intentionally: the instance carries
+    /// the source-generated <c>TypeInfoResolver</c> and its metadata cache, which must be shared for
+    /// AOT correctness and performance. System.Text.Json also makes a <see cref="JsonSerializerOptions"/>
+    /// read-only after its first use, so the shared instance is effectively immutable in practice.
+    /// </remarks>
     /// <returns>A new DocumentStoreOptions instance with copied values</returns>
     public DocumentStoreOptions Clone()
     {
@@ -161,7 +180,8 @@ public sealed class DocumentStoreOptions
             BusyTimeoutMs = BusyTimeoutMs,
             EnableForeignKeys = EnableForeignKeys,
             TableNamingConvention = TableNamingConvention,
-            AdditionalPragmas = [.. AdditionalPragmas]
+            AdditionalPragmas = [.. AdditionalPragmas],
+            SerializerOptions = SerializerOptions
         };
     }
 }
