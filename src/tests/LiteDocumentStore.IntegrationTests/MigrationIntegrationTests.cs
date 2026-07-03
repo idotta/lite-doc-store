@@ -1,3 +1,4 @@
+using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -297,5 +298,52 @@ public class MigrationIntegrationTests : IAsyncLifetime
         var record = appliedMigrations[0];
         Assert.True(record.AppliedAt >= before);
         Assert.True(record.AppliedAt <= after);
+    }
+
+    [Fact]
+    public async Task ApplyMigrationAsync_VersionBelowCurrentMax_IsSkipped()
+    {
+        // Arrange - apply v1 and v3, leaving a gap at v2. The runner tracks the highest applied
+        // version, so a later-introduced v2 sits below the current max.
+        await _runner.ApplyMigrationAsync(new Migration(1, "V1", "SELECT 1", "SELECT 1"));
+        await _runner.ApplyMigrationAsync(new Migration(3, "V3", "SELECT 1", "SELECT 1"));
+
+        // Act - v2 (below current max version 3) is skipped by the linear version model
+        var v2 = new Migration(
+            version: 2,
+            name: "V2",
+            upSql: "CREATE TABLE ShouldNotExist (id TEXT PRIMARY KEY)",
+            downSql: "DROP TABLE ShouldNotExist");
+        var applied = await _runner.ApplyMigrationAsync(v2);
+
+        // Assert - not applied, its Up SQL never ran, and history is unchanged (only v1, v3)
+        Assert.False(applied);
+
+        var introspector = new SchemaIntrospector(_connection);
+        Assert.False(await introspector.TableExistsAsync("ShouldNotExist"));
+
+        var versions = (await _runner.GetAppliedMigrationsAsync()).Select(m => m.Version).ToList();
+        Assert.Equal(new long[] { 1, 3 }, versions);
+    }
+
+    [Fact]
+    public async Task RollbackToVersionAsync_MissingDefinition_Throws_AndRollsBackNothing()
+    {
+        // Arrange - apply v1 and v2
+        var v1 = new Migration(1, "V1", "CREATE TABLE T1 (id TEXT PRIMARY KEY)", "DROP TABLE T1");
+        var v2 = new Migration(2, "V2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE T2");
+        await _runner.ApplyMigrationAsync(v1);
+        await _runner.ApplyMigrationAsync(v2);
+
+        // Act & Assert - rolling back to 0 requires both definitions; only v2 is supplied, so the
+        // whole operation must fail before mutating anything (no partial rollback).
+        await Assert.ThrowsAsync<LiteDocumentStoreException>(async () =>
+            await _runner.RollbackToVersionAsync(0, new[] { v2 }));
+
+        // Nothing was rolled back: both tables remain and both versions stay recorded.
+        var introspector = new SchemaIntrospector(_connection);
+        Assert.True(await introspector.TableExistsAsync("T1"));
+        Assert.True(await introspector.TableExistsAsync("T2"));
+        Assert.Equal(2, await _runner.GetCurrentVersionAsync());
     }
 }

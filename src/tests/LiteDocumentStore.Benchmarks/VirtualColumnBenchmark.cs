@@ -127,42 +127,42 @@ public class VirtualColumnBenchmark
     [Benchmark(Baseline = true, Description = "Query by category WITHOUT virtual column")]
     public async Task<int> Query_WithoutVirtualColumn_ByCategory()
     {
-        var results = await _storeWithoutVirtual.QueryAsync<Product>(p => p.Category == "Category 25");
+        var results = await _storeWithoutVirtual.QueryAsync<Product, string>("$.Category", "Category 25");
         return results.Count();
     }
 
     [Benchmark(Description = "Query by category WITH virtual column and index")]
     public async Task<int> Query_WithVirtualColumn_ByCategory()
     {
-        var results = await _storeWithVirtual.QueryAsync<Product>(p => p.Category == "Category 25");
+        var results = await _storeWithVirtual.QueryAsync<Product, string>("$.Category", "Category 25");
         return results.Count();
     }
 
     [Benchmark(Description = "Query by SKU WITHOUT virtual column")]
     public async Task<int> Query_WithoutVirtualColumn_BySku()
     {
-        var results = await _storeWithoutVirtual.QueryAsync<Product>(p => p.Sku == "SKU-005000");
+        var results = await _storeWithoutVirtual.QueryAsync<Product, string>("$.Sku", "SKU-005000");
         return results.Count();
     }
 
     [Benchmark(Description = "Query by SKU WITH virtual column and index")]
     public async Task<int> Query_WithVirtualColumn_BySku()
     {
-        var results = await _storeWithVirtual.QueryAsync<Product>(p => p.Sku == "SKU-005000");
+        var results = await _storeWithVirtual.QueryAsync<Product, string>("$.Sku", "SKU-005000");
         return results.Count();
     }
 
     [Benchmark(Description = "Query nested property WITHOUT virtual column")]
     public async Task<int> Query_WithoutVirtualColumn_NestedProperty()
     {
-        var results = await _storeWithoutVirtual.QueryAsync<Product>(p => p.Metadata.Brand == "Brand 42");
+        var results = await _storeWithoutVirtual.QueryAsync<Product, string>("$.Metadata.Brand", "Brand 42");
         return results.Count();
     }
 
     [Benchmark(Description = "Query nested property WITH virtual column and index")]
     public async Task<int> Query_WithVirtualColumn_NestedProperty()
     {
-        var results = await _storeWithVirtual.QueryAsync<Product>(p => p.Metadata.Brand == "Brand 42");
+        var results = await _storeWithVirtual.QueryAsync<Product, string>("$.Metadata.Brand", "Brand 42");
         return results.Count();
     }
 

@@ -1,4 +1,3 @@
-using Dapper;
 using Microsoft.Data.Sqlite;
 
 namespace LiteDocumentStore;
@@ -26,14 +25,29 @@ public sealed class SchemaIntrospector
     /// <returns>An enumerable of table information records</returns>
     public async Task<IEnumerable<TableInfo>> GetTablesAsync()
     {
-        var sql = @"
-            SELECT name as Name, type as Type, sql as Sql
-            FROM sqlite_master 
-            WHERE type = 'table' 
+        const string sql = @"
+            SELECT name, type, sql
+            FROM sqlite_master
+            WHERE type = 'table'
             AND name NOT LIKE 'sqlite_%'
             ORDER BY name";
 
-        return await _connection.QueryAsync<TableInfo>(sql).ConfigureAwait(false);
+        await using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+
+        var tables = new List<TableInfo>();
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            tables.Add(new TableInfo
+            {
+                Name = reader.GetString(0),
+                Type = reader.GetString(1),
+                Sql = reader.IsDBNull(2) ? null : reader.GetString(2)
+            });
+        }
+
+        return tables;
     }
 
     /// <summary>
@@ -45,13 +59,13 @@ public sealed class SchemaIntrospector
     {
         ArgumentNullException.ThrowIfNull(tableName);
 
-        var sql = @"
-            SELECT COUNT(*) 
-            FROM sqlite_master 
-            WHERE type = 'table' 
+        const string sql = @"
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'table'
             AND name = @TableName";
 
-        var count = await _connection.ExecuteScalarAsync<int>(sql, new { TableName = tableName })
+        var count = await _connection.ExecuteScalarAsync<int>(sql, ("TableName", tableName))
             .ConfigureAwait(false);
 
         return count > 0;
@@ -69,18 +83,36 @@ public sealed class SchemaIntrospector
 
         // Use table_xinfo instead of table_info to include generated columns
         var sql = $"PRAGMA table_xinfo([{tableName}])";
-        var pragmaResults = await _connection.QueryAsync(sql).ConfigureAwait(false);
 
-        return pragmaResults.Select(row => new ColumnInfo
+        await using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+
+        // Resolve column ordinals by name to be resilient to PRAGMA column ordering.
+        var cidOrdinal = reader.GetOrdinal("cid");
+        var nameOrdinal = reader.GetOrdinal("name");
+        var typeOrdinal = reader.GetOrdinal("type");
+        var notNullOrdinal = reader.GetOrdinal("notnull");
+        var defaultOrdinal = reader.GetOrdinal("dflt_value");
+        var pkOrdinal = reader.GetOrdinal("pk");
+        var hiddenOrdinal = reader.GetOrdinal("hidden");
+
+        var columns = new List<ColumnInfo>();
+        while (await reader.ReadAsync().ConfigureAwait(false))
         {
-            ColumnId = (long)row.cid,
-            Name = (string)row.name,
-            Type = (string)row.type,
-            NotNull = (long)row.notnull == 1,
-            DefaultValue = row.dflt_value,
-            IsPrimaryKey = (long)row.pk == 1,
-            IsHidden = (long)row.hidden != 0  // hidden=1 for virtual, hidden=2 for stored
-        });
+            columns.Add(new ColumnInfo
+            {
+                ColumnId = reader.GetInt64(cidOrdinal),
+                Name = reader.GetString(nameOrdinal),
+                Type = reader.GetString(typeOrdinal),
+                NotNull = reader.GetInt64(notNullOrdinal) == 1,
+                DefaultValue = reader.IsDBNull(defaultOrdinal) ? null : reader.GetValue(defaultOrdinal),
+                IsPrimaryKey = reader.GetInt64(pkOrdinal) == 1,
+                IsHidden = reader.GetInt64(hiddenOrdinal) != 0 // hidden=1 for virtual, hidden=2 for stored
+            });
+        }
+
+        return columns;
     }
 
     /// <summary>
@@ -91,20 +123,40 @@ public sealed class SchemaIntrospector
     public async Task<IEnumerable<IndexInfo>> GetIndexesAsync(string? tableName = null)
     {
         var sql = @"
-            SELECT name as Name, tbl_name as TableName, sql as Sql
-            FROM sqlite_master 
-            WHERE type = 'index' 
+            SELECT name, tbl_name, sql
+            FROM sqlite_master
+            WHERE type = 'index'
             AND name NOT LIKE 'sqlite_%'";
 
-        if (!string.IsNullOrEmpty(tableName))
+        var filterByTable = !string.IsNullOrEmpty(tableName);
+        if (filterByTable)
         {
             sql += " AND tbl_name = @TableName";
         }
 
         sql += " ORDER BY name";
 
-        return await _connection.QueryAsync<IndexInfo>(sql, new { TableName = tableName })
-            .ConfigureAwait(false);
+        await using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        if (filterByTable)
+        {
+            command.Parameters.AddWithValue("@TableName", tableName);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+
+        var indexes = new List<IndexInfo>();
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            indexes.Add(new IndexInfo
+            {
+                Name = reader.GetString(0),
+                TableName = reader.GetString(1),
+                Sql = reader.IsDBNull(2) ? null : reader.GetString(2)
+            });
+        }
+
+        return indexes;
     }
 
     /// <summary>
@@ -116,13 +168,13 @@ public sealed class SchemaIntrospector
     {
         ArgumentNullException.ThrowIfNull(indexName);
 
-        var sql = @"
-            SELECT COUNT(*) 
-            FROM sqlite_master 
-            WHERE type = 'index' 
+        const string sql = @"
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'index'
             AND name = @IndexName";
 
-        var count = await _connection.ExecuteScalarAsync<int>(sql, new { IndexName = indexName })
+        var count = await _connection.ExecuteScalarAsync<int>(sql, ("IndexName", indexName))
             .ConfigureAwait(false);
 
         return count > 0;
@@ -149,8 +201,7 @@ public sealed class SchemaIntrospector
     /// <returns>The SQLite version string</returns>
     public async Task<string> GetSqliteVersionAsync()
     {
-        var sql = "SELECT sqlite_version()";
-        var version = await _connection.ExecuteScalarAsync<string>(sql).ConfigureAwait(false);
+        var version = await _connection.QueryFirstStringAsync("SELECT sqlite_version()").ConfigureAwait(false);
         return version ?? "Unknown";
     }
 
@@ -160,13 +211,9 @@ public sealed class SchemaIntrospector
     /// <returns>Database statistics</returns>
     public async Task<DatabaseStatistics> GetDatabaseStatisticsAsync()
     {
-        var pageCountSql = "PRAGMA page_count";
-        var pageSizeSql = "PRAGMA page_size";
-        var freeSql = "PRAGMA freelist_count";
-
-        var pageCount = await _connection.ExecuteScalarAsync<long>(pageCountSql).ConfigureAwait(false);
-        var pageSize = await _connection.ExecuteScalarAsync<long>(pageSizeSql).ConfigureAwait(false);
-        var freePages = await _connection.ExecuteScalarAsync<long>(freeSql).ConfigureAwait(false);
+        var pageCount = await _connection.ExecuteScalarAsync<long>("PRAGMA page_count").ConfigureAwait(false);
+        var pageSize = await _connection.ExecuteScalarAsync<long>("PRAGMA page_size").ConfigureAwait(false);
+        var freePages = await _connection.ExecuteScalarAsync<long>("PRAGMA freelist_count").ConfigureAwait(false);
 
         return new DatabaseStatistics
         {

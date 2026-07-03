@@ -86,9 +86,10 @@ SELECT * FROM [Customer] WHERE json_extract(data, '$.email') = @Email
 ### Parameterization
 
 ```csharp
-// ALWAYS use parameters, never string concatenation
-var sql = "SELECT * FROM [Customer] WHERE id = @Id";
-await _connection.QueryAsync(sql, new { Id = id });
+// ALWAYS use parameters, never string concatenation.
+// Use the raw ADO.NET helpers in Core/SqliteCommandExtensions.cs (bind by name):
+var sql = "SELECT json(data) FROM [Customer] WHERE id = @Id";
+var json = await _connection.QueryFirstStringAsync(sql, ("Id", id));
 
 // NEVER do this
 var sql = $"SELECT * FROM [Customer] WHERE id = '{id}'"; // SQL INJECTION!

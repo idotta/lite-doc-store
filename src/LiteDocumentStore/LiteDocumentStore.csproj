@@ -6,13 +6,14 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    
+    <IsAotCompatible>true</IsAotCompatible>
+
     <!-- NuGet Package Metadata -->
     <PackageId>LiteDocumentStore</PackageId>
     <Title>LiteDocumentStore</Title>
     <Authors>idotta</Authors>
-    <Description>A high-performance, single-file application data format using C#, SQLite, and Dapper. Stores JSON data in SQLite's JSONB format for optimal performance.</Description>
-    <PackageTags>sqlite;jsonb;json;database;repository;async;dapper;orm;document-store</PackageTags>
+    <Description>A high-performance, single-file application data format using C# and SQLite. Stores JSON data in SQLite's JSONB format for optimal performance. Native AOT / trimming compatible.</Description>
+    <PackageTags>sqlite;jsonb;json;database;repository;async;document-store;aot</PackageTags>
     <PackageProjectUrl>https://github.com/idotta/jsonb-store</PackageProjectUrl>
     <RepositoryUrl>https://github.com/idotta/jsonb-store</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -27,8 +28,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.1" />
+    <!-- Pin the native SQLite binary to a build with patched SQLite (>=3.50.2) to clear
+         NU1903 / CVE-2025-6965. Microsoft.Data.Sqlite 10.0.1 otherwise pulls the vulnerable
+         SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively. This package has no managed
+         dependencies (native bundle only), so the 2.x managed layer stays intact and it
+         remains Native-AOT compatible. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.1" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />

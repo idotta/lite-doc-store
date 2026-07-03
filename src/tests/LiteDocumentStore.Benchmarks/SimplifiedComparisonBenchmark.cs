@@ -196,7 +196,7 @@ public class SimplifiedComparisonBenchmark
     [Benchmark]
     public async Task<int> LiteDocumentStore_QueryByCategory()
     {
-        var results = await _documentStore.QueryAsync<TestDocument>(d => d.Category == "Category 5");
+        var results = await _documentStore.QueryAsync<TestDocument, string>("$.Category", "Category 5");
         return results.Count();
     }
 

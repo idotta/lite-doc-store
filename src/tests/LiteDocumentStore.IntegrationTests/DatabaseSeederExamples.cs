@@ -194,9 +194,20 @@ public class DatabaseSeederExamples
             "age",
             createIndex: true);
 
-        // Assert - Virtual column should work with seeded data
-        var youngPersons = await store.QueryAsync<PersonEntity>(p => p.Age < 30);
-        var youngList = youngPersons.ToList();
+        // Assert - Virtual column should work with seeded data. Range predicates are no longer
+        // expressible through the store API, so seek the indexed virtual column via raw SQL and
+        // load each matching document through the public GetAsync.
+        var youngIds = await store.Connection.QueryStringsAsync(
+            "SELECT id FROM [PersonEntity] WHERE age < @Age",
+            ("Age", 30));
+
+        var youngList = new List<PersonEntity>();
+        foreach (var id in youngIds)
+        {
+            var person = await store.GetAsync<PersonEntity>(id!);
+            Assert.NotNull(person);
+            youngList.Add(person);
+        }
 
         Assert.NotEmpty(youngList);
         Assert.All(youngList, p => Assert.True(p.Age < 30));
