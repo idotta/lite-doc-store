@@ -81,8 +81,12 @@ public sealed class SchemaIntrospector
     {
         ArgumentNullException.ThrowIfNull(tableName);
 
-        // Use table_xinfo instead of table_info to include generated columns
-        var sql = $"PRAGMA table_xinfo([{tableName}])";
+        // Use table_xinfo instead of table_info to include generated columns.
+        // PRAGMA arguments cannot be parameterized, so the identifier is interpolated. SQLite's
+        // [ ] quoting has no escape for a literal ']', so use standard double-quote identifier
+        // quoting and escape any embedded quote ("") to prevent breaking out of the identifier.
+        var quotedTable = "\"" + tableName.Replace("\"", "\"\"") + "\"";
+        var sql = $"PRAGMA table_xinfo({quotedTable})";
 
         await using var command = _connection.CreateCommand();
         command.CommandText = sql;

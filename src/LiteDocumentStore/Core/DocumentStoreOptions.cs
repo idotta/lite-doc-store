@@ -161,6 +161,12 @@ public sealed class DocumentStoreOptions
     /// <summary>
     /// Creates a copy of the current options.
     /// </summary>
+    /// <remarks>
+    /// <see cref="SerializerOptions"/> is shared by reference intentionally: the instance carries
+    /// the source-generated <c>TypeInfoResolver</c> and its metadata cache, which must be shared for
+    /// AOT correctness and performance. System.Text.Json also makes a <see cref="JsonSerializerOptions"/>
+    /// read-only after its first use, so the shared instance is effectively immutable in practice.
+    /// </remarks>
     /// <returns>A new DocumentStoreOptions instance with copied values</returns>
     public DocumentStoreOptions Clone()
     {
