@@ -1,5 +1,7 @@
 using System.Data;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -146,6 +148,76 @@ internal sealed class DocumentStore : IDocumentStore
         }
 
         return await _connection.ExecuteAsync(sql, parameters).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<long> UpsertWithVersionAsync<T>(string id, T data, long expectedVersion)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
+
+        int affectedRows;
+        if (expectedVersion == 0)
+        {
+            var sql = SqlGenerator.GenerateInsertIfAbsentSql(tableName);
+            affectedRows = await _connection.ExecuteAsync(sql, ("Id", id), ("Data", jsonBytes))
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            var sql = SqlGenerator.GenerateVersionedUpdateSql(tableName);
+            affectedRows = await _connection.ExecuteAsync(
+                sql, ("Id", id), ("Data", jsonBytes), ("ExpectedVersion", expectedVersion))
+                .ConfigureAwait(false);
+        }
+
+        if (affectedRows == 0)
+        {
+            var reason = expectedVersion == 0
+                ? "the document already exists"
+                : $"the stored version does not match the expected version {expectedVersion} (or the document does not exist)";
+            throw new ConcurrencyException(
+                $"Concurrency conflict writing document '{id}' in table '{tableName}': {reason}.",
+                id, tableName);
+        }
+
+        return expectedVersion + 1;
+    }
+
+    /// <inheritdoc />
+    public async Task<VersionedDocument<T>?> GetWithVersionAsync<T>(string id)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var sql = SqlGenerator.GenerateGetWithVersionSql(tableName);
+
+        var row = await _connection.QueryFirstStringInt64Async(sql, ("Id", id)).ConfigureAwait(false);
+        if (row is not { Text: { Length: > 0 } json, Number: var version })
+        {
+            _logger.LogDebug("Document {Id} not found in table {TableName}", id, tableName);
+            return null;
+        }
+
+        var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
+        return document is null ? null : new VersionedDocument<T>(document, version);
     }
 
     /// <inheritdoc />
@@ -519,6 +591,93 @@ internal sealed class DocumentStore : IDocumentStore
                 await _connection.ExecuteAsync(createIndexSql).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <inheritdoc />
+    public async Task CreateBlobTableAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        var sql = SqlGenerator.GenerateCreateBlobTableSql();
+        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task PutBlobAsync(string id, ReadOnlyMemory<byte> data)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        // Bind the underlying array directly when the memory spans a whole array
+        // to avoid copying potentially large payloads.
+        var payload = MemoryMarshal.TryGetArray(data, out var segment)
+            && segment.Offset == 0
+            && segment.Array is { } array
+            && segment.Count == array.Length
+                ? array
+                : data.ToArray();
+
+        var sql = SqlGenerator.GeneratePutBlobSql();
+        await _connection.ExecuteAsync(sql, ("Id", id), ("Data", payload)).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<byte[]?> GetBlobAsync(string id)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        var sql = SqlGenerator.GenerateGetBlobSql();
+        var payload = await _connection.ExecuteScalarAsync<byte[]>(sql, ("Id", id)).ConfigureAwait(false);
+
+        if (payload is null)
+        {
+            _logger.LogDebug("Blob {Id} not found", id);
+        }
+
+        return payload;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteBlobAsync(string id)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        var sql = SqlGenerator.GenerateDeleteBlobSql();
+        var affectedRows = await _connection.ExecuteAsync(sql, ("Id", id)).ConfigureAwait(false);
+        return affectedRows > 0;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> BlobExistsAsync(string id)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureConnectionOpen();
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        var sql = SqlGenerator.GenerateBlobExistsSql();
+        return await _connection.ExecuteScalarAsync<bool>(sql, ("Id", id)).ConfigureAwait(false);
     }
 
     /// <inheritdoc />

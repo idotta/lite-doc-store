@@ -77,6 +77,28 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
+    /// Executes a query whose first row has a string first column and an integer second
+    /// column (e.g. <c>SELECT json(data), version</c>). Returns null when there is no row.
+    /// </summary>
+    public static async Task<(string? Text, long Number)?> QueryFirstStringInt64Async(
+        this SqliteConnection connection,
+        string commandText,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+
+        if (!await reader.ReadAsync().ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        var text = reader.IsDBNull(0) ? null : reader.GetString(0);
+        var number = reader.IsDBNull(1) ? 0L : reader.GetInt64(1);
+        return (text, number);
+    }
+
+    /// <summary>
     /// Executes a query and returns the first column of the first row as a string,
     /// or null when there is no row or the value is NULL.
     /// </summary>

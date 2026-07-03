@@ -9,27 +9,121 @@ namespace LiteDocumentStore;
 internal static class SqlGenerator
 {
     /// <summary>
+    /// The reserved table name used for raw binary blob storage.
+    /// </summary>
+    public const string BlobTableName = "__store_blobs";
+
+    /// <summary>
     /// Generates SQL for creating a table with JSONB storage.
+    /// The version column backs optimistic concurrency: rows start at 1 and
+    /// every write increments it.
     /// </summary>
     public static string GenerateCreateTableSql(string tableName)
     {
         return $@"
             CREATE TABLE IF NOT EXISTS [{tableName}] (
                 id TEXT PRIMARY KEY,
+                data BLOB NOT NULL,
+                version INTEGER NOT NULL DEFAULT 0
+            )";
+    }
+
+    /// <summary>
+    /// Generates SQL for upserting a document using JSONB format (last-writer-wins).
+    /// Inserts start the version at 1; updates increment it so versions stay coherent
+    /// with the optimistic-concurrency operations.
+    /// </summary>
+    public static string GenerateUpsertSql(string tableName)
+    {
+        return $@"
+            INSERT INTO [{tableName}] (id, data, version)
+            VALUES (@Id, jsonb(@Data), 1)
+            ON CONFLICT(id) DO UPDATE SET
+                data = jsonb(@Data),
+                version = version + 1";
+    }
+
+    /// <summary>
+    /// Generates SQL for an insert-only write used by optimistic concurrency with
+    /// an expected version of 0 ("must not exist"). Affects 0 rows when the id
+    /// already exists.
+    /// </summary>
+    public static string GenerateInsertIfAbsentSql(string tableName)
+    {
+        return $@"
+            INSERT INTO [{tableName}] (id, data, version)
+            VALUES (@Id, jsonb(@Data), 1)
+            ON CONFLICT(id) DO NOTHING";
+    }
+
+    /// <summary>
+    /// Generates SQL for a version-guarded update used by optimistic concurrency.
+    /// Affects 0 rows when the id is missing or the stored version differs from
+    /// the expected version.
+    /// </summary>
+    public static string GenerateVersionedUpdateSql(string tableName)
+    {
+        return $@"
+            UPDATE [{tableName}] SET
+                data = jsonb(@Data),
+                version = version + 1
+            WHERE id = @Id AND version = @ExpectedVersion";
+    }
+
+    /// <summary>
+    /// Generates SQL for retrieving a document together with its version.
+    /// </summary>
+    public static string GenerateGetWithVersionSql(string tableName)
+    {
+        return $"SELECT json(data) as data, version FROM [{tableName}] WHERE id = @Id";
+    }
+
+    /// <summary>
+    /// Generates SQL for creating the shared blob table.
+    /// </summary>
+    public static string GenerateCreateBlobTableSql()
+    {
+        return $@"
+            CREATE TABLE IF NOT EXISTS [{BlobTableName}] (
+                id TEXT PRIMARY KEY,
                 data BLOB NOT NULL
             )";
     }
 
     /// <summary>
-    /// Generates SQL for upserting a document using JSONB format.
+    /// Generates SQL for upserting a raw binary blob.
     /// </summary>
-    public static string GenerateUpsertSql(string tableName)
+    public static string GeneratePutBlobSql()
     {
         return $@"
-            INSERT INTO [{tableName}] (id, data)
-            VALUES (@Id, jsonb(@Data))
+            INSERT INTO [{BlobTableName}] (id, data)
+            VALUES (@Id, @Data)
             ON CONFLICT(id) DO UPDATE SET
-                data = jsonb(@Data)";
+                data = @Data";
+    }
+
+    /// <summary>
+    /// Generates SQL for retrieving a raw binary blob by ID.
+    /// </summary>
+    public static string GenerateGetBlobSql()
+    {
+        return $"SELECT data FROM [{BlobTableName}] WHERE id = @Id";
+    }
+
+    /// <summary>
+    /// Generates SQL for deleting a raw binary blob by ID.
+    /// </summary>
+    public static string GenerateDeleteBlobSql()
+    {
+        return $"DELETE FROM [{BlobTableName}] WHERE id = @Id";
+    }
+
+    /// <summary>
+    /// Generates SQL to check if a raw binary blob exists by ID.
+    /// </summary>
+    public static string GenerateBlobExistsSql()
+    {
+        return $"SELECT EXISTS(SELECT 1 FROM [{BlobTableName}] WHERE id = @Id)";
     }
 
     /// <summary>
@@ -116,9 +210,9 @@ internal static class SqlGenerator
         }
 
         // Use StringBuilder to avoid O(n) string allocations
-        // Estimated size: ~40 chars per value clause + ~100 chars for statement
-        var sb = new StringBuilder(100 + (count * 40));
-        sb.Append("INSERT INTO [").Append(tableName).Append("] (id, data) VALUES ");
+        // Estimated size: ~45 chars per value clause + ~130 chars for statement
+        var sb = new StringBuilder(130 + (count * 45));
+        sb.Append("INSERT INTO [").Append(tableName).Append("] (id, data, version) VALUES ");
 
         for (int i = 0; i < count; i++)
         {
@@ -126,10 +220,10 @@ internal static class SqlGenerator
             {
                 sb.Append(", ");
             }
-            sb.Append("(@Id").Append(i).Append(", jsonb(@Data").Append(i).Append("))");
+            sb.Append("(@Id").Append(i).Append(", jsonb(@Data").Append(i).Append("), 1)");
         }
 
-        sb.Append(" ON CONFLICT(id) DO UPDATE SET data = excluded.data");
+        sb.Append(" ON CONFLICT(id) DO UPDATE SET data = excluded.data, version = version + 1");
         return sb.ToString();
     }
 

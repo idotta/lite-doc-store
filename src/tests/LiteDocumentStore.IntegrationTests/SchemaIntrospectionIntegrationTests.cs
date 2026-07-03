@@ -99,7 +99,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         var columns = (await _introspector.GetColumnsAsync("Customer")).ToList();
 
         // Assert
-        Assert.Equal(2, columns.Count); // id, data
+        Assert.Equal(3, columns.Count); // id, data, version
 
         var idColumn = columns.FirstOrDefault(c => c.Name == "id");
         Assert.NotNull(idColumn);
@@ -110,6 +110,11 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         Assert.NotNull(dataColumn);
         Assert.Equal("BLOB", dataColumn.Type);
         Assert.True(dataColumn.NotNull);
+
+        var versionColumn = columns.FirstOrDefault(c => c.Name == "version");
+        Assert.NotNull(versionColumn);
+        Assert.Equal("INTEGER", versionColumn.Type);
+        Assert.True(versionColumn.NotNull);
     }
 
     [Fact]

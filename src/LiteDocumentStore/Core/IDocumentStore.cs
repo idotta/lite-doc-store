@@ -37,6 +37,32 @@ public interface IDocumentStore : IAsyncDisposable, IDisposable
     Task<int> UpsertManyAsync<T>(IEnumerable<(string id, T data)> items);
 
     /// <summary>
+    /// Inserts or updates a JSON object using optimistic concurrency (compare-and-swap).
+    /// Pass <paramref name="expectedVersion"/> = 0 to require an insert (the document
+    /// must not exist yet); pass the version obtained from
+    /// <see cref="GetWithVersionAsync{T}"/> to require that the stored row has not been
+    /// modified since it was read.
+    /// </summary>
+    /// <typeparam name="T">Type of the object to store (also used as table name)</typeparam>
+    /// <param name="id">Unique identifier for the object</param>
+    /// <param name="data">The object to store</param>
+    /// <param name="expectedVersion">The version the stored row is expected to have; 0 means "must not exist"</param>
+    /// <returns>The new version of the stored row</returns>
+    /// <exception cref="Exceptions.ConcurrencyException">
+    /// Thrown when the stored row's version differs from <paramref name="expectedVersion"/>
+    /// (including "already exists" for 0 and "does not exist" for non-zero).
+    /// </exception>
+    Task<long> UpsertWithVersionAsync<T>(string id, T data, long expectedVersion);
+
+    /// <summary>
+    /// Retrieves a JSON object by its ID together with its optimistic-concurrency version.
+    /// </summary>
+    /// <typeparam name="T">Type of the object to retrieve (also used as table name)</typeparam>
+    /// <param name="id">Unique identifier of the object</param>
+    /// <returns>The document and its version, or null if not found</returns>
+    Task<VersionedDocument<T>?> GetWithVersionAsync<T>(string id);
+
+    /// <summary>
     /// Retrieves a JSON object by its ID from the document store.
     /// </summary>
     /// <typeparam name="T">Type of the object to retrieve (also used as table name)</typeparam>
@@ -162,6 +188,46 @@ public interface IDocumentStore : IAsyncDisposable, IDisposable
     /// <param name="value">The value to match</param>
     /// <returns>An enumerable of deserialized objects matching the query</returns>
     Task<IEnumerable<T>> QueryAsync<T, TValue>(string jsonPath, TValue value);
+
+    /// <summary>
+    /// Creates the shared blob table used by the raw-binary blob operations.
+    /// Call once during store setup, like <see cref="CreateTableAsync{T}"/>.
+    /// </summary>
+    /// <returns>A task representing the asynchronous operation</returns>
+    Task CreateBlobTableAsync();
+
+    /// <summary>
+    /// Inserts or updates a raw binary blob. Blobs are opaque byte payloads stored
+    /// alongside documents in the same database file; writes participate in the
+    /// connection's active transaction like every other operation, so a blob and its
+    /// related document can be persisted atomically via
+    /// <see cref="ExecuteInTransactionAsync(Func{Task})"/>.
+    /// </summary>
+    /// <param name="id">Unique identifier for the blob</param>
+    /// <param name="data">The binary payload to store</param>
+    /// <returns>A task representing the asynchronous operation</returns>
+    Task PutBlobAsync(string id, ReadOnlyMemory<byte> data);
+
+    /// <summary>
+    /// Retrieves a raw binary blob by its ID.
+    /// </summary>
+    /// <param name="id">Unique identifier of the blob</param>
+    /// <returns>The binary payload, or null if not found</returns>
+    Task<byte[]?> GetBlobAsync(string id);
+
+    /// <summary>
+    /// Deletes a raw binary blob by its ID.
+    /// </summary>
+    /// <param name="id">Unique identifier of the blob to delete</param>
+    /// <returns>True if the blob was deleted, false if it didn't exist</returns>
+    Task<bool> DeleteBlobAsync(string id);
+
+    /// <summary>
+    /// Checks if a raw binary blob exists without reading its payload.
+    /// </summary>
+    /// <param name="id">Unique identifier of the blob to check</param>
+    /// <returns>True if the blob exists, false otherwise</returns>
+    Task<bool> BlobExistsAsync(string id);
 
     /// <summary>
     /// Gets the underlying SQLite connection for advanced operations and raw SQL access.

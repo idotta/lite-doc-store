@@ -44,6 +44,7 @@ src/
     Migrations/      MigrationRunner, IMigration/Migration, SchemaIntrospector
     Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>)
     Exceptions/      LiteDocumentStoreException + Concurrency/Serialization/TableNotFound
+                     (ConcurrencyException is thrown by UpsertWithVersionAsync on CAS conflicts)
   tests/
     LiteDocumentStore.UnitTests/             xUnit, mocked/isolated
     LiteDocumentStore.IntegrationTests/      xUnit, real SQLite (mostly :memory:)
@@ -60,7 +61,7 @@ src/
 
 ## Architecture
 
-**All SQL is centralized in `SqlGenerator`** (static, one method per statement shape). Nothing else hand-writes SQL against document tables. Table schema is uniform: `id TEXT PRIMARY KEY, data BLOB NOT NULL`. The JSONB contract, enforced there, is load-bearing:
+**All SQL is centralized in `SqlGenerator`** (static, one method per statement shape). Nothing else hand-writes SQL against document tables. Table schema is uniform: `id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 0`. The JSONB contract, enforced there, is load-bearing:
 - **Write:** `jsonb(@Data)` — `@Data` is UTF-8 JSON *bytes* from `JsonHelper.SerializeToUtf8Bytes`, not a string.
 - **Read:** `SELECT json(data)` — converts JSONB binary back to JSON text for deserialization. JSONB is binary; a raw `SELECT data` is not deserializable.
 - Table names are always bracketed (`[{tableName}]`) and derived from the type name via `ITableNamingConvention` — never from user input, so there's no injection surface there. All *values* are parameterized.
@@ -68,6 +69,10 @@ src/
 **Connection model.** A `DocumentStore` wraps one `SqliteConnection` and an `ownsConnection` flag. Via the factory it owns and manages the connection (opened + PRAGMAs applied by `DefaultConnectionFactory` from `DocumentStoreOptions`); when disposed it runs `PRAGMA wal_checkpoint(TRUNCATE)` before closing. The DI registration defaults to **Singleton** — one long-lived connection. Every method guards with `ObjectDisposedException.ThrowIf` + `EnsureConnectionOpen`.
 
 **Querying.** Documents are queried by JSON path + value via `QueryAsync<T, TValue>(jsonPath, value)`, which builds `WHERE json_extract(data, '$.Path') = @Value`. The LINQ-predicate `QueryAsync<T>(Expression<Func<T,bool>>)` and the `SelectAsync` projections were **removed** (they required runtime reflection / IL generation that AOT can't support). `CreateIndexAsync`, `CreateCompositeIndexAsync`, and `AddVirtualColumnAsync` still accept LINQ expressions, but only walk **member names** (`DocumentStore.ExtractJsonPath`) to build `$.Path` — no compilation or closure evaluation, so they stay AOT-safe. Property names map **as-is (PascalCase)** to match default STJ serialization. For richer filtering (ranges, virtual-column index seeks, joins), drop to raw SQL via the `Connection` escape hatch.
+
+**Optimistic concurrency.** Every document row carries a `version` (starts at 1 on insert, incremented on every write, including plain `UpsertAsync`/`UpsertManyAsync`). `UpsertWithVersionAsync<T>(id, data, expectedVersion)` is the compare-and-swap write: `expectedVersion == 0` means "insert, must not exist"; non-zero means "update only if the stored version matches". A 0-row write throws `ConcurrencyException` (DocumentId + TableName). `GetWithVersionAsync<T>` returns `VersionedDocument<T>(Data, Version)` for read-modify-write cycles.
+
+**Blobs.** Raw binary payloads live in a reserved `__store_blobs (id TEXT PK, data BLOB NOT NULL)` table (`SqlGenerator.BlobTableName`), created via `CreateBlobTableAsync()`. `PutBlobAsync`/`GetBlobAsync`/`DeleteBlobAsync`/`BlobExistsAsync` — no JSONB conversion, bytes stored verbatim. Blob writes auto-enlist in the active transaction like every other command, so a document and its blob can commit atomically inside `ExecuteInTransactionAsync`.
 
 **Transactions.** `ExecuteInTransactionAsync` wraps `BeginTransaction` with commit/rollback. Commands are created with `SqliteConnection.CreateCommand`, which auto-enlists the connection's active transaction, so document operations invoked inside the action participate automatically. One transaction per connection (no nesting) — batch writes go through `UpsertManyAsync`/`DeleteManyAsync`, which build a single multi-row statement with explicit `@Id{i}`/`@Data{i}` parameters.
 
