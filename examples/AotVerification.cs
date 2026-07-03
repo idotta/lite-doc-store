@@ -39,11 +39,11 @@ await store.CreateTableAsync<Person>();
 
 // Writes: single + bulk
 await store.UpsertAsync("p1", new Person("p1", "Ada Lovelace", "ada@example.com", 36));
-await store.UpsertManyAsync(new (string, Person)[]
-{
+await store.UpsertManyAsync(
+[
     ("p2", new Person("p2", "Alan Turing", "alan@example.com", 41)),
     ("p3", new Person("p3", "Grace Hopper", "grace@example.com", 85)),
-});
+]);
 
 // Reads
 var ada = await store.GetAsync<Person>("p1");
