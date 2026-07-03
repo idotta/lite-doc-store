@@ -1,7 +1,7 @@
 # LiteDocumentStore
 
-[![CI](https://github.com/idotta/jsonb-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/jsonb-store/actions/workflows/ci.yml)
-[![Code Quality](https://github.com/idotta/jsonb-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/jsonb-store/actions/workflows/code-quality.yml)
+[![CI](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml)
+[![Code Quality](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml)
 [![NuGet](https://img.shields.io/nuget/v/LiteDocumentStore.svg)](https://www.nuget.org/packages/LiteDocumentStore/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
