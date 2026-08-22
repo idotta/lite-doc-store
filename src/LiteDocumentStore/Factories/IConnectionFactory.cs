@@ -20,8 +20,14 @@ public interface IConnectionFactory
     /// Creates and opens a new SQLite connection.
     /// </summary>
     /// <param name="options">Configuration options for the connection</param>
+    /// <param name="cancellationToken">
+    /// Cancels a queued open. Cannot interrupt one already under way — Microsoft.Data.Sqlite
+    /// does SQLite I/O synchronously.
+    /// </param>
     /// <returns>An open SQLite connection</returns>
-    Task<SqliteConnection> CreateConnectionAsync(DocumentStoreOptions options);
+    Task<SqliteConnection> CreateConnectionAsync(
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Configures a SQLite connection with optimal performance settings

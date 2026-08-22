@@ -5,6 +5,7 @@ namespace LiteDocumentStore.UnitTests;
 /// <summary>
 /// Unit tests for the SQL shapes backing optimistic concurrency and blob storage.
 /// </summary>
+[Trait("Category", "Unit")]
 public class VersionAndBlobSqlTests
 {
     [Fact]

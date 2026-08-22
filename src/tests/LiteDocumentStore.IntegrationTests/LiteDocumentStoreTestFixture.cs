@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -77,17 +76,14 @@ public class LiteDocumentStoreTestFixture : IAsyncLifetime
     /// <summary>
     /// Creates a new in-memory DocumentStore instance.
     /// </summary>
+    /// <remarks>
+    /// Uses <see cref="DocumentStoreOptions.ForInMemory"/>: a uniquely named shared-cache
+    /// in-memory database, private to this store but reachable from every connection in its
+    /// pool. A plain <c>Data Source=:memory:</c> is rejected by the store.
+    /// </remarks>
     public async Task<IDocumentStore> CreateInMemoryStoreAsync()
     {
-        var options = new DocumentStoreOptionsBuilder()
-            .UseInMemory()
-            .Build();
-
-        var factory = new DocumentStoreFactory();
-        var store = await factory.CreateAsync(options);
-        _stores.Add(store);
-
-        return store;
+        return await CreateStoreAsync(DocumentStoreOptions.ForInMemory());
     }
 
     /// <summary>
@@ -98,20 +94,10 @@ public class LiteDocumentStoreTestFixture : IAsyncLifetime
         var testDbPath = Path.Combine(Path.GetTempPath(), $"test_{Guid.NewGuid()}.db");
         _testDbPaths.Add(testDbPath);
 
-        var builder = new DocumentStoreOptionsBuilder()
-            .UseFile(testDbPath);
+        var options = DocumentStoreOptions.ForFile(testDbPath);
+        options.EnableWalMode = enableWal;
 
-        if (enableWal)
-        {
-            builder.WithWalMode(true);
-        }
-
-        var options = builder.Build();
-        var factory = new DocumentStoreFactory();
-        var store = await factory.CreateAsync(options);
-        _stores.Add(store);
-
-        return store;
+        return await CreateStoreAsync(options);
     }
 
     /// <summary>
@@ -120,15 +106,7 @@ public class LiteDocumentStoreTestFixture : IAsyncLifetime
     /// </summary>
     public async Task<IDocumentStore> CreateSharedInMemoryStoreAsync(string sharedName = "testdb")
     {
-        var options = new DocumentStoreOptionsBuilder()
-            .UseSharedInMemory(sharedName)
-            .Build();
-
-        var factory = new DocumentStoreFactory();
-        var store = await factory.CreateAsync(options);
-        _stores.Add(store);
-
-        return store;
+        return await CreateStoreAsync(DocumentStoreOptions.ForSharedInMemory(sharedName));
     }
 
     /// <summary>

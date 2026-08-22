@@ -10,8 +10,12 @@ public sealed class DocumentStoreOptions
 {
     /// <summary>
     /// Gets or sets the database file path or connection string.
-    /// Use ":memory:" for in-memory database or "file::memory:?cache=shared" for shared in-memory cache.
     /// </summary>
+    /// <remarks>
+    /// A <em>private</em> in-memory database (<c>":memory:"</c>, or <c>Mode=Memory</c> without
+    /// <c>Cache=Shared</c>) is rejected: each pooled connection would get its own empty copy.
+    /// Use <see cref="ForInMemory"/> or <see cref="ForSharedInMemory"/> instead.
+    /// </remarks>
     public string ConnectionString { get; set; } = string.Empty;
 
     /// <summary>
@@ -54,6 +58,29 @@ public sealed class DocumentStoreOptions
     /// Default is true.
     /// </summary>
     public bool EnableForeignKeys { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the maximum number of SQLite connections the store keeps open.
+    /// </summary>
+    /// <remarks>
+    /// The store rents a connection per operation from an internal pool, so this caps how
+    /// many operations can touch the database concurrently; further callers wait for a free
+    /// connection. SQLite serializes writers regardless of this value, so raising it helps
+    /// read concurrency (in WAL mode) more than write throughput. Default is the processor
+    /// count, clamped to [2, 16].
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is less than 1</exception>
+    public int MaxPoolSize
+    {
+        get;
+        // Validated here too, not just in the builder: SemaphoreSlim's own exception names
+        // "maxCount" and never mentions which option was wrong.
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            field = value;
+        }
+    } = Math.Clamp(Environment.ProcessorCount, 2, 16);
 
     /// <summary>
     /// Gets or sets the default table naming convention.
@@ -128,16 +155,24 @@ public sealed class DocumentStoreOptions
     }
 
     /// <summary>
-    /// Creates options for an in-memory SQLite database.
-    /// Data will be lost when the connection closes.
+    /// Creates options for a private in-memory SQLite database.
+    /// Data is lost when the store is disposed.
     /// </summary>
+    /// <remarks>
+    /// The store pools connections, and a plain <c>Data Source=:memory:</c> gives every
+    /// connection its own private database — the second operation would not see the first
+    /// one's writes. So this uses a uniquely named shared-cache in-memory database instead:
+    /// private to this set of options, but visible to every connection in the store's pool.
+    /// Use <see cref="ForSharedInMemory(string)"/> when several stores must share one
+    /// in-memory database by name.
+    /// </remarks>
     /// <returns>DocumentStoreOptions configured for in-memory storage</returns>
     public static DocumentStoreOptions ForInMemory()
     {
         return new DocumentStoreOptions
         {
-            ConnectionString = "Data Source=:memory:",
-            EnableWalMode = false, // WAL not supported for :memory:
+            ConnectionString = $"Data Source=file:lds-{Guid.NewGuid():N}?mode=memory&cache=shared",
+            EnableWalMode = false, // WAL not supported for in-memory
             SynchronousMode = SynchronousMode.Off // Maximum performance for in-memory
         };
     }
@@ -179,6 +214,7 @@ public sealed class DocumentStoreOptions
             CacheSize = CacheSize,
             BusyTimeoutMs = BusyTimeoutMs,
             EnableForeignKeys = EnableForeignKeys,
+            MaxPoolSize = MaxPoolSize,
             TableNamingConvention = TableNamingConvention,
             AdditionalPragmas = [.. AdditionalPragmas],
             SerializerOptions = SerializerOptions

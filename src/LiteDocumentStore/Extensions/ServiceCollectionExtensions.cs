@@ -7,11 +7,17 @@ namespace LiteDocumentStore;
 /// <summary>
 /// Extension methods for configuring LiteDocumentStore services in an <see cref="IServiceCollection"/>.
 /// </summary>
+/// <remarks>
+/// <see cref="IDocumentStore"/> is always registered as a singleton. The store is thread-safe
+/// and rents a connection per operation from its own pool, so there is nothing for a scoped or
+/// transient registration to isolate — it would only multiply connection pools. Size the pool
+/// with <see cref="DocumentStoreOptions.MaxPoolSize"/> instead, and use
+/// <see cref="IDocumentStore.BeginTransactionAsync"/> for per-request units of work.
+/// </remarks>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds LiteDocumentStore services to the specified <see cref="IServiceCollection"/> with a singleton document store.
-    /// Uses a single long-lived connection for optimal performance.
+    /// Adds LiteDocumentStore services with a singleton, thread-safe document store.
     /// </summary>
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="configureOptions">A delegate to configure the <see cref="DocumentStoreOptions"/></param>
@@ -20,61 +26,34 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         Action<DocumentStoreOptions> configureOptions)
     {
-        return services.AddLiteDocumentStore(configureOptions, ServiceLifetime.Singleton);
-    }
-
-    /// <summary>
-    /// Adds LiteDocumentStore services to the specified <see cref="IServiceCollection"/> with configurable lifetime.
-    /// </summary>
-    /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
-    /// <param name="configureOptions">A delegate to configure the <see cref="DocumentStoreOptions"/></param>
-    /// <param name="lifetime">The service lifetime (Singleton recommended for single long-lived connection, Scoped for connection per request)</param>
-    /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
-    public static IServiceCollection AddLiteDocumentStore(
-        this IServiceCollection services,
-        Action<DocumentStoreOptions> configureOptions,
-        ServiceLifetime lifetime)
-    {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         var options = new DocumentStoreOptions();
         configureOptions(options);
 
-        return services.AddLiteDocumentStore(options, lifetime);
+        return services.AddLiteDocumentStore(options);
     }
 
     /// <summary>
-    /// Adds LiteDocumentStore services to the specified <see cref="IServiceCollection"/> with pre-configured options.
+    /// Adds LiteDocumentStore services with pre-configured options.
     /// </summary>
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="options">The pre-configured <see cref="DocumentStoreOptions"/></param>
-    /// <param name="lifetime">The service lifetime (default: Singleton)</param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
     public static IServiceCollection AddLiteDocumentStore(
         this IServiceCollection services,
-        DocumentStoreOptions options,
-        ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
-        // Register core dependencies as singletons (stateless, reusable)
-        services.TryAddSingleton<IConnectionFactory, DefaultConnectionFactory>();
-        services.TryAddSingleton<ITableNamingConvention, DefaultTableNamingConvention>();
+        AddCoreServices(services);
 
-        // Register the document store factory
-        services.TryAddSingleton<IDocumentStoreFactory>(sp => new DocumentStoreFactory(
-            sp.GetRequiredService<IConnectionFactory>(),
-            sp.GetRequiredService<ITableNamingConvention>(),
-            sp.GetService<ILoggerFactory>()));
-
-        // Register the DocumentStore with the specified lifetime
-        // The store is created via the factory and owns its connection
-        services.TryAdd(ServiceDescriptor.Describe(
-            typeof(IDocumentStore),
-            sp => sp.GetRequiredService<IDocumentStoreFactory>().Create(options),
-            lifetime));
+        // One store per database, shared by every consumer: it is thread-safe and owns the
+        // connection pool.
+        services.TryAddSingleton<IDocumentStore>(
+            sp => sp.GetRequiredService<IDocumentStoreFactory>().Create(options));
 
         return services;
     }
@@ -87,13 +66,11 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="serviceKey">The key to identify this store instance</param>
     /// <param name="configureOptions">A delegate to configure the <see cref="DocumentStoreOptions"/></param>
-    /// <param name="lifetime">The service lifetime (default: Singleton)</param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
     public static IServiceCollection AddKeyedLiteDocumentStore(
         this IServiceCollection services,
         object serviceKey,
-        Action<DocumentStoreOptions> configureOptions,
-        ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        Action<DocumentStoreOptions> configureOptions)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(serviceKey);
@@ -102,7 +79,7 @@ public static class ServiceCollectionExtensions
         var options = new DocumentStoreOptions();
         configureOptions(options);
 
-        return services.AddKeyedLiteDocumentStore(serviceKey, options, lifetime);
+        return services.AddKeyedLiteDocumentStore(serviceKey, options);
     }
 
     /// <summary>
@@ -111,35 +88,37 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="serviceKey">The key to identify this store instance</param>
     /// <param name="options">The pre-configured <see cref="DocumentStoreOptions"/></param>
-    /// <param name="lifetime">The service lifetime (default: Singleton)</param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
     public static IServiceCollection AddKeyedLiteDocumentStore(
         this IServiceCollection services,
         object serviceKey,
-        DocumentStoreOptions options,
-        ServiceLifetime lifetime = ServiceLifetime.Singleton)
+        DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(serviceKey);
         ArgumentNullException.ThrowIfNull(options);
 
-        // Register core dependencies as singletons (stateless, reusable)
+        AddCoreServices(services);
+
+        services.TryAddKeyedSingleton<IDocumentStore>(
+            serviceKey,
+            (sp, _) => sp.GetRequiredService<IDocumentStoreFactory>().Create(options));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the stateless dependencies shared by every store (connection factory, naming
+    /// convention, store factory).
+    /// </summary>
+    private static void AddCoreServices(IServiceCollection services)
+    {
         services.TryAddSingleton<IConnectionFactory, DefaultConnectionFactory>();
         services.TryAddSingleton<ITableNamingConvention, DefaultTableNamingConvention>();
 
-        // Register the document store factory (shared across all keyed stores)
         services.TryAddSingleton<IDocumentStoreFactory>(sp => new DocumentStoreFactory(
             sp.GetRequiredService<IConnectionFactory>(),
             sp.GetRequiredService<ITableNamingConvention>(),
             sp.GetService<ILoggerFactory>()));
-
-        // Register the keyed DocumentStore
-        services.Add(ServiceDescriptor.DescribeKeyed(
-            typeof(IDocumentStore),
-            serviceKey,
-            (sp, _) => sp.GetRequiredService<IDocumentStoreFactory>().Create(options),
-            lifetime));
-
-        return services;
     }
 }

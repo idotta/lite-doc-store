@@ -49,14 +49,20 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
-    /// Configures the database to use an in-memory SQLite database.
-    /// Data will be lost when the connection closes.
+    /// Configures the database to use a private in-memory SQLite database.
+    /// Data is lost when the store is disposed.
     /// </summary>
+    /// <remarks>
+    /// Uses a uniquely named shared-cache database rather than <c>:memory:</c>, so that every
+    /// connection in the store's pool sees the same data. See
+    /// <see cref="DocumentStoreOptions.ForInMemory"/>.
+    /// </remarks>
     /// <returns>This builder for method chaining</returns>
     public DocumentStoreOptionsBuilder UseInMemory()
     {
-        _options.ConnectionString = "Data Source=:memory:";
-        _options.EnableWalMode = false; // WAL not supported for :memory:
+        var inMemory = DocumentStoreOptions.ForInMemory();
+        _options.ConnectionString = inMemory.ConnectionString;
+        _options.EnableWalMode = false; // WAL not supported for in-memory
         _options.SynchronousMode = SynchronousMode.Off;
         return this;
     }
@@ -161,6 +167,22 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
+    /// Sets the maximum number of connections the store keeps open.
+    /// </summary>
+    /// <param name="maxPoolSize">Maximum pooled connections (must be at least 1)</param>
+    /// <returns>This builder for method chaining</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="maxPoolSize"/> is less than 1.
+    /// </exception>
+    public DocumentStoreOptionsBuilder WithMaxPoolSize(int maxPoolSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxPoolSize, 1);
+
+        _options.MaxPoolSize = maxPoolSize;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the table naming convention.
     /// </summary>
     /// <param name="convention">The table naming convention to use</param>
@@ -246,6 +268,10 @@ public sealed class DocumentStoreOptionsBuilder
         if (string.IsNullOrEmpty(_options.ConnectionString))
         {
             throw new InvalidOperationException("Connection string must be set before building options.");
+        }
+        if (_options.MaxPoolSize < 1)
+        {
+            throw new InvalidOperationException("Max pool size must be at least 1.");
         }
         return _options.Clone();
     }

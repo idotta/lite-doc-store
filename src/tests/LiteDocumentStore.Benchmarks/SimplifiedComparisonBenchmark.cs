@@ -51,7 +51,12 @@ public class SimplifiedComparisonBenchmark
         var services = new ServiceCollection();
         services.AddLiteDocumentStore(options =>
         {
-            options.ConnectionString = "Data Source=:memory:";
+            // The store pools connections, so a private "Data Source=:memory:" is rejected:
+            // every pooled connection would open its own empty database. This is the same
+            // uniquely named shared-cache memory database DocumentStoreOptions.ForInMemory()
+            // builds, so each benchmark instance still gets an isolated database.
+            options.ConnectionString =
+                $"Data Source=file:bench-simplified-{Guid.NewGuid():N}?mode=memory&cache=shared";
             options.EnableWalMode = false;
         });
 

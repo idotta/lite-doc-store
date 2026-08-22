@@ -57,7 +57,8 @@ public class WalConcurrencyIntegrationTests : IDisposable
         await store.CreateTableAsync<Person>();
 
         // Assert - Verify WAL mode is enabled
-        var journalMode = await store.Connection.QueryFirstStringAsync("PRAGMA journal_mode");
+        var journalMode = await store.ExecuteRawAsync((connection, _) =>
+            connection.QueryFirstStringAsync("PRAGMA journal_mode"));
         Assert.Equal("wal", journalMode, StringComparer.OrdinalIgnoreCase);
 
         // Verify WAL file is created
@@ -347,9 +348,9 @@ public class WalConcurrencyIntegrationTests : IDisposable
         try
         {
             // Start a transaction in writer but don't commit yet
-            await writer.ExecuteInTransactionAsync(async () =>
+            await writer.ExecuteInTransactionAsync(async tx =>
             {
-                await writer.UpsertAsync("person-1", new Person
+                await tx.UpsertAsync("person-1", new Person
                 {
                     Name = "In Transaction",
                     Age = 30,

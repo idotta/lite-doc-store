@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -6,29 +5,27 @@ namespace LiteDocumentStore.IntegrationTests;
 public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
 {
     private IDocumentStore _store = null!;
-    private SqliteConnection _connection = null!;
-    private SchemaIntrospector _introspector = null!;
 
     public async Task InitializeAsync()
     {
-        _connection = new SqliteConnection("Data Source=:memory:");
-        await _connection.OpenAsync();
-
-        _store = new DocumentStore(_connection, ownsConnection: false);
-        _introspector = new SchemaIntrospector(_connection);
+        _store = await new DocumentStoreFactory().CreateAsync(DocumentStoreOptions.ForInMemory());
     }
 
     public async Task DisposeAsync()
     {
         await _store.DisposeAsync();
-        await _connection.DisposeAsync();
     }
+
+    // SchemaIntrospector works on a SqliteConnection, so it is built on the store's own
+    // connection for the duration of the callback.
+    private Task<TResult> IntrospectAsync<TResult>(Func<SchemaIntrospector, Task<TResult>> operation) =>
+        _store.ExecuteRawAsync((connection, _) => operation(new SchemaIntrospector(connection)));
 
     [Fact]
     public async Task GetTablesAsync_WithNoTables_ReturnsEmpty()
     {
         // Act
-        var tables = await _introspector.GetTablesAsync();
+        var tables = await IntrospectAsync(introspector => introspector.GetTablesAsync());
 
         // Assert
         Assert.Empty(tables);
@@ -42,7 +39,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Order>();
 
         // Act
-        var tables = (await _introspector.GetTablesAsync()).ToList();
+        var tables = (await IntrospectAsync(introspector => introspector.GetTablesAsync())).ToList();
 
         // Assert
         Assert.True(tables.Count >= 2);
@@ -55,11 +52,11 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     {
         // Arrange - a table whose name contains ']' would break out of the [ ] identifier quoting
         // in the PRAGMA statement if the bracket were not escaped.
-        await _connection.ExecuteAsync(
-            "CREATE TABLE \"weird]name\" (id TEXT PRIMARY KEY, val TEXT)");
+        await _store.ExecuteRawAsync((connection, _) => connection.ExecuteAsync(
+            "CREATE TABLE \"weird]name\" (id TEXT PRIMARY KEY, val TEXT)"));
 
         // Act
-        var columns = (await _introspector.GetColumnsAsync("weird]name")).ToList();
+        var columns = (await IntrospectAsync(introspector => introspector.GetColumnsAsync("weird]name"))).ToList();
 
         // Assert - the PRAGMA resolved the real table rather than erroring or hitting the wrong one
         Assert.Contains(columns, c => c.Name == "id");
@@ -73,7 +70,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Customer>();
 
         // Act
-        var exists = await _introspector.TableExistsAsync("Customer");
+        var exists = await IntrospectAsync(introspector => introspector.TableExistsAsync("Customer"));
 
         // Assert
         Assert.True(exists);
@@ -83,7 +80,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     public async Task TableExistsAsync_WithNonExistingTable_ReturnsFalse()
     {
         // Act
-        var exists = await _introspector.TableExistsAsync("NonExistent");
+        var exists = await IntrospectAsync(introspector => introspector.TableExistsAsync("NonExistent"));
 
         // Assert
         Assert.False(exists);
@@ -96,7 +93,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Customer>();
 
         // Act
-        var columns = (await _introspector.GetColumnsAsync("Customer")).ToList();
+        var columns = (await IntrospectAsync(introspector => introspector.GetColumnsAsync("Customer"))).ToList();
 
         // Assert
         Assert.Equal(3, columns.Count); // id, data, version
@@ -124,7 +121,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Customer>();
 
         // Act
-        var indexes = (await _introspector.GetIndexesAsync("Customer")).ToList();
+        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync("Customer"))).ToList();
 
         // Assert - Primary key index may or may not be included depending on SQLite version
         // So we just check it doesn't throw
@@ -139,7 +136,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateIndexAsync<Customer>(c => c.Email, "idx_customer_email");
 
         // Act
-        var indexes = (await _introspector.GetIndexesAsync("Customer")).ToList();
+        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync("Customer"))).ToList();
 
         // Assert
         Assert.Contains(indexes, i => i.Name == "idx_customer_email");
@@ -155,7 +152,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateIndexAsync<Order>(o => o.CustomerId, "idx_order_customer");
 
         // Act
-        var indexes = (await _introspector.GetIndexesAsync()).ToList();
+        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync())).ToList();
 
         // Assert
         Assert.Contains(indexes, i => i.Name == "idx_customer_email");
@@ -170,7 +167,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.UpsertAsync("cust-1", new Customer { Name = "John", Email = "john@test.com" });
 
         // Act
-        var stats = await _introspector.GetDatabaseStatisticsAsync();
+        var stats = await IntrospectAsync(introspector => introspector.GetDatabaseStatisticsAsync());
 
         // Assert
         Assert.True(stats.PageCount > 0);
