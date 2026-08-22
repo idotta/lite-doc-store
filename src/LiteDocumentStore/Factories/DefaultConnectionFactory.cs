@@ -23,9 +23,20 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         ArgumentNullException.ThrowIfNull(options);
 
         var connection = new SqliteConnection(options.ConnectionString);
-        connection.Open();
-        ConfigureConnection(connection, options);
-        return connection;
+
+        try
+        {
+            connection.Open();
+            ConfigureConnection(connection, options);
+            return connection;
+        }
+        catch
+        {
+            // Open can succeed and a PRAGMA still throw, and nothing else holds a reference to
+            // the connection yet — without this the handle stays open until finalization.
+            connection.Dispose();
+            throw;
+        }
     }
 
     /// <inheritdoc/>
@@ -36,9 +47,20 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         ArgumentNullException.ThrowIfNull(options);
 
         var connection = new SqliteConnection(options.ConnectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, options, cancellationToken).ConfigureAwait(false);
-        return connection;
+
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await ConfigureConnectionAsync(connection, options, cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            // See CreateConnection — cancellation between the open and the PRAGMAs strands the
+            // handle the same way a failing PRAGMA does.
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <inheritdoc/>

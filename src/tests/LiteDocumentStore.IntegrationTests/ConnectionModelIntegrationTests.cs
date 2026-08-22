@@ -370,6 +370,25 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
         Assert.Equal("shared", (await reader.GetAsync<Doc>("shared"))?.Name);
     }
 
+    [Fact]
+    public async Task CreateAsync_WhenConnectionConfigurationFails_LeavesNoOpenHandle()
+    {
+        // The connection is opened before it is PRAGMA-configured, so a failing PRAGMA used to
+        // strand an open handle inside the factory — the pool never sees that connection and the
+        // store it belongs to is disposed on the way out.
+        var path = Path.Combine(Path.GetTempPath(), $"lds-connmodel-{Guid.NewGuid():N}.db");
+        _databasePaths.Add(path);
+
+        var options = DocumentStoreOptions.ForFile(path);
+        options.AdditionalPragmas.Add("PRAGMA journal_mode = NOT_A_MODE(");
+
+        await Assert.ThrowsAsync<SqliteException>(() => new DocumentStoreFactory().CreateAsync(options));
+
+        // Throws IOException on Windows while any connection still holds the database file.
+        File.Delete(path);
+        Assert.False(File.Exists(path));
+    }
+
     public void Dispose()
     {
         foreach (var path in _databasePaths)

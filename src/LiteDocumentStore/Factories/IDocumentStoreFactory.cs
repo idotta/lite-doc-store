@@ -20,6 +20,9 @@ public interface IDocumentStoreFactory
     /// The returned store owns its connection pool and should be disposed when no longer needed.
     /// </summary>
     /// <param name="options">Configuration options for the store</param>
+    /// <param name="cancellationToken">Token that cancels opening the store's first connection</param>
     /// <returns>A task containing the new document store instance</returns>
-    Task<IDocumentStore> CreateAsync(DocumentStoreOptions options);
+    Task<IDocumentStore> CreateAsync(
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default);
 }

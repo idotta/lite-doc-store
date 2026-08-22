@@ -120,6 +120,25 @@ public sealed class CancellationIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateAsync_WithAnAlreadyCancelledToken_LeavesNoOpenHandle()
+    {
+        // The factory opens the pool's first connection, so it is a cancellation point like any
+        // other async member. Microsoft.Data.Sqlite opens the file before the token is observed,
+        // so what matters is that nothing is still holding it afterwards.
+        var path = Path.Combine(Path.GetTempPath(), $"lds-cancel-{Guid.NewGuid():N}.db");
+        _databasePaths.Add(path);
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => new DocumentStoreFactory().CreateAsync(DocumentStoreOptions.ForFile(path), cts.Token));
+
+        // Throws IOException on Windows while any connection still holds the database file.
+        File.Delete(path);
+    }
+
+    [Fact]
     public async Task SchemaIntrospector_WithAnAlreadyCancelledToken_Throws()
     {
         await using var store = await CreateFileStoreAsync();

@@ -119,6 +119,17 @@ public sealed class CancellationTests
     }
 
     [Fact]
+    public async Task CreateAsync_WithAnAlreadyCancelledToken_Throws()
+    {
+        // The factory opens the pool's first connection, so it is an async member like any other.
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => new DocumentStoreFactory().CreateAsync(DocumentStoreOptions.ForInMemory(), cts.Token));
+    }
+
+    [Fact]
     public async Task IsHealthyAsync_WithAnAlreadyCancelledToken_ReturnsFalse()
     {
         // It reports failure rather than throwing, so a health endpoint stays a health endpoint.

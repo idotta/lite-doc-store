@@ -64,13 +64,15 @@ public sealed class DocumentStoreFactory : IDocumentStoreFactory
     }
 
     /// <inheritdoc/>
-    public async Task<IDocumentStore> CreateAsync(DocumentStoreOptions options)
+    public async Task<IDocumentStore> CreateAsync(
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default)
     {
         var store = CreateStore(options);
 
         try
         {
-            await store.InitializeAsync().ConfigureAwait(false);
+            await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
             return store;
         }
         catch
