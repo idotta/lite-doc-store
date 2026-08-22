@@ -45,8 +45,10 @@ src/
     Extensions/      ServiceCollectionExtensions (AddLiteDocumentStore, keyed variant)
     Migrations/      MigrationRunner, IMigration/Migration, SchemaIntrospector
     Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>)
-    Exceptions/      LiteDocumentStoreException + Concurrency/Serialization/TableNotFound
-                     (ConcurrencyException is thrown by UpsertWithVersionAsync on CAS conflicts)
+    Exceptions/      LiteDocumentStoreException + Concurrency/Serialization/TableNotFound/
+                     UnsupportedSqliteVersion (ConcurrencyException is thrown by
+                     UpsertWithVersionAsync on CAS conflicts; UnsupportedSqliteVersionException
+                     by the 3.45+ guard when a connection is opened)
   tests/
     LiteDocumentStore.UnitTests/             xUnit, mocked/isolated
     LiteDocumentStore.IntegrationTests/      xUnit, real SQLite (mostly :memory:)
@@ -88,6 +90,8 @@ Measured cost of the model (`tests/LiteDocumentStore.Benchmarks/ConnectionModelB
 In-memory users pay a further ~8% for shared-cache locking, which pooling requires (see below). If the per-op allocation ever matters, the closure in `RunAsync` can be removed by inlining rent/dispose into each of the 20 operations — measured as the smaller half of the +2.1%, so it was not judged worth ~80 lines.
 
 Because connections are pooled, a **private** in-memory database is rejected: `Data Source=:memory:` (or `Mode=Memory` without `Cache=Shared`) throws `ArgumentException`, since each pooled connection would get its own empty database. `DocumentStoreOptions.ForInMemory()` therefore returns a *uniquely named shared-cache* memory DB, and the pool eagerly opens one connection at initialization to keep it alive. Caveat: shared-cache in-memory DBs use table-level locks, so overlapping **write transactions** on one in-memory database fail with `SQLITE_LOCKED`, which `busy_timeout` does not retry — concurrency tests need a real file DB.
+
+**SQLite version guard.** `jsonb()` is the library's core premise and shipped in SQLite 3.45.0, so `SqliteConnectionPool` runs `SqliteVersionGuard.EnsureSupported(Async)` on **every physical connection as it is opened** and throws `UnsupportedSqliteVersionException` (carrying `ActualVersion` + `MinimumVersion`) instead of letting the first write fail with `no such function: jsonb`. The guard lives in the pool, not in `DefaultConnectionFactory`, because `IConnectionFactory` is public — a consumer-supplied factory would otherwise open unguarded connections. The async path reads the version through `SchemaIntrospector.GetSqliteVersionAsync`; the sync path queries `SELECT sqlite_version()` directly (the introspector is async-only). The result is deliberately **not cached**: it is process-wide constant, but a pool opens at most `MaxPoolSize` connections in its lifetime, so caching would trade process-wide mutable state for a handful of sub-microsecond queries. `IsHealthyAsync` re-checks through the same guard and maps the exception to `false` at warning level. Because SQLite lets a user-defined function override a built-in, the too-old path is actually testable — `SqliteVersionGuardIntegrationTests` spoofs `sqlite_version()` to `3.44.2`.
 
 Disposal runs `PRAGMA wal_checkpoint(TRUNCATE)` on a rented connection, then closes the pool. That rent is **bounded** (`DocumentStore.WalCheckpointRentTimeout`, 5 s) — an unbounded wait would let one leaked lease hang `Dispose` forever — and the checkpoint is skipped on timeout, which costs only the `TRUNCATE`: SQLite checkpoints the WAL itself when the last connection closes. Same reason the checkpoint is gated on `EnableWalMode` up front, so a non-WAL store pays no rent + `PRAGMA journal_mode` round trip per dispose; the trade-off is that an existing WAL database opened with `EnableWalMode = false` skips it.
 

@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Text.Json;
+using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -268,36 +269,25 @@ internal sealed class DocumentStore : IDocumentStore
             await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
             var connection = lease.Connection;
 
-            // Verify SQLite version supports JSONB (3.45+)
-            var versionString = await connection.QueryFirstStringAsync(
-                "SELECT sqlite_version()", cancellationToken).ConfigureAwait(false);
-
-            if (string.IsNullOrWhiteSpace(versionString))
-            {
-                _logger.LogWarning("Health check failed: Could not retrieve SQLite version");
-                return false;
-            }
-
-            if (!Version.TryParse(versionString, out var version))
-            {
-                _logger.LogWarning("Health check failed: Invalid SQLite version format: {Version}", versionString);
-                return false;
-            }
-
-            var minVersion = new Version(3, 45, 0);
-            if (version < minVersion)
-            {
-                _logger.LogWarning(
-                    "Health check failed: SQLite version {Version} does not support JSONB (requires {MinVersion}+)",
-                    version, minVersion);
-                return false;
-            }
+            // Re-check rather than trust the open-time guard: the health endpoint's job is to
+            // report on the connection it is holding now, and this also covers a store built on
+            // a consumer-supplied IConnectionFactory that never went through the pool.
+            var version = await SqliteVersionGuard
+                .EnsureSupportedAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
 
             // Test basic query execution
             await connection.ExecuteScalarAsync<long>("SELECT 1", cancellationToken).ConfigureAwait(false);
 
             _logger.LogDebug("Health check passed: SQLite version {Version}", version);
             return true;
+        }
+        catch (UnsupportedSqliteVersionException ex)
+        {
+            // A too-old library is a configuration problem, not a fault: report it as unhealthy
+            // at warning level rather than as an unexpected exception.
+            _logger.LogWarning(ex, "Health check failed: unsupported SQLite version");
+            return false;
         }
         catch (Exception ex)
         {
