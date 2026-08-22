@@ -5,8 +5,8 @@ using Xunit;
 namespace LiteDocumentStore.IntegrationTests;
 
 /// <summary>
-/// Regression tests for the pooled connection model (AUDIT P0-1): the store must be safe to
-/// share across threads, and transactions must be isolated from one another.
+/// Regression tests for the pooled connection model: the store must be safe to share across
+/// threads, and transactions must be isolated from one another.
 /// </summary>
 /// <remarks>
 /// These use real file databases. A shared-cache in-memory database locks at table granularity,

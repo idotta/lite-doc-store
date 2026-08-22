@@ -6,8 +6,8 @@ using Xunit;
 namespace LiteDocumentStore.UnitTests;
 
 /// <summary>
-/// Unit tests for <see cref="SqliteConnectionPool"/> — the component the pooled connection
-/// model (AUDIT P0-1) rests on.
+/// Unit tests for <see cref="SqliteConnectionPool"/> — the component that makes the store
+/// thread-safe by renting a connection per operation.
 /// </summary>
 [Trait("Category", "Unit")]
 public sealed class SqliteConnectionPoolTests
