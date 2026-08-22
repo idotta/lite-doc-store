@@ -60,3 +60,5 @@ nunit-*.xml
 BenchmarkDotNet.Artifacts
 
 .vs/
+# Native AOT publish output used by CI (ci.yml aot-publish job)
+aot-out/

@@ -27,15 +27,18 @@ The goal is NOT an opaque document database. Users should seamlessly mix documen
 ## Project Structure
 
 ```
-src/
-├── LiteDocumentStore/                    # Main library
-│   ├── Core/DocumentStore.cs             # Core store implementation
-│   ├── Core/SqliteCommandExtensions.cs   # Raw ADO.NET helpers (replaced Dapper)
-│   └── Serialization/JsonHelper.cs       # AOT-safe JSON serialization
-└── tests/
-    ├── LiteDocumentStore.UnitTests/      # Unit tests (mocked)
-    └── LiteDocumentStore.IntegrationTests/ # Integration tests (real SQLite)
-    └── LiteDocumentStore.Benchmarks/ # Benchmark tests
+LiteDocumentStore.slnx                     # Solution (repository root)
+src/LiteDocumentStore/                     # Main library
+├── Core/DocumentStore.cs                  # Core store implementation
+├── Core/SqliteCommandExtensions.cs        # Raw ADO.NET helpers (replaced Dapper)
+└── Serialization/JsonHelper.cs            # AOT-safe JSON serialization
+tests/
+├── LiteDocumentStore.UnitTests/           # Unit tests (mocked)
+└── LiteDocumentStore.IntegrationTests/    # Integration tests (real SQLite)
+benchmarks/LiteDocumentStore.Benchmarks/   # BenchmarkDotNet
+examples/
+├── Examples/                              # Every sample, one console app
+└── AotVerification/                       # Native AOT gate (published + run by CI)
 ```
 
 ## When Modifying This Project

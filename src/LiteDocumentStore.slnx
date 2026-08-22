@@ -1,8 +1,0 @@
-<Solution>
-  <Folder Name="/tests/">
-    <Project Path="tests/LiteDocumentStore.Benchmarks/LiteDocumentStore.Benchmarks.csproj" />
-    <Project Path="tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.IntegrationTests.csproj" />
-    <Project Path="tests/LiteDocumentStore.UnitTests/LiteDocumentStore.UnitTests.csproj" />
-  </Folder>
-  <Project Path="LiteDocumentStore/LiteDocumentStore.csproj" />
-</Solution>

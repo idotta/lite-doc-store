@@ -4,9 +4,16 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -15,21 +22,38 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Resolve and validate version
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$'; then
+            echo "::error::Release tag '$GITHUB_REF' does not resolve to a valid SemVer version."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Restore dependencies
-        run: dotnet restore src/LiteDocumentStore.slnx
+        run: dotnet restore LiteDocumentStore.slnx
 
       - name: Build
-        run: dotnet build src/LiteDocumentStore.slnx --no-restore --configuration Release
+        run: dotnet build LiteDocumentStore.slnx --no-restore --configuration Release -p:Version="$VERSION"
 
       - name: Test
-        run: dotnet test src/LiteDocumentStore.slnx --no-build --configuration Release
-
-      - name: Set Version
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+        run: dotnet test LiteDocumentStore.slnx --no-build --configuration Release
 
       - name: Pack
-        run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --no-build --configuration Release --output . -p:PackageVersion=${{ env.VERSION }} --include-symbols -p:SymbolPackageFormat=snupkg
+        run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --no-build --configuration Release --output . -p:Version="$VERSION" -p:PackageVersion="$VERSION"
 
-      - name: Push to NuGet
-        run: dotnet nuget push *.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: '*.nupkg'
+
+      - name: Push package to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+
+      - name: Push symbols to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "*.snupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate

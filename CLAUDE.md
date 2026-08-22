@@ -6,15 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LiteDocumentStore is a .NET library (published to NuGet as `LiteDocumentStore`) that turns a single SQLite `.db` file into a hybrid document + relational store. C# objects are serialized to JSON and stored in SQLite's **JSONB** binary format (requires SQLite 3.45+); the same tables stay fully accessible to raw SQL, joins, and indexes. The design goal is explicitly *not* an opaque document DB — users mix document-style CRUD and relational queries freely via the exposed `Connection`.
 
-Solution is `src/LiteDocumentStore.slnx`. Target is `net10.0`, `LangVersion=latest` (C# 14), nullable + implicit usings on. Data access is raw ADO.NET over `Microsoft.Data.Sqlite` (no Dapper — parameters bound explicitly, results read by ordinal); serialization is `System.Text.Json`. The library is Native-AOT / trim compatible (`<IsAotCompatible>true</IsAotCompatible>`).
+Solution is `LiteDocumentStore.slnx` at the repository root. Target is `net10.0`, `LangVersion=latest` (C# 14), nullable + implicit usings on. Data access is raw ADO.NET over `Microsoft.Data.Sqlite` (no Dapper — parameters bound explicitly, results read by ordinal); serialization is `System.Text.Json`. The library is Native-AOT / trim compatible (`<IsAotCompatible>true</IsAotCompatible>`).
 
 ## Build, run, test
 
-Solution and all commands live under `src/` (CI sets `working-directory: ./src`). Run from there.
+Everything runs from the repository root — the solution is there, so no command needs a path.
 
 ```powershell
-cd src
-
 # Build (Release is what CI uses)
 dotnet build --configuration Release
 
@@ -26,15 +24,19 @@ dotnet test tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.Integrati
 dotnet test --filter "Category=Unit"
 dotnet test --filter "FullyQualifiedName~UpsertAndGet_RoundTrip"
 
+# Examples (every sample, or one by name)
+dotnet run --project examples/Examples -- all
+
 # Benchmarks (BenchmarkDotNet)
-dotnet run -c Release --project tests/LiteDocumentStore.Benchmarks
+dotnet run -c Release --project benchmarks/LiteDocumentStore.Benchmarks
 ```
 
 ## Project layout
 
 ```
+LiteDocumentStore.slnx                       Solution (repository root)
+Directory.Build.props                        Deterministic + ContinuousIntegrationBuild (CI only)
 src/
-  LiteDocumentStore.slnx                    Solution
   LiteDocumentStore/                         The library
     Core/            DocumentStore, DocumentOperations (shared op impls), SqliteConnectionPool
                      + PooledConnection, DocumentStoreTransaction, IDocumentStore /
@@ -49,10 +51,14 @@ src/
                      UnsupportedSqliteVersion (ConcurrencyException is thrown by
                      UpsertWithVersionAsync on CAS conflicts; UnsupportedSqliteVersionException
                      by the 3.45+ guard when a connection is opened)
-  tests/
-    LiteDocumentStore.UnitTests/             xUnit, mocked/isolated
-    LiteDocumentStore.IntegrationTests/      xUnit, real SQLite (mostly :memory:)
-    LiteDocumentStore.Benchmarks/            BenchmarkDotNet
+tests/
+  LiteDocumentStore.UnitTests/               xUnit, mocked/isolated
+  LiteDocumentStore.IntegrationTests/        xUnit, real SQLite (mostly :memory:)
+benchmarks/
+  LiteDocumentStore.Benchmarks/              BenchmarkDotNet
+examples/
+  Examples/                                  Every sample, dispatched by name from Program.cs
+  AotVerification/                           Native AOT gate, published + run by CI
 ```
 
 `DocumentStore` and most internals are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj. Consumers only touch the public surface: `IDocumentStore`, `DocumentStoreOptions`, the factories, and the DI extension.
@@ -63,7 +69,7 @@ src/
 
 `README.md` and `.github/instructions/*.md` (Copilot rules) describe an older `Repository` class with a `new Repository("app.db")` constructor and a `SqliteJsonbTypeHandler`. **That API no longer exists.** The real entry point is `IDocumentStore`, obtained through DI (`services.AddLiteDocumentStore(...)`) or `IDocumentStoreFactory.Create/CreateAsync(DocumentStoreOptions)`. When those docs conflict with the source, the source wins.
 
-The loose `.cs` files under `examples/` are documentation, not a compiled project, and most are stale twice over: they call Dapper extension methods on a `store.Connection` property that no longer exists (see the connection model below). Treat them as prose until they are rewritten against `ExecuteRawAsync`. The *conceptual* guidance in those files (JSONB read/write pattern, WAL config, hybrid philosophy, SQLite error codes) is still accurate.
+`examples/` is now two real projects in the `.slnx`, so samples cannot rot silently: `examples/Examples` is one console app holding every sample (`dotnet run --project examples/Examples -- all`, or a single name — CI runs `all` on every push), and `examples/AotVerification` is the Native AOT gate that CI publishes with `-warnaserror` and then runs. The nine old loose file-based `.cs` samples were rewritten against `ExecuteRawAsync` and deleted.
 
 ## Architecture
 
@@ -78,7 +84,7 @@ The loose `.cs` files under `examples/` are documentation, not a compiled projec
 
 The store deliberately opts **out** of Microsoft.Data.Sqlite's own pool (`Pooling=False`, forced in `SqliteConnectionPool.Normalize`). That pool gives no "this handle is new" hook, so every rent would have to re-apply the session PRAGMAs — measured at +3 µs, or +68% on a 4.5 µs read. Owning the pool makes renting a semaphore wait plus a bag pop.
 
-Measured cost of the model (`tests/LiteDocumentStore.Benchmarks/ConnectionModelBenchmark.cs` — `ConnectionModelBenchmark` for the primitives, `StorePathBenchmark` for the store's own path; re-run both before changing this design):
+Measured cost of the model (`benchmarks/LiteDocumentStore.Benchmarks/ConnectionModelBenchmark.cs` — `ConnectionModelBenchmark` for the primitives, `StorePathBenchmark` for the store's own path; re-run both before changing this design):
 
 | | vs the old single held connection |
 |---|---|
@@ -148,5 +154,6 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - `src/LiteDocumentStore/Core/SqliteCommandExtensions.cs` — the raw ADO.NET helpers that replaced Dapper.
 - `src/LiteDocumentStore/Serialization/JsonHelper.cs` — the AOT-safe serialization funnel (`JsonTypeInfo<T>` + reflection fallback).
 - `src/LiteDocumentStore/Extensions/ServiceCollectionExtensions.cs` — how consumers wire it up (DI + lifetimes).
-- `examples/AotVerification.cs` — end-to-end AOT smoke test with a source-generated context.
+- `examples/AotVerification/` — end-to-end AOT smoke test with a source-generated context; CI publishes it Native-AOT with warnings as errors and runs the binary.
+- `examples/Examples/Program.cs` — the sample dispatcher; add a new sample to the array there.
 </content>
