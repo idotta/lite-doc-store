@@ -64,75 +64,111 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
-    public Task CreateTableAsync<T>() => _operations.CreateTableAsync<T>();
+    public Task CreateTableAsync<T>(CancellationToken cancellationToken = default) =>
+        _operations.CreateTableAsync<T>(cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> UpsertAsync<T>(string id, T data) => _operations.UpsertAsync(id, data);
+    public Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken = default) =>
+        _operations.UpsertAsync(id, data, cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> UpsertManyAsync<T>(IEnumerable<(string id, T data)> items) =>
-        _operations.UpsertManyAsync(items);
+    public Task<int> UpsertManyAsync<T>(
+        IEnumerable<(string id, T data)> items,
+        CancellationToken cancellationToken = default) =>
+        _operations.UpsertManyAsync(items, cancellationToken);
 
     /// <inheritdoc />
-    public Task<long> UpsertWithVersionAsync<T>(string id, T data, long expectedVersion) =>
-        _operations.UpsertWithVersionAsync(id, data, expectedVersion);
+    public Task<long> UpsertWithVersionAsync<T>(
+        string id,
+        T data,
+        long expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        _operations.UpsertWithVersionAsync(id, data, expectedVersion, cancellationToken);
 
     /// <inheritdoc />
-    public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(string id) =>
-        _operations.GetWithVersionAsync<T>(id);
+    public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
+        string id,
+        CancellationToken cancellationToken = default) =>
+        _operations.GetWithVersionAsync<T>(id, cancellationToken);
 
     /// <inheritdoc />
-    public Task<T?> GetAsync<T>(string id) => _operations.GetAsync<T>(id);
+    public Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default) =>
+        _operations.GetAsync<T>(id, cancellationToken);
 
     /// <inheritdoc />
-    public Task<IEnumerable<T>> GetAllAsync<T>() => _operations.GetAllAsync<T>();
+    public Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default) =>
+        _operations.GetAllAsync<T>(cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> DeleteAsync<T>(string id) => _operations.DeleteAsync<T>(id);
+    public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default) =>
+        _operations.DeleteAsync<T>(id, cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> DeleteManyAsync<T>(IEnumerable<string> ids) => _operations.DeleteManyAsync<T>(ids);
+    public Task<int> DeleteManyAsync<T>(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken = default) =>
+        _operations.DeleteManyAsync<T>(ids, cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> ExistsAsync<T>(string id) => _operations.ExistsAsync<T>(id);
+    public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default) =>
+        _operations.ExistsAsync<T>(id, cancellationToken);
 
     /// <inheritdoc />
-    public Task<long> CountAsync<T>() => _operations.CountAsync<T>();
+    public Task<long> CountAsync<T>(CancellationToken cancellationToken = default) =>
+        _operations.CountAsync<T>(cancellationToken);
 
     /// <inheritdoc />
-    public Task<IEnumerable<T>> QueryAsync<T, TValue>(string jsonPath, TValue value) =>
-        _operations.QueryAsync<T, TValue>(jsonPath, value);
+    public Task<IEnumerable<T>> QueryAsync<T, TValue>(
+        string jsonPath,
+        TValue value,
+        CancellationToken cancellationToken = default) =>
+        _operations.QueryAsync<T, TValue>(jsonPath, value, cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateIndexAsync<T>(Expression<Func<T, object>> jsonPath, string? indexName = null) =>
-        _operations.CreateIndexAsync(jsonPath, indexName);
+    public Task CreateIndexAsync<T>(
+        Expression<Func<T, object>> jsonPath,
+        string? indexName = null,
+        CancellationToken cancellationToken = default) =>
+        _operations.CreateIndexAsync(jsonPath, indexName, cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateCompositeIndexAsync<T>(Expression<Func<T, object>>[] jsonPaths, string? indexName = null) =>
-        _operations.CreateCompositeIndexAsync(jsonPaths, indexName);
+    public Task CreateCompositeIndexAsync<T>(
+        Expression<Func<T, object>>[] jsonPaths,
+        string? indexName = null,
+        CancellationToken cancellationToken = default) =>
+        _operations.CreateCompositeIndexAsync(jsonPaths, indexName, cancellationToken);
 
     /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
         bool createIndex = false,
-        string columnType = "TEXT") =>
-        _operations.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType);
+        string columnType = "TEXT",
+        CancellationToken cancellationToken = default) =>
+        _operations.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateBlobTableAsync() => _operations.CreateBlobTableAsync();
+    public Task CreateBlobTableAsync(CancellationToken cancellationToken = default) =>
+        _operations.CreateBlobTableAsync(cancellationToken);
 
     /// <inheritdoc />
-    public Task PutBlobAsync(string id, ReadOnlyMemory<byte> data) => _operations.PutBlobAsync(id, data);
+    public Task PutBlobAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        CancellationToken cancellationToken = default) =>
+        _operations.PutBlobAsync(id, data, cancellationToken);
 
     /// <inheritdoc />
-    public Task<byte[]?> GetBlobAsync(string id) => _operations.GetBlobAsync(id);
+    public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default) =>
+        _operations.GetBlobAsync(id, cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> DeleteBlobAsync(string id) => _operations.DeleteBlobAsync(id);
+    public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default) =>
+        _operations.DeleteBlobAsync(id, cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> BlobExistsAsync(string id) => _operations.BlobExistsAsync(id);
+    public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default) =>
+        _operations.BlobExistsAsync(id, cancellationToken);
 
     /// <inheritdoc />
     public Task<TResult> ExecuteRawAsync<TResult>(

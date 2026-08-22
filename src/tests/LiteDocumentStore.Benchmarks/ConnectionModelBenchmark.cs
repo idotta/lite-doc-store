@@ -353,9 +353,10 @@ public class StorePathBenchmark
             });
         _privateMemoryOperations = new DocumentOperations(
             _privateMemoryConnection, convention, serializerOptions, NullLogger.Instance);
-        await _privateMemoryOperations.CreateTableAsync<StoreDoc>();
+        await _privateMemoryOperations.CreateTableAsync<StoreDoc>(CancellationToken.None);
         await _privateMemoryOperations.UpsertManyAsync(Enumerable.Range(0, RowCount)
-            .Select(i => ($"doc-{i:D6}", new StoreDoc { Name = $"Document {i}", Age = 20 + (i % 50) })));
+            .Select(i => ($"doc-{i:D6}", new StoreDoc { Name = $"Document {i}", Age = 20 + (i % 50) })),
+            CancellationToken.None);
     }
 
     private static async Task SeedAsync(IDocumentStore store)
@@ -396,19 +397,19 @@ public class StorePathBenchmark
     }
 
     [Benchmark(Baseline = true, Description = "File DB: held connection (old model)")]
-    public Task<StoreDoc?> File_Held_Get() => _fileHeldOperations.GetAsync<StoreDoc>(DocumentId);
+    public Task<StoreDoc?> File_Held_Get() => _fileHeldOperations.GetAsync<StoreDoc>(DocumentId, CancellationToken.None);
 
     [Benchmark(Description = "File DB: pooled store (new model)")]
     public Task<StoreDoc?> File_Pooled_Get() => _fileStore.GetAsync<StoreDoc>(DocumentId);
 
     [Benchmark(Description = "Shared-cache memory DB: held connection (old model)")]
-    public Task<StoreDoc?> Memory_Held_Get() => _memoryHeldOperations.GetAsync<StoreDoc>(DocumentId);
+    public Task<StoreDoc?> Memory_Held_Get() => _memoryHeldOperations.GetAsync<StoreDoc>(DocumentId, CancellationToken.None);
 
     [Benchmark(Description = "Shared-cache memory DB: pooled store (new model)")]
     public Task<StoreDoc?> Memory_Pooled_Get() => _memoryStore.GetAsync<StoreDoc>(DocumentId);
 
     [Benchmark(Description = "Private :memory: held connection (pre-change in-memory default)")]
-    public Task<StoreDoc?> MemoryPrivate_Held_Get() => _privateMemoryOperations.GetAsync<StoreDoc>(DocumentId);
+    public Task<StoreDoc?> MemoryPrivate_Held_Get() => _privateMemoryOperations.GetAsync<StoreDoc>(DocumentId, CancellationToken.None);
 
     [Benchmark(Description = "File DB: pooled store upsert")]
     public Task<int> File_Pooled_Upsert() =>
@@ -416,7 +417,7 @@ public class StorePathBenchmark
 
     [Benchmark(Description = "File DB: held connection upsert")]
     public Task<int> File_Held_Upsert() =>
-        _fileHeldOperations.UpsertAsync("doc-000001", new StoreDoc { Name = "Updated", Age = 42 });
+        _fileHeldOperations.UpsertAsync("doc-000001", new StoreDoc { Name = "Updated", Age = 42 }, CancellationToken.None);
 }
 
 /// <summary>

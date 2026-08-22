@@ -37,7 +37,7 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
 
         var connection = new SqliteConnection(options.ConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await ConfigureConnectionAsync(connection, options).ConfigureAwait(false);
+        await ConfigureConnectionAsync(connection, options, cancellationToken).ConfigureAwait(false);
         return connection;
     }
 
@@ -85,45 +85,52 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
     }
 
     /// <inheritdoc/>
-    public async Task ConfigureConnectionAsync(SqliteConnection connection, DocumentStoreOptions options)
+    public async Task ConfigureConnectionAsync(
+        SqliteConnection connection,
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(options);
 
         if (connection.State != ConnectionState.Open)
         {
-            await connection.OpenAsync().ConfigureAwait(false);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Configure WAL mode
         if (options.EnableWalMode)
         {
-            await connection.ExecuteAsync("PRAGMA journal_mode = WAL;").ConfigureAwait(false);
+            await connection.ExecuteAsync("PRAGMA journal_mode = WAL;", cancellationToken).ConfigureAwait(false);
         }
 
         // Configure synchronous mode
         var syncMode = GetSynchronousModeString(options.SynchronousMode);
-        await connection.ExecuteAsync($"PRAGMA synchronous = {syncMode};").ConfigureAwait(false);
+        await connection.ExecuteAsync($"PRAGMA synchronous = {syncMode};", cancellationToken)
+            .ConfigureAwait(false);
 
         // Configure page size (must be set before any tables are created)
-        await connection.ExecuteAsync($"PRAGMA page_size = {options.PageSize};").ConfigureAwait(false);
+        await connection.ExecuteAsync($"PRAGMA page_size = {options.PageSize};", cancellationToken)
+            .ConfigureAwait(false);
 
         // Configure cache size
-        await connection.ExecuteAsync($"PRAGMA cache_size = {options.CacheSize};").ConfigureAwait(false);
+        await connection.ExecuteAsync($"PRAGMA cache_size = {options.CacheSize};", cancellationToken)
+            .ConfigureAwait(false);
 
         // Configure busy timeout
-        await connection.ExecuteAsync($"PRAGMA busy_timeout = {options.BusyTimeoutMs};").ConfigureAwait(false);
+        await connection.ExecuteAsync($"PRAGMA busy_timeout = {options.BusyTimeoutMs};", cancellationToken)
+            .ConfigureAwait(false);
 
         // Configure foreign keys
         if (options.EnableForeignKeys)
         {
-            await connection.ExecuteAsync("PRAGMA foreign_keys = ON;").ConfigureAwait(false);
+            await connection.ExecuteAsync("PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
         }
 
         // Execute additional pragmas
         foreach (var pragma in options.AdditionalPragmas)
         {
-            await connection.ExecuteAsync(pragma).ConfigureAwait(false);
+            await connection.ExecuteAsync(pragma, cancellationToken).ConfigureAwait(false);
         }
     }
 

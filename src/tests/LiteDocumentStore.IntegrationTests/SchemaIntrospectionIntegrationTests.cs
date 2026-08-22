@@ -52,8 +52,8 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     {
         // Arrange - a table whose name contains ']' would break out of the [ ] identifier quoting
         // in the PRAGMA statement if the bracket were not escaped.
-        await _store.ExecuteRawAsync((connection, _) => connection.ExecuteAsync(
-            "CREATE TABLE \"weird]name\" (id TEXT PRIMARY KEY, val TEXT)"));
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "CREATE TABLE \"weird]name\" (id TEXT PRIMARY KEY, val TEXT)", ct));
 
         // Act
         var columns = (await IntrospectAsync(introspector => introspector.GetColumnsAsync("weird]name"))).ToList();

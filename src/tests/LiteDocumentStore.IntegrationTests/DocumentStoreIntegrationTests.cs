@@ -42,10 +42,10 @@ public class DocumentStoreIntegrationTests : IDisposable
 
     // Raw-SQL helpers: the store exposes its connection only for the duration of a callback.
     private Task<string?> QueryStringAsync(string sql) =>
-        _store.ExecuteRawAsync((connection, _) => connection.QueryFirstStringAsync(sql));
+        _store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(sql, ct));
 
     private Task<int> QueryIntAsync(string sql) =>
-        _store.ExecuteRawAsync((connection, _) => connection.ExecuteScalarAsync<int>(sql));
+        _store.ExecuteRawAsync((connection, ct) => connection.ExecuteScalarAsync<int>(sql, ct));
 
     [Fact]
     public async Task CreateTableAsync_CreatesTable()

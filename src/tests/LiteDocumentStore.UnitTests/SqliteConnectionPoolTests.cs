@@ -281,7 +281,7 @@ public sealed class SqliteConnectionPoolTests
 
         foreach (var lease in new[] { first, second })
         {
-            var timeout = await lease.Connection.ExecuteScalarAsync<long>("PRAGMA busy_timeout");
+            var timeout = await lease.Connection.ExecuteScalarAsync<long>("PRAGMA busy_timeout", CancellationToken.None);
             Assert.Equal(1234, timeout);
         }
     }

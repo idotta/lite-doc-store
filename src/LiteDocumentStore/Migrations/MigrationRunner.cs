@@ -30,7 +30,7 @@ public sealed class MigrationRunner
     /// <summary>
     /// Ensures the migration history table exists.
     /// </summary>
-    private async Task EnsureMigrationTableExistsAsync()
+    private async Task EnsureMigrationTableExistsAsync(CancellationToken cancellationToken)
     {
         var sql = $@"
             CREATE TABLE IF NOT EXISTS [{MigrationTableName}] (
@@ -40,16 +40,18 @@ public sealed class MigrationRunner
             )";
 
         _logger.LogDebug("Ensuring migration history table exists");
-        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Gets all applied migrations from the history table, ordered by version.
     /// </summary>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>An enumerable of migration history records</returns>
-    public async Task<IEnumerable<MigrationHistoryRecord>> GetAppliedMigrationsAsync()
+    public async Task<IEnumerable<MigrationHistoryRecord>> GetAppliedMigrationsAsync(
+        CancellationToken cancellationToken = default)
     {
-        await EnsureMigrationTableExistsAsync().ConfigureAwait(false);
+        await EnsureMigrationTableExistsAsync(cancellationToken).ConfigureAwait(false);
 
         var sql = $@"
             SELECT version, name, applied_at
@@ -60,10 +62,10 @@ public sealed class MigrationRunner
 
         await using var command = _connection.CreateCommand();
         command.CommandText = sql;
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         var records = new List<MigrationHistoryRecord>();
-        while (await reader.ReadAsync().ConfigureAwait(false))
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             records.Add(new MigrationHistoryRecord
             {
@@ -82,13 +84,14 @@ public sealed class MigrationRunner
     /// <summary>
     /// Gets the highest applied migration version, or 0 if no migrations have been applied.
     /// </summary>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The current migration version</returns>
-    public async Task<long> GetCurrentVersionAsync()
+    public async Task<long> GetCurrentVersionAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureMigrationTableExistsAsync().ConfigureAwait(false);
+        await EnsureMigrationTableExistsAsync(cancellationToken).ConfigureAwait(false);
 
         var sql = $@"SELECT COALESCE(MAX(version), 0) FROM [{MigrationTableName}]";
-        var version = await _connection.ExecuteScalarAsync<long>(sql).ConfigureAwait(false);
+        var version = await _connection.ExecuteScalarAsync<long>(sql, cancellationToken).ConfigureAwait(false);
 
         _logger.LogDebug("Current migration version: {Version}", version);
         return version;
@@ -98,14 +101,15 @@ public sealed class MigrationRunner
     /// Applies a migration if it hasn't been applied yet.
     /// </summary>
     /// <param name="migration">The migration to apply</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the migration was applied, false if it was already applied</returns>
-    public async Task<bool> ApplyMigrationAsync(IMigration migration)
+    public async Task<bool> ApplyMigrationAsync(IMigration migration, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(migration);
 
-        await EnsureMigrationTableExistsAsync().ConfigureAwait(false);
+        await EnsureMigrationTableExistsAsync(cancellationToken).ConfigureAwait(false);
 
-        var currentVersion = await GetCurrentVersionAsync().ConfigureAwait(false);
+        var currentVersion = await GetCurrentVersionAsync(cancellationToken).ConfigureAwait(false);
 
         if (migration.Version <= currentVersion)
         {
@@ -120,7 +124,7 @@ public sealed class MigrationRunner
         try
         {
             // Execute the migration
-            await migration.UpAsync(_connection).ConfigureAwait(false);
+            await migration.UpAsync(_connection, cancellationToken).ConfigureAwait(false);
 
             // Record the migration. Commands created on the connection automatically enlist
             // in the active transaction. Persist DateTimeOffset as an ISO-8601 round-trip string.
@@ -130,6 +134,7 @@ public sealed class MigrationRunner
 
             await _connection.ExecuteAsync(
                 sql,
+                cancellationToken,
                 ("Version", migration.Version),
                 ("Name", migration.Name),
                 ("AppliedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)))
@@ -152,8 +157,11 @@ public sealed class MigrationRunner
     /// Applies multiple migrations in order, stopping at the first failure.
     /// </summary>
     /// <param name="migrations">The migrations to apply, in order</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The number of migrations that were applied</returns>
-    public async Task<int> ApplyMigrationsAsync(IEnumerable<IMigration> migrations)
+    public async Task<int> ApplyMigrationsAsync(
+        IEnumerable<IMigration> migrations,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(migrations);
 
@@ -162,7 +170,7 @@ public sealed class MigrationRunner
 
         foreach (var migration in orderedMigrations)
         {
-            var applied = await ApplyMigrationAsync(migration).ConfigureAwait(false);
+            var applied = await ApplyMigrationAsync(migration, cancellationToken).ConfigureAwait(false);
             if (applied)
             {
                 appliedCount++;
@@ -177,16 +185,17 @@ public sealed class MigrationRunner
     /// Rolls back the most recent migration.
     /// </summary>
     /// <param name="migration">The migration to roll back</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the migration was rolled back, false if it wasn't applied</returns>
-    public async Task<bool> RollbackMigrationAsync(IMigration migration)
+    public async Task<bool> RollbackMigrationAsync(IMigration migration, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(migration);
 
-        await EnsureMigrationTableExistsAsync().ConfigureAwait(false);
+        await EnsureMigrationTableExistsAsync(cancellationToken).ConfigureAwait(false);
 
         // Check if this migration is actually applied
         var checkSql = $@"SELECT COUNT(*) FROM [{MigrationTableName}] WHERE version = @Version";
-        var isApplied = await _connection.ExecuteScalarAsync<int>(checkSql, ("Version", migration.Version))
+        var isApplied = await _connection.ExecuteScalarAsync<int>(checkSql, cancellationToken, ("Version", migration.Version))
             .ConfigureAwait(false) > 0;
 
         if (!isApplied)
@@ -202,11 +211,11 @@ public sealed class MigrationRunner
         try
         {
             // Execute the rollback
-            await migration.DownAsync(_connection).ConfigureAwait(false);
+            await migration.DownAsync(_connection, cancellationToken).ConfigureAwait(false);
 
             // Remove the migration record (enlists in the active transaction automatically)
             var deleteSql = $@"DELETE FROM [{MigrationTableName}] WHERE version = @Version";
-            await _connection.ExecuteAsync(deleteSql, ("Version", migration.Version))
+            await _connection.ExecuteAsync(deleteSql, cancellationToken, ("Version", migration.Version))
                 .ConfigureAwait(false);
 
             transaction.Commit();
@@ -227,12 +236,16 @@ public sealed class MigrationRunner
     /// </summary>
     /// <param name="targetVersion">The version to rollback to (0 to rollback all)</param>
     /// <param name="migrations">All available migrations</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The number of migrations that were rolled back</returns>
-    public async Task<int> RollbackToVersionAsync(long targetVersion, IEnumerable<IMigration> migrations)
+    public async Task<int> RollbackToVersionAsync(
+        long targetVersion,
+        IEnumerable<IMigration> migrations,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(migrations);
 
-        var appliedMigrations = await GetAppliedMigrationsAsync().ConfigureAwait(false);
+        var appliedMigrations = await GetAppliedMigrationsAsync(cancellationToken).ConfigureAwait(false);
         var migrationsToRollback = appliedMigrations
             .Where(m => m.Version > targetVersion)
             .OrderByDescending(m => m.Version)
@@ -268,7 +281,7 @@ public sealed class MigrationRunner
         foreach (var record in migrationsToRollback)
         {
             var migration = migrationDict[record.Version];
-            var rolledBack = await RollbackMigrationAsync(migration).ConfigureAwait(false);
+            var rolledBack = await RollbackMigrationAsync(migration, cancellationToken).ConfigureAwait(false);
             if (rolledBack)
             {
                 rolledBackCount++;

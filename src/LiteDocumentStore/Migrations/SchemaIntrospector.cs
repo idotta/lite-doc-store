@@ -22,8 +22,9 @@ public sealed class SchemaIntrospector
     /// <summary>
     /// Gets information about all tables in the database.
     /// </summary>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>An enumerable of table information records</returns>
-    public async Task<IEnumerable<TableInfo>> GetTablesAsync()
+    public async Task<IEnumerable<TableInfo>> GetTablesAsync(CancellationToken cancellationToken = default)
     {
         const string sql = @"
             SELECT name, type, sql
@@ -34,10 +35,10 @@ public sealed class SchemaIntrospector
 
         await using var command = _connection.CreateCommand();
         command.CommandText = sql;
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         var tables = new List<TableInfo>();
-        while (await reader.ReadAsync().ConfigureAwait(false))
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             tables.Add(new TableInfo
             {
@@ -54,8 +55,11 @@ public sealed class SchemaIntrospector
     /// Checks if a table exists in the database.
     /// </summary>
     /// <param name="tableName">The name of the table to check</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the table exists, false otherwise</returns>
-    public async Task<bool> TableExistsAsync(string tableName)
+    public async Task<bool> TableExistsAsync(
+        string tableName,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tableName);
 
@@ -65,7 +69,7 @@ public sealed class SchemaIntrospector
             WHERE type = 'table'
             AND name = @TableName";
 
-        var count = await _connection.ExecuteScalarAsync<int>(sql, ("TableName", tableName))
+        var count = await _connection.ExecuteScalarAsync<int>(sql, cancellationToken, ("TableName", tableName))
             .ConfigureAwait(false);
 
         return count > 0;
@@ -76,8 +80,11 @@ public sealed class SchemaIntrospector
     /// Uses PRAGMA table_xinfo to include generated/virtual columns.
     /// </summary>
     /// <param name="tableName">The name of the table</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>An enumerable of column information records</returns>
-    public async Task<IEnumerable<ColumnInfo>> GetColumnsAsync(string tableName)
+    public async Task<IEnumerable<ColumnInfo>> GetColumnsAsync(
+        string tableName,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tableName);
 
@@ -90,7 +97,7 @@ public sealed class SchemaIntrospector
 
         await using var command = _connection.CreateCommand();
         command.CommandText = sql;
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         // Resolve column ordinals by name to be resilient to PRAGMA column ordering.
         var cidOrdinal = reader.GetOrdinal("cid");
@@ -102,7 +109,7 @@ public sealed class SchemaIntrospector
         var hiddenOrdinal = reader.GetOrdinal("hidden");
 
         var columns = new List<ColumnInfo>();
-        while (await reader.ReadAsync().ConfigureAwait(false))
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             columns.Add(new ColumnInfo
             {
@@ -123,8 +130,11 @@ public sealed class SchemaIntrospector
     /// Gets information about all indexes in the database or for a specific table.
     /// </summary>
     /// <param name="tableName">Optional table name to filter indexes</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>An enumerable of index information records</returns>
-    public async Task<IEnumerable<IndexInfo>> GetIndexesAsync(string? tableName = null)
+    public async Task<IEnumerable<IndexInfo>> GetIndexesAsync(
+        string? tableName = null,
+        CancellationToken cancellationToken = default)
     {
         var sql = @"
             SELECT name, tbl_name, sql
@@ -147,10 +157,10 @@ public sealed class SchemaIntrospector
             command.Parameters.AddWithValue("@TableName", tableName);
         }
 
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         var indexes = new List<IndexInfo>();
-        while (await reader.ReadAsync().ConfigureAwait(false))
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             indexes.Add(new IndexInfo
             {
@@ -167,8 +177,11 @@ public sealed class SchemaIntrospector
     /// Checks if an index exists in the database.
     /// </summary>
     /// <param name="indexName">The name of the index to check</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the index exists, false otherwise</returns>
-    public async Task<bool> IndexExistsAsync(string indexName)
+    public async Task<bool> IndexExistsAsync(
+        string indexName,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(indexName);
 
@@ -178,7 +191,7 @@ public sealed class SchemaIntrospector
             WHERE type = 'index'
             AND name = @IndexName";
 
-        var count = await _connection.ExecuteScalarAsync<int>(sql, ("IndexName", indexName))
+        var count = await _connection.ExecuteScalarAsync<int>(sql, cancellationToken, ("IndexName", indexName))
             .ConfigureAwait(false);
 
         return count > 0;
@@ -189,35 +202,45 @@ public sealed class SchemaIntrospector
     /// </summary>
     /// <param name="tableName">The name of the table</param>
     /// <param name="columnName">The name of the column to check</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the column exists, false otherwise</returns>
-    public async Task<bool> ColumnExistsAsync(string tableName, string columnName)
+    public async Task<bool> ColumnExistsAsync(
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tableName);
         ArgumentNullException.ThrowIfNull(columnName);
 
-        var columns = await GetColumnsAsync(tableName).ConfigureAwait(false);
+        var columns = await GetColumnsAsync(tableName, cancellationToken).ConfigureAwait(false);
         return columns.Any(c => string.Equals(c.Name, columnName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
     /// Gets the SQLite version being used.
     /// </summary>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The SQLite version string</returns>
-    public async Task<string> GetSqliteVersionAsync()
+    public async Task<string> GetSqliteVersionAsync(CancellationToken cancellationToken = default)
     {
-        var version = await _connection.QueryFirstStringAsync("SELECT sqlite_version()").ConfigureAwait(false);
+        var version = await _connection.QueryFirstStringAsync("SELECT sqlite_version()", cancellationToken)
+            .ConfigureAwait(false);
         return version ?? "Unknown";
     }
 
     /// <summary>
     /// Gets database statistics including page size, page count, and database size.
     /// </summary>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>Database statistics</returns>
-    public async Task<DatabaseStatistics> GetDatabaseStatisticsAsync()
+    public async Task<DatabaseStatistics> GetDatabaseStatisticsAsync(CancellationToken cancellationToken = default)
     {
-        var pageCount = await _connection.ExecuteScalarAsync<long>("PRAGMA page_count").ConfigureAwait(false);
-        var pageSize = await _connection.ExecuteScalarAsync<long>("PRAGMA page_size").ConfigureAwait(false);
-        var freePages = await _connection.ExecuteScalarAsync<long>("PRAGMA freelist_count").ConfigureAwait(false);
+        var pageCount = await _connection.ExecuteScalarAsync<long>("PRAGMA page_count", cancellationToken)
+            .ConfigureAwait(false);
+        var pageSize = await _connection.ExecuteScalarAsync<long>("PRAGMA page_size", cancellationToken)
+            .ConfigureAwait(false);
+        var freePages = await _connection.ExecuteScalarAsync<long>("PRAGMA freelist_count", cancellationToken)
+            .ConfigureAwait(false);
 
         return new DatabaseStatistics
         {

@@ -99,7 +99,7 @@ public class VirtualColumnBenchmark
 
         // Run ANALYZE to update statistics for query planner
         await _storeWithVirtual.ExecuteRawAsync(
-            (connection, _) => connection.ExecuteAsync("ANALYZE"));
+            (connection, ct) => connection.ExecuteAsync("ANALYZE", ct));
     }
 
     [GlobalCleanup]

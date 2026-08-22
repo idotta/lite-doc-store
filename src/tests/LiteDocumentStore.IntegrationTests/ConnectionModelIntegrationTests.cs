@@ -295,8 +295,8 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
             await store.CreateTableAsync<Doc>();
             await store.UpsertAsync("durable", new Doc("durable", 1));
 
-            var journalMode = await store.ExecuteRawAsync((connection, _) =>
-                connection.QueryFirstStringAsync("PRAGMA journal_mode"));
+            var journalMode = await store.ExecuteRawAsync((connection, ct) =>
+                connection.QueryFirstStringAsync("PRAGMA journal_mode", ct));
             Assert.Equal("wal", journalMode, ignoreCase: true);
         }
 
