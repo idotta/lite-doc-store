@@ -190,9 +190,16 @@ public interface IDocumentOperations
     /// cover.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The connection is valid only for the duration of the callback; do not store it. When
     /// called on an <see cref="IDocumentTransaction"/>, the connection is the transaction's,
     /// so commands created from it enlist in that transaction.
+    /// </para>
+    /// <para>
+    /// Build commands with <c>connection.CreateCommand()</c>, which copies the active
+    /// transaction onto them. A directly constructed <see cref="SqliteCommand"/> has no
+    /// transaction and will not execute while one is pending.
+    /// </para>
     /// </remarks>
     /// <typeparam name="TResult">The result type</typeparam>
     /// <param name="operation">The work to run against the connection</param>

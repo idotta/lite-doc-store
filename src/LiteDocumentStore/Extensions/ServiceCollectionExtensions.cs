@@ -52,7 +52,8 @@ public static class ServiceCollectionExtensions
 
         // One store per database, shared by every consumer: it is thread-safe and owns the
         // connection pool.
-        services.TryAddSingleton(sp => sp.GetRequiredService<IDocumentStoreFactory>().Create(options));
+        services.TryAddSingleton<IDocumentStore>(
+            sp => sp.GetRequiredService<IDocumentStoreFactory>().Create(options));
 
         return services;
     }

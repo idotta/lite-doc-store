@@ -228,6 +228,32 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Transaction_ExecuteRawAsync_EnlistsOnlyCommandsCreatedFromTheConnection()
+    {
+        await using var store = await CreateFileStoreAsync();
+        await using var transaction = await store.BeginTransactionAsync();
+        await transaction.UpsertAsync("raw", new Doc("raw", 1));
+
+        var viaCreateCommand = await transaction.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM [Doc]";
+            return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
+        });
+
+        Assert.Equal(1, viaCreateCommand);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.ExecuteRawAsync(async (connection, ct) =>
+            {
+                await using var command = new SqliteCommand("SELECT COUNT(*) FROM [Doc]", connection);
+                return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
+            }));
+
+        await transaction.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Transactions_ReleaseTheirConnection_SoThePoolDoesNotStarve()
     {
         // One connection: a leaked lease would deadlock the next rent instead of failing.

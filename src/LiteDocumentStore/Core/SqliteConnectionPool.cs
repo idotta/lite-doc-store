@@ -83,24 +83,72 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Rents a connection, waiting for a free slot when the pool is saturated.
+    /// Rents a connection, waiting indefinitely for a free slot when the pool is saturated.
     /// </summary>
     public async ValueTask<PooledConnection> RentAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         await _slots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return await TakeOrCreateAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Rents a connection, throwing rather than waiting past <paramref name="timeout"/>. Used
+    /// by disposal, which must not hang on a leaked lease.
+    /// </summary>
+    public async ValueTask<PooledConnection> RentAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+
+        if (!await _slots.WaitAsync(timeout, cancellationToken).ConfigureAwait(false))
+        {
+            throw new TimeoutException(
+                $"Timed out after {timeout} waiting for a free pooled connection (pool size {_options.MaxPoolSize}).");
+        }
+
+        return await TakeOrCreateAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Rents a connection synchronously, for the disposal path. A null timeout waits forever.
+    /// </summary>
+    public PooledConnection Rent(TimeSpan? timeout = null)
+    {
+        ThrowIfDisposed();
+
+        if (!_slots.Wait(timeout ?? Timeout.InfiniteTimeSpan))
+        {
+            throw new TimeoutException(
+                $"Timed out after {timeout} waiting for a free pooled connection (pool size {_options.MaxPoolSize}).");
+        }
 
         try
         {
             ThrowIfDisposed();
-            while (_idle.TryTake(out var pooled))
+            if (TryTakeIdle(out var idle))
             {
-                if (pooled.State == ConnectionState.Open)
-                {
-                    return new PooledConnection(this, pooled);
-                }
+                return new PooledConnection(this, idle);
+            }
 
-                DiscardBrokenConnection(pooled, $"state {pooled.State}");
+            return new PooledConnection(this, CreateConnection());
+        }
+        catch
+        {
+            ReleaseSlot();
+            throw;
+        }
+    }
+
+    // Runs with a slot already acquired, and hands it back if this throws — otherwise a failed
+    // rent would shrink the pool permanently.
+    private async ValueTask<PooledConnection> TakeOrCreateAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            ThrowIfDisposed();
+            if (TryTakeIdle(out var idle))
+            {
+                return new PooledConnection(this, idle);
             }
 
             return new PooledConnection(this, await CreateConnectionAsync(cancellationToken).ConfigureAwait(false));
@@ -112,35 +160,21 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Rents a connection synchronously. Used on the disposal path, where async is not
-    /// available.
-    /// </summary>
-    public PooledConnection Rent()
+    private bool TryTakeIdle(out SqliteConnection connection)
     {
-        ThrowIfDisposed();
-        _slots.Wait();
-
-        try
+        while (_idle.TryTake(out var pooled))
         {
-            ThrowIfDisposed();
-            while (_idle.TryTake(out var pooled))
+            if (pooled.State == ConnectionState.Open)
             {
-                if (pooled.State == ConnectionState.Open)
-                {
-                    return new PooledConnection(this, pooled);
-                }
-
-                DiscardBrokenConnection(pooled, $"state {pooled.State}");
+                connection = pooled;
+                return true;
             }
 
-            return new PooledConnection(this, CreateConnection());
+            DiscardBrokenConnection(pooled, $"state {pooled.State}");
         }
-        catch
-        {
-            ReleaseSlot();
-            throw;
-        }
+
+        connection = null!;
+        return false;
     }
 
     /// <summary>
@@ -156,6 +190,10 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
         {
             connection.Dispose();
+
+            // Release anyway: a waiter parked when the pool was disposed only wakes on a free
+            // slot, and then throws from ThrowIfDisposed instead of hanging.
+            ReleaseSlot();
             return;
         }
 
@@ -186,6 +224,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
         {
             connection.Dispose();
+            ReleaseSlot();
             return;
         }
 
@@ -193,24 +232,17 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         ReleaseSlot();
     }
 
-    /// <summary>
-    /// Releases a rent slot, tolerating a pool that was disposed concurrently.
-    /// </summary>
-    private void ReleaseSlot()
-    {
-        try
-        {
-            _slots.Release();
-        }
-        catch (ObjectDisposedException)
-        {
-            // The pool was disposed while this rent was in flight; the slot no longer matters.
-        }
-    }
+    // Safe after disposal: _slots is never disposed. See the remarks on Dispose.
+    private void ReleaseSlot() => _slots.Release();
 
     /// <summary>
     /// Closes every pooled connection. Rented connections are closed when returned.
     /// </summary>
+    /// <remarks>
+    /// Do not dispose <c>_slots</c>. Disposing a <see cref="SemaphoreSlim"/> under a parked
+    /// <c>WaitAsync</c> drops the waiter without completing it, hanging any operation queued
+    /// for a connection. It holds no unmanaged resource here, so there is nothing to release.
+    /// </remarks>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -229,8 +261,6 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 _logger.LogWarning(ex, "Failed to close a pooled connection during disposal");
             }
         }
-
-        _slots.Dispose();
     }
 
     /// <inheritdoc cref="Dispose" />
@@ -252,8 +282,6 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 _logger.LogWarning(ex, "Failed to close a pooled connection during disposal");
             }
         }
-
-        _slots.Dispose();
     }
 
     private SqliteConnection CreateConnection()
@@ -266,8 +294,9 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
 
     private async Task<SqliteConnection> CreateConnectionAsync(CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var connection = await _connectionFactory.CreateConnectionAsync(_options).ConfigureAwait(false);
+        var connection = await _connectionFactory
+            .CreateConnectionAsync(_options, cancellationToken)
+            .ConfigureAwait(false);
         var count = Interlocked.Increment(ref _created);
         _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);
         return connection;

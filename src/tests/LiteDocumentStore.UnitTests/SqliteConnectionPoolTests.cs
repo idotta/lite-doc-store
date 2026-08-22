@@ -179,6 +179,60 @@ public sealed class SqliteConnectionPoolTests
     }
 
     [Fact]
+    public async Task Dispose_WithAQueuedRent_CompletesTheWaiterInsteadOfHangingIt()
+    {
+        // Disposing _slots under a parked WaitAsync used to leave this rent pending forever.
+        var pool = CreatePool(maxPoolSize: 1);
+        var held = await pool.RentAsync();
+
+        var queued = pool.RentAsync().AsTask();
+        Assert.False(queued.IsCompleted);
+
+        pool.Dispose();
+        held.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => queued.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public async Task Rent_WithATimeout_OnASaturatedPool_ThrowsTimeoutException()
+    {
+        using var pool = CreatePool(maxPoolSize: 1);
+        await using var held = await pool.RentAsync();
+
+        Assert.Throws<TimeoutException>(() => pool.Rent(TimeSpan.FromMilliseconds(50)));
+        await Assert.ThrowsAsync<TimeoutException>(
+            async () => await pool.RentAsync(TimeSpan.FromMilliseconds(50)));
+    }
+
+    [Fact]
+    public async Task Rent_WithATimeout_KeepsTheSlotWhenItExpires()
+    {
+        using var pool = CreatePool(maxPoolSize: 1);
+
+        using (var held = await pool.RentAsync())
+        {
+            Assert.Throws<TimeoutException>(() => pool.Rent(TimeSpan.FromMilliseconds(50)));
+        }
+
+        // The timed-out rent must not have consumed the slot it never acquired.
+        await using var second = await pool.RentAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(ConnectionState.Open, second.Connection.State);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void MaxPoolSize_BelowOne_ThrowsNamingTheOption(int maxPoolSize)
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.MaxPoolSize = maxPoolSize);
+        Assert.True(options.MaxPoolSize >= 1);
+    }
+
+    [Fact]
     public void Constructor_WithEmptyConnectionString_ThrowsArgumentException()
     {
         var options = new DocumentStoreOptions { MaxPoolSize = 2 };

@@ -10,8 +10,12 @@ public sealed class DocumentStoreOptions
 {
     /// <summary>
     /// Gets or sets the database file path or connection string.
-    /// Use ":memory:" for in-memory database or "file::memory:?cache=shared" for shared in-memory cache.
     /// </summary>
+    /// <remarks>
+    /// A <em>private</em> in-memory database (<c>":memory:"</c>, or <c>Mode=Memory</c> without
+    /// <c>Cache=Shared</c>) is rejected: each pooled connection would get its own empty copy.
+    /// Use <see cref="ForInMemory"/> or <see cref="ForSharedInMemory"/> instead.
+    /// </remarks>
     public string ConnectionString { get; set; } = string.Empty;
 
     /// <summary>
@@ -65,7 +69,18 @@ public sealed class DocumentStoreOptions
     /// read concurrency (in WAL mode) more than write throughput. Default is the processor
     /// count, clamped to [2, 16].
     /// </remarks>
-    public int MaxPoolSize { get; set; } = Math.Clamp(Environment.ProcessorCount, 2, 16);
+    /// <exception cref="ArgumentOutOfRangeException">The value is less than 1</exception>
+    public int MaxPoolSize
+    {
+        get;
+        // Validated here too, not just in the builder: SemaphoreSlim's own exception names
+        // "maxCount" and never mentions which option was wrong.
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            field = value;
+        }
+    } = Math.Clamp(Environment.ProcessorCount, 2, 16);
 
     /// <summary>
     /// Gets or sets the default table naming convention.

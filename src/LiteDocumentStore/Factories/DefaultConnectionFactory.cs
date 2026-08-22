@@ -29,12 +29,14 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
     }
 
     /// <inheritdoc/>
-    public async Task<SqliteConnection> CreateConnectionAsync(DocumentStoreOptions options)
+    public async Task<SqliteConnection> CreateConnectionAsync(
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         var connection = new SqliteConnection(options.ConnectionString);
-        await connection.OpenAsync().ConfigureAwait(false);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await ConfigureConnectionAsync(connection, options).ConfigureAwait(false);
         return connection;
     }

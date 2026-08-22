@@ -339,7 +339,9 @@ public class DocumentStoreTests : IDisposable
         {
             if (File.Exists(path))
             {
-                try { File.Delete(path); } catch { }
+                try { File.Delete(path); }
+                catch (IOException) { /* still locked by SQLite */ }
+                catch (UnauthorizedAccessException) { /* nothing to clean up */ }
             }
         }
     }

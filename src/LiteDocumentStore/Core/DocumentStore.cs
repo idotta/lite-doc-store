@@ -19,6 +19,10 @@ namespace LiteDocumentStore;
 /// </remarks>
 internal sealed class DocumentStore : IDocumentStore
 {
+    // Bounded so a leaked lease cannot hang Dispose. On expiry the checkpoint is skipped,
+    // which is safe: SQLite checkpoints the WAL when the last connection closes.
+    private static readonly TimeSpan WalCheckpointRentTimeout = TimeSpan.FromSeconds(5);
+
     private readonly SqliteConnectionPool _pool;
     private readonly ITableNamingConvention _tableNamingConvention;
     private readonly ILogger<DocumentStore> _logger;
@@ -320,6 +324,12 @@ internal sealed class DocumentStore : IDocumentStore
     /// Performs a WAL checkpoint to flush the Write-Ahead Log into the database file for
     /// durability. Runs only when the database is in WAL mode.
     /// </summary>
+    /// <remarks>
+    /// Gated on the option, not the file's actual journal mode, to save a rent and a
+    /// <c>PRAGMA journal_mode</c> per dispose. So an existing WAL database opened with
+    /// <c>EnableWalMode = false</c> skips this — costing only the <c>TRUNCATE</c>, since
+    /// SQLite checkpoints on last-connection close anyway.
+    /// </remarks>
     private async Task PerformWalCheckpointAsync()
     {
         if (!_walEnabled)
@@ -329,7 +339,7 @@ internal sealed class DocumentStore : IDocumentStore
 
         try
         {
-            await using var lease = await _pool.RentAsync().ConfigureAwait(false);
+            await using var lease = await _pool.RentAsync(WalCheckpointRentTimeout).ConfigureAwait(false);
 
             var journalMode = await lease.Connection.QueryFirstStringAsync(
                 "PRAGMA journal_mode").ConfigureAwait(false);
@@ -360,7 +370,7 @@ internal sealed class DocumentStore : IDocumentStore
 
         try
         {
-            using var lease = _pool.Rent();
+            using var lease = _pool.Rent(WalCheckpointRentTimeout);
 
             var journalMode = lease.Connection.QueryFirstString("PRAGMA journal_mode");
 
