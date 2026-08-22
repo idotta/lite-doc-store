@@ -49,19 +49,38 @@ public sealed class DocumentStoreFactory : IDocumentStoreFactory
     /// <inheritdoc/>
     public IDocumentStore Create(DocumentStoreOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        var store = CreateStore(options);
 
-        // Use options-level overrides if provided, otherwise use factory defaults
-        var namingConvention = options.TableNamingConvention ?? _tableNamingConvention;
-        var logger = _loggerFactory?.CreateLogger<DocumentStore>() ?? NullLogger<DocumentStore>.Instance;
-
-        var connection = _connectionFactory.CreateConnection(options);
-
-        return new DocumentStore(connection, namingConvention, logger, ownsConnection: true, options.SerializerOptions);
+        try
+        {
+            store.Initialize();
+            return store;
+        }
+        catch
+        {
+            store.Dispose();
+            throw;
+        }
     }
 
     /// <inheritdoc/>
     public async Task<IDocumentStore> CreateAsync(DocumentStoreOptions options)
+    {
+        var store = CreateStore(options);
+
+        try
+        {
+            await store.InitializeAsync().ConfigureAwait(false);
+            return store;
+        }
+        catch
+        {
+            await store.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private DocumentStore CreateStore(DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -69,8 +88,6 @@ public sealed class DocumentStoreFactory : IDocumentStoreFactory
         var namingConvention = options.TableNamingConvention ?? _tableNamingConvention;
         var logger = _loggerFactory?.CreateLogger<DocumentStore>() ?? NullLogger<DocumentStore>.Instance;
 
-        var connection = await _connectionFactory.CreateConnectionAsync(options).ConfigureAwait(false);
-
-        return new DocumentStore(connection, namingConvention, logger, ownsConnection: true, options.SerializerOptions);
+        return new DocumentStore(options, _connectionFactory, namingConvention, logger);
     }
 }

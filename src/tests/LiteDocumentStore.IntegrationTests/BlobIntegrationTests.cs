@@ -106,10 +106,10 @@ public class BlobIntegrationTests
         var store = await CreateStoreWithBlobTableAsync();
         await store.CreateTableAsync<BlobMeta>();
 
-        await store.ExecuteInTransactionAsync(async () =>
+        await store.ExecuteInTransactionAsync(async tx =>
         {
-            await store.UpsertAsync("m1", new BlobMeta("recording", 3));
-            await store.PutBlobAsync("m1", new byte[] { 1, 2, 3 });
+            await tx.UpsertAsync("m1", new BlobMeta("recording", 3));
+            await tx.PutBlobAsync("m1", new byte[] { 1, 2, 3 });
         });
 
         Assert.NotNull(await store.GetAsync<BlobMeta>("m1"));
@@ -123,10 +123,10 @@ public class BlobIntegrationTests
         await store.CreateTableAsync<BlobMeta>();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            store.ExecuteInTransactionAsync(async () =>
+            store.ExecuteInTransactionAsync(async tx =>
             {
-                await store.UpsertAsync("m1", new BlobMeta("recording", 3));
-                await store.PutBlobAsync("m1", new byte[] { 1, 2, 3 });
+                await tx.UpsertAsync("m1", new BlobMeta("recording", 3));
+                await tx.PutBlobAsync("m1", new byte[] { 1, 2, 3 });
                 throw new InvalidOperationException("boom");
             }));
 

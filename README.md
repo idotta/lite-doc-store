@@ -86,11 +86,59 @@ var customer = await store.GetAsync<Customer>("c1");
 // Query documents by JSON path + value
 var byName = await store.QueryAsync<Customer, string>("$.Name", "Ada");
 
-// For ranges, joins, or virtual-column seeks, drop to raw SQL via the escape hatch:
-var conn = store.Connection; // Microsoft.Data.Sqlite SqliteConnection
+// For ranges, joins, or virtual-column seeks, drop to raw SQL via the escape hatch.
+// The connection is on loan for the duration of the callback.
+var names = await store.ExecuteRawAsync(async (conn, ct) =>
+{
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = "SELECT json_extract(data, '$.Name') FROM [Customer] WHERE id LIKE 'c%'";
+    var results = new List<string>();
+    await using var reader = await cmd.ExecuteReaderAsync(ct);
+    while (await reader.ReadAsync(ct)) results.Add(reader.GetString(0));
+    return results;
+});
 ```
 
 Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStoreOptions)`.
+
+### Concurrency and transactions
+
+`IDocumentStore` is **thread-safe** and meant to be a singleton — one per database. It owns a
+pool of SQLite connections and rents one per operation, so concurrent callers never share a
+connection handle. Size the pool with `DocumentStoreOptions.MaxPoolSize`.
+
+Because each operation runs on its own connection, operations called directly on the store each
+commit on their own. To make several writes atomic, use a transaction and call the operations
+**on it**:
+
+```csharp
+await using var tx = await store.BeginTransactionAsync();
+await tx.UpsertAsync(order.Id, order);
+await tx.PutBlobAsync(order.Id, invoicePdf);
+await tx.CommitAsync();   // disposing without committing rolls back
+```
+
+Or let the store handle commit/rollback for you:
+
+```csharp
+await store.ExecuteInTransactionAsync(async tx =>
+{
+    await tx.UpsertAsync(order.Id, order);
+    await tx.DeleteAsync<Draft>(draftId);
+});
+```
+
+Transactions are independent: two concurrent transactions run on two connections, so neither
+can see or roll back the other's writes.
+
+### In-memory databases
+
+Use `DocumentStoreOptions.ForInMemory()` for a private in-memory database, or
+`ForSharedInMemory(name)` to share one between stores. A bare `Data Source=:memory:` is
+rejected: it belongs to a single connection, so a pooled store would hand every operation its
+own empty database. Note that shared-cache in-memory databases lock at table granularity —
+overlapping write transactions fail with `SQLITE_LOCKED`, so use a file database for concurrent
+write workloads.
 
 ## Dependencies
 

@@ -197,9 +197,10 @@ public class DatabaseSeederExamples
         // Assert - Virtual column should work with seeded data. Range predicates are no longer
         // expressible through the store API, so seek the indexed virtual column via raw SQL and
         // load each matching document through the public GetAsync.
-        var youngIds = await store.Connection.QueryStringsAsync(
-            "SELECT id FROM [PersonEntity] WHERE age < @Age",
-            ("Age", 30));
+        var youngIds = await store.ExecuteRawAsync((connection, _) =>
+            connection.QueryStringsAsync(
+                "SELECT id FROM [PersonEntity] WHERE age < @Age",
+                ("Age", 30)));
 
         var youngList = new List<PersonEntity>();
         foreach (var id in youngIds)

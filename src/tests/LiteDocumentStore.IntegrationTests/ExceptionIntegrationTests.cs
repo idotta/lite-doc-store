@@ -1,5 +1,4 @@
 using LiteDocumentStore.Exceptions;
-using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using Xunit;
 
@@ -7,21 +6,18 @@ namespace LiteDocumentStore.IntegrationTests;
 
 public class ExceptionIntegrationTests : IDisposable
 {
-    private readonly SqliteConnection _connection;
     private readonly IDocumentStore _store;
 
     public ExceptionIntegrationTests()
     {
-        _connection = new SqliteConnection("Data Source=:memory:");
-        _connection.Open();
-
-        // Create store without owning connection (we manage it)
-        _store = new DocumentStore(_connection);
+        // The store owns its connection pool; ForInMemory gives a uniquely named
+        // shared-cache in-memory database that every pooled connection sees.
+        _store = new DocumentStoreFactory().Create(DocumentStoreOptions.ForInMemory());
     }
 
     public void Dispose()
     {
-        _connection?.Dispose();
+        _store.Dispose();
     }
 
     [Fact]
@@ -49,10 +45,10 @@ public class ExceptionIntegrationTests : IDisposable
         // Arrange
         await _store.CreateTableAsync<StrictModel>();
 
-        // Manually insert invalid JSON
-        await _connection.ExecuteAsync(
+        // Manually insert invalid JSON through the raw-SQL escape hatch
+        await _store.ExecuteRawAsync((connection, _) => connection.ExecuteAsync(
             "INSERT INTO [StrictModel] (id, data) VALUES (@Id, jsonb(@Data))",
-            ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}"));
+            ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}")));
 
         // Act & Assert - Deserialization should fail because "not-a-number" cannot be parsed as int
         var exception = await Assert.ThrowsAnyAsync<Exception>(

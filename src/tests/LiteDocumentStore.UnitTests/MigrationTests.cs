@@ -2,6 +2,7 @@ using Xunit;
 
 namespace LiteDocumentStore.UnitTests;
 
+[Trait("Category", "Unit")]
 public class MigrationTests
 {
     [Fact]

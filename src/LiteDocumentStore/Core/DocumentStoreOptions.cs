@@ -56,6 +56,18 @@ public sealed class DocumentStoreOptions
     public bool EnableForeignKeys { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets the maximum number of SQLite connections the store keeps open.
+    /// </summary>
+    /// <remarks>
+    /// The store rents a connection per operation from an internal pool, so this caps how
+    /// many operations can touch the database concurrently; further callers wait for a free
+    /// connection. SQLite serializes writers regardless of this value, so raising it helps
+    /// read concurrency (in WAL mode) more than write throughput. Default is the processor
+    /// count, clamped to [2, 16].
+    /// </remarks>
+    public int MaxPoolSize { get; set; } = Math.Clamp(Environment.ProcessorCount, 2, 16);
+
+    /// <summary>
     /// Gets or sets the default table naming convention.
     /// If null, uses the simple type name as table name.
     /// </summary>
@@ -128,16 +140,24 @@ public sealed class DocumentStoreOptions
     }
 
     /// <summary>
-    /// Creates options for an in-memory SQLite database.
-    /// Data will be lost when the connection closes.
+    /// Creates options for a private in-memory SQLite database.
+    /// Data is lost when the store is disposed.
     /// </summary>
+    /// <remarks>
+    /// The store pools connections, and a plain <c>Data Source=:memory:</c> gives every
+    /// connection its own private database — the second operation would not see the first
+    /// one's writes. So this uses a uniquely named shared-cache in-memory database instead:
+    /// private to this set of options, but visible to every connection in the store's pool.
+    /// Use <see cref="ForSharedInMemory(string)"/> when several stores must share one
+    /// in-memory database by name.
+    /// </remarks>
     /// <returns>DocumentStoreOptions configured for in-memory storage</returns>
     public static DocumentStoreOptions ForInMemory()
     {
         return new DocumentStoreOptions
         {
-            ConnectionString = "Data Source=:memory:",
-            EnableWalMode = false, // WAL not supported for :memory:
+            ConnectionString = $"Data Source=file:lds-{Guid.NewGuid():N}?mode=memory&cache=shared",
+            EnableWalMode = false, // WAL not supported for in-memory
             SynchronousMode = SynchronousMode.Off // Maximum performance for in-memory
         };
     }
@@ -179,6 +199,7 @@ public sealed class DocumentStoreOptions
             CacheSize = CacheSize,
             BusyTimeoutMs = BusyTimeoutMs,
             EnableForeignKeys = EnableForeignKeys,
+            MaxPoolSize = MaxPoolSize,
             TableNamingConvention = TableNamingConvention,
             AdditionalPragmas = [.. AdditionalPragmas],
             SerializerOptions = SerializerOptions

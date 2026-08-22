@@ -2,8 +2,8 @@ namespace LiteDocumentStore;
 
 /// <summary>
 /// A document paired with its optimistic-concurrency version.
-/// Returned by <see cref="IDocumentStore.GetWithVersionAsync{T}"/>; pass
-/// <see cref="Version"/> back to <see cref="IDocumentStore.UpsertWithVersionAsync{T}"/>
+/// Returned by <see cref="IDocumentOperations.GetWithVersionAsync{T}"/>; pass
+/// <see cref="Version"/> back to <see cref="IDocumentOperations.UpsertWithVersionAsync{T}"/>
 /// to perform a compare-and-swap write.
 /// </summary>
 /// <typeparam name="T">Type of the stored document</typeparam>

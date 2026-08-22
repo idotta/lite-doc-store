@@ -1,238 +1,66 @@
-using System.Data;
-using Microsoft.Data.Sqlite;
-
 namespace LiteDocumentStore;
 
 /// <summary>
-/// Defines the contract for a document store that provides JSON document storage
-/// with full relational database capabilities. Supports multiple entity types
-/// through generic methods. Implements disposal interfaces for proper resource cleanup.
+/// A hybrid document + relational store over a single SQLite database. Documents are stored
+/// as SQLite JSONB, and the same tables stay reachable from raw SQL via
+/// <see cref="IDocumentOperations.ExecuteRawAsync{TResult}"/>.
 /// </summary>
-public interface IDocumentStore : IAsyncDisposable, IDisposable
+/// <remarks>
+/// <para>
+/// <b>Thread safety.</b> A store is safe to share across threads and requests. It owns a pool
+/// of SQLite connections and rents one per operation, so concurrent callers never share a
+/// connection. Register it as a singleton; one store per database.
+/// </para>
+/// <para>
+/// Because each operation runs on its own connection, operations invoked directly on the store
+/// each commit on their own. To make several writes atomic, use
+/// <see cref="BeginTransactionAsync"/> or <see cref="ExecuteInTransactionAsync"/> and invoke
+/// the operations on the returned <see cref="IDocumentTransaction"/>.
+/// </para>
+/// </remarks>
+public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDisposable
 {
     /// <summary>
-    /// Creates a table for storing JSON objects with a generic schema using JSONB format.
-    /// The table name will be derived from the type T.
+    /// Starts a unit of work on a dedicated connection. Operations invoked on the returned
+    /// transaction are committed or rolled back together.
     /// </summary>
-    /// <typeparam name="T">Type whose name will be used as the table name</typeparam>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task CreateTableAsync<T>();
+    /// <remarks>
+    /// The transaction holds one connection from the pool until it is disposed, so dispose it
+    /// promptly — <c>await using</c> is the intended usage. Disposing without committing rolls
+    /// back.
+    /// </remarks>
+    /// <param name="cancellationToken">A token to cancel waiting for a free connection</param>
+    /// <returns>A new transaction</returns>
+    Task<IDocumentTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts or updates a JSON object in the document store using JSONB format.
+    /// Runs <paramref name="action"/> inside a transaction, committing when it returns and
+    /// rolling back when it throws.
     /// </summary>
-    /// <typeparam name="T">Type of the object to store (also used as table name)</typeparam>
-    /// <param name="id">Unique identifier for the object</param>
-    /// <param name="data">The object to store</param>
-    /// <returns>The number of rows affected by the operation</returns>
-    Task<int> UpsertAsync<T>(string id, T data);
+    /// <remarks>
+    /// <para>
+    /// Only operations invoked on the supplied <see cref="IDocumentTransaction"/> are part of
+    /// the transaction. Operations invoked on the store inside the callback run on their own
+    /// connections and commit independently.
+    /// </para>
+    /// <para>
+    /// <b>Do not write through the store from inside the callback.</b> Once the transaction has
+    /// written, it holds the database's write lock, and a store write is a second connection
+    /// waiting for a lock only this transaction can release — so it blocks for
+    /// <see cref="DocumentStoreOptions.BusyTimeoutMs"/> and then throws
+    /// <c>SQLITE_BUSY</c> ("database is locked"). Reads through the store are fine in WAL mode.
+    /// </para>
+    /// </remarks>
+    /// <param name="action">The work to run transactionally</param>
+    /// <param name="cancellationToken">A token to cancel waiting for a free connection</param>
+    Task ExecuteInTransactionAsync(
+        Func<IDocumentTransaction, Task> action,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Inserts or updates multiple JSON objects in the document store using a single SQL statement.
-    /// This is more efficient than calling UpsertAsync multiple times.
+    /// Checks that the store can reach the database and that SQLite is new enough for JSONB
+    /// (3.45+).
     /// </summary>
-    /// <typeparam name="T">Type of the objects to store (also used as table name)</typeparam>
-    /// <param name="items">Collection of (id, data) tuples to upsert</param>
-    /// <returns>The total number of rows affected by the operation</returns>
-    Task<int> UpsertManyAsync<T>(IEnumerable<(string id, T data)> items);
-
-    /// <summary>
-    /// Inserts or updates a JSON object using optimistic concurrency (compare-and-swap).
-    /// Pass <paramref name="expectedVersion"/> = 0 to require an insert (the document
-    /// must not exist yet); pass the version obtained from
-    /// <see cref="GetWithVersionAsync{T}"/> to require that the stored row has not been
-    /// modified since it was read.
-    /// </summary>
-    /// <typeparam name="T">Type of the object to store (also used as table name)</typeparam>
-    /// <param name="id">Unique identifier for the object</param>
-    /// <param name="data">The object to store</param>
-    /// <param name="expectedVersion">The version the stored row is expected to have; 0 means "must not exist"</param>
-    /// <returns>The new version of the stored row</returns>
-    /// <exception cref="Exceptions.ConcurrencyException">
-    /// Thrown when the stored row's version differs from <paramref name="expectedVersion"/>
-    /// (including "already exists" for 0 and "does not exist" for non-zero).
-    /// </exception>
-    Task<long> UpsertWithVersionAsync<T>(string id, T data, long expectedVersion);
-
-    /// <summary>
-    /// Retrieves a JSON object by its ID together with its optimistic-concurrency version.
-    /// </summary>
-    /// <typeparam name="T">Type of the object to retrieve (also used as table name)</typeparam>
-    /// <param name="id">Unique identifier of the object</param>
-    /// <returns>The document and its version, or null if not found</returns>
-    Task<VersionedDocument<T>?> GetWithVersionAsync<T>(string id);
-
-    /// <summary>
-    /// Retrieves a JSON object by its ID from the document store.
-    /// </summary>
-    /// <typeparam name="T">Type of the object to retrieve (also used as table name)</typeparam>
-    /// <param name="id">Unique identifier of the object</param>
-    /// <returns>The deserialized object, or default if not found</returns>
-    Task<T?> GetAsync<T>(string id);
-
-    /// <summary>
-    /// Retrieves all JSON objects from the document store.
-    /// </summary>
-    /// <typeparam name="T">Type of the objects to retrieve (also used as table name)</typeparam>
-    /// <returns>An enumerable of deserialized objects</returns>
-    Task<IEnumerable<T>> GetAllAsync<T>();
-
-    /// <summary>
-    /// Deletes a JSON object by its ID from the document store.
-    /// </summary>
-    /// <typeparam name="T">Type whose name will be used as the table name</typeparam>
-    /// <param name="id">Unique identifier of the object to delete</param>
-    /// <returns>True if the object was deleted, false if it didn't exist</returns>
-    Task<bool> DeleteAsync<T>(string id);
-
-    /// <summary>
-    /// Deletes multiple JSON objects by their IDs from the document store using a single SQL statement.
-    /// This is more efficient than calling DeleteAsync multiple times.
-    /// </summary>
-    /// <typeparam name="T">Type whose name will be used as the table name</typeparam>
-    /// <param name="ids">Collection of unique identifiers of the objects to delete</param>
-    /// <returns>The number of rows affected (documents deleted)</returns>
-    Task<int> DeleteManyAsync<T>(IEnumerable<string> ids);
-
-    /// <summary>
-    /// Checks if a document exists in the store without deserializing it.
-    /// More efficient than GetAsync when you only need to check existence.
-    /// </summary>
-    /// <typeparam name="T">Type whose name will be used as the table name</typeparam>
-    /// <param name="id">Unique identifier of the document to check</param>
-    /// <returns>True if the document exists, false otherwise</returns>
-    Task<bool> ExistsAsync<T>(string id);
-
-    /// <summary>
-    /// Gets the total count of documents in a table.
-    /// </summary>
-    /// <typeparam name="T">Type whose name will be used as the table name</typeparam>
-    /// <returns>The number of documents in the table</returns>
-    Task<long> CountAsync<T>();
-
-    /// <summary>
-    /// Executes a batch of operations within a transaction for optimal performance.
-    /// </summary>
-    /// <param name="action">Async action to execute within the transaction</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task ExecuteInTransactionAsync(Func<IDbTransaction, Task> action);
-
-    /// <summary>
-    /// Executes a batch of operations within a transaction for optimal performance.
-    /// </summary>
-    /// <param name="action">Async action to execute within the transaction</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task ExecuteInTransactionAsync(Func<Task> action);
-
-    /// <summary>
-    /// Checks if the document store is healthy and ready for operations.
-    /// Verifies the connection is open and validates SQLite version supports JSONB (3.45+).
-    /// Useful for liveness probes in containerized environments and health monitoring.
-    /// </summary>
-    /// <returns>True if the store is healthy, false otherwise</returns>
+    /// <returns>True when the store is usable; false instead of throwing on any failure</returns>
     Task<bool> IsHealthyAsync();
-
-    /// <summary>
-    /// Creates an index on a JSON path expression for optimized query performance.
-    /// Automatically checks if the index exists before creation to avoid errors.
-    /// </summary>
-    /// <typeparam name="T">Type whose table will have the index created</typeparam>
-    /// <param name="jsonPath">Expression selecting the JSON property to index</param>
-    /// <param name="indexName">Optional custom index name. If null, a name will be auto-generated</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task CreateIndexAsync<T>(System.Linq.Expressions.Expression<Func<T, object>> jsonPath, string? indexName = null);
-
-    /// <summary>
-    /// Creates a composite index on multiple JSON path expressions for optimized multi-column queries.
-    /// Automatically checks if the index exists before creation to avoid errors.
-    /// </summary>
-    /// <typeparam name="T">Type whose table will have the index created</typeparam>
-    /// <param name="jsonPaths">Array of expressions selecting the JSON properties to index</param>
-    /// <param name="indexName">Optional custom index name. If null, a name will be auto-generated</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task CreateCompositeIndexAsync<T>(System.Linq.Expressions.Expression<Func<T, object>>[] jsonPaths, string? indexName = null);
-
-    /// <summary>
-    /// Adds a virtual (generated) column to a table based on a JSON path expression.
-    /// Virtual columns are computed from json_extract(data, '$.path') and can be indexed for better query performance.
-    /// Automatically checks if the column exists before creation to avoid errors.
-    /// </summary>
-    /// <typeparam name="T">Type whose table will have the column added</typeparam>
-    /// <param name="jsonPath">Expression selecting the JSON property to extract (e.g., x => x.Email)</param>
-    /// <param name="columnName">Name for the new virtual column</param>
-    /// <param name="createIndex">If true, automatically creates an index on the virtual column</param>
-    /// <param name="columnType">The SQLite column type (TEXT, INTEGER, REAL, etc.). Defaults to TEXT.</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    /// <example>
-    /// <code>
-    /// // Add a virtual column for email with automatic indexing
-    /// await store.AddVirtualColumnAsync&lt;Customer&gt;(x => x.Email, "email", createIndex: true);
-    /// 
-    /// // Now queries can use the virtual column directly
-    /// // SELECT * FROM Customer WHERE email = 'john@example.com'
-    /// </code>
-    /// </example>
-    Task AddVirtualColumnAsync<T>(
-        System.Linq.Expressions.Expression<Func<T, object>> jsonPath,
-        string columnName,
-        bool createIndex = false,
-        string columnType = "TEXT");
-
-    /// <summary>
-    /// Queries documents by a JSON path and value using json_extract().
-    /// Supports patterns like: $.property, $.nested.property, $.array[0]
-    /// </summary>
-    /// <typeparam name="T">Type of the objects to retrieve (also used as table name)</typeparam>
-    /// <typeparam name="TValue">Type of the value to match</typeparam>
-    /// <param name="jsonPath">The JSON path to query (e.g., '$.email', '$.address.city')</param>
-    /// <param name="value">The value to match</param>
-    /// <returns>An enumerable of deserialized objects matching the query</returns>
-    Task<IEnumerable<T>> QueryAsync<T, TValue>(string jsonPath, TValue value);
-
-    /// <summary>
-    /// Creates the shared blob table used by the raw-binary blob operations.
-    /// Call once during store setup, like <see cref="CreateTableAsync{T}"/>.
-    /// </summary>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task CreateBlobTableAsync();
-
-    /// <summary>
-    /// Inserts or updates a raw binary blob. Blobs are opaque byte payloads stored
-    /// alongside documents in the same database file; writes participate in the
-    /// connection's active transaction like every other operation, so a blob and its
-    /// related document can be persisted atomically via
-    /// <see cref="ExecuteInTransactionAsync(Func{Task})"/>.
-    /// </summary>
-    /// <param name="id">Unique identifier for the blob</param>
-    /// <param name="data">The binary payload to store</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task PutBlobAsync(string id, ReadOnlyMemory<byte> data);
-
-    /// <summary>
-    /// Retrieves a raw binary blob by its ID.
-    /// </summary>
-    /// <param name="id">Unique identifier of the blob</param>
-    /// <returns>The binary payload, or null if not found</returns>
-    Task<byte[]?> GetBlobAsync(string id);
-
-    /// <summary>
-    /// Deletes a raw binary blob by its ID.
-    /// </summary>
-    /// <param name="id">Unique identifier of the blob to delete</param>
-    /// <returns>True if the blob was deleted, false if it didn't exist</returns>
-    Task<bool> DeleteBlobAsync(string id);
-
-    /// <summary>
-    /// Checks if a raw binary blob exists without reading its payload.
-    /// </summary>
-    /// <param name="id">Unique identifier of the blob to check</param>
-    /// <returns>True if the blob exists, false otherwise</returns>
-    Task<bool> BlobExistsAsync(string id);
-
-    /// <summary>
-    /// Gets the underlying SQLite connection for advanced operations and raw SQL access.
-    /// This enables the hybrid experience where users can use both document storage
-    /// and traditional relational database features.
-    /// </summary>
-    SqliteConnection Connection { get; }
 }

@@ -10,33 +10,37 @@ namespace LiteDocumentStore.IntegrationTests;
 public class VirtualColumnIntegrationTests : IDisposable
 {
     private readonly string _testDbPath;
-    private readonly SqliteConnection _connection;
-    private readonly DocumentStore _store;
+    private readonly IDocumentStore _store;
 
     public VirtualColumnIntegrationTests()
     {
         _testDbPath = Path.Combine(Path.GetTempPath(), $"test_virtualcol_{Guid.NewGuid()}.db");
-        var options = new DocumentStoreOptions { ConnectionString = $"Data Source={_testDbPath}" };
-        var connectionFactory = new DefaultConnectionFactory();
 
-        _connection = connectionFactory.CreateConnection(options);
-        _store = new DocumentStore(_connection);
+        // The store owns its connection pool; the factory opens and configures it.
+        _store = new DocumentStoreFactory().Create(DocumentStoreOptions.ForFile(_testDbPath));
     }
 
     public void Dispose()
     {
-        _connection.Dispose();
+        _store.Dispose();
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        if (File.Exists(_testDbPath))
+        foreach (var file in new[] { _testDbPath, $"{_testDbPath}-wal", $"{_testDbPath}-shm" })
         {
-            try { File.Delete(_testDbPath); }
-            catch (IOException) { /* ignore */ }
+            if (File.Exists(file))
+            {
+                try { File.Delete(file); }
+                catch (IOException) { /* ignore */ }
+            }
         }
     }
+
+    // Introspects the store's schema on a connection borrowed from its pool.
+    private Task<TResult> IntrospectAsync<TResult>(Func<SchemaIntrospector, Task<TResult>> operation) =>
+        _store.ExecuteRawAsync((connection, _) => operation(new SchemaIntrospector(connection)));
 
     // Seeks the given WHERE clause against the Product table (typically hitting a virtual
     // column) and loads each matching document through the public store API. Range/string
@@ -46,8 +50,8 @@ public class VirtualColumnIntegrationTests : IDisposable
         string whereSql,
         params (string Name, object? Value)[] parameters)
     {
-        var ids = await _connection.QueryStringsAsync(
-            $"SELECT id FROM Product WHERE {whereSql}", parameters);
+        var ids = await _store.ExecuteRawAsync((connection, _) => connection.QueryStringsAsync(
+            $"SELECT id FROM Product WHERE {whereSql}", parameters));
 
         var products = new List<Product>();
         foreach (var id in ids)
@@ -101,8 +105,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category");
 
         // Assert
-        var introspector = new SchemaIntrospector(_connection);
-        var columns = await introspector.GetColumnsAsync("Product");
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("Product"));
         Assert.Contains(columns, c => c.Name == "category");
     }
 
@@ -117,11 +120,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Price, "price", createIndex: true, columnType: "REAL");
 
         // Assert
-        var introspector = new SchemaIntrospector(_connection);
-        var columns = await introspector.GetColumnsAsync("Product");
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("Product"));
         Assert.Contains(columns, c => c.Name == "price");
 
-        var indexExists = await introspector.IndexExistsAsync("idx_Product_price");
+        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync("idx_Product_price"));
         Assert.True(indexExists);
     }
 
@@ -140,11 +142,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<ProductWithMetadata>(x => x.Metadata.Brand, "brand", createIndex: true);
 
         // Assert
-        var introspector = new SchemaIntrospector(_connection);
-        var columns = await introspector.GetColumnsAsync("ProductWithMetadata");
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("ProductWithMetadata"));
         Assert.Contains(columns, c => c.Name == "brand");
 
-        var indexExists = await introspector.IndexExistsAsync("idx_ProductWithMetadata_brand");
+        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync("idx_ProductWithMetadata_brand"));
         Assert.True(indexExists);
     }
 
@@ -158,8 +159,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         // Act & Assert - should not throw
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category");
 
-        var introspector = new SchemaIntrospector(_connection);
-        var columns = await introspector.GetColumnsAsync("Product");
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("Product"));
         Assert.Contains(columns, c => c.Name == "category");
     }
 
@@ -177,8 +177,8 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Price, "price", columnType: "REAL");
 
         // Assert - Query using virtual columns directly
-        var categories = await _connection.QueryStringsAsync(
-            "SELECT category FROM Product WHERE category = 'Electronics' ORDER BY price");
+        var categories = await _store.ExecuteRawAsync((connection, _) => connection.QueryStringsAsync(
+            "SELECT category FROM Product WHERE category = 'Electronics' ORDER BY price"));
 
         Assert.Equal(2, categories.Count);
         Assert.Equal("Electronics", categories[0]);
@@ -289,9 +289,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category", createIndex: true);
 
         // Act - Query using index
-        var match = await _connection.QueryFirstStringAsync(
-            "SELECT id FROM Product WHERE category = @Category",
-            ("Category", "Category 5"));
+        var match = await _store.ExecuteRawAsync((connection, _) =>
+            connection.QueryFirstStringAsync(
+                "SELECT id FROM Product WHERE category = @Category",
+                ("Category", "Category 5")));
 
         // Assert
         Assert.NotNull(match);

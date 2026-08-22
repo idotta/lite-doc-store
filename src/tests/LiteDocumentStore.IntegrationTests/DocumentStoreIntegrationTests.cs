@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -6,41 +5,47 @@ namespace LiteDocumentStore.IntegrationTests;
 public class DocumentStoreIntegrationTests : IDisposable
 {
     private readonly string _testDbPath;
-    private readonly SqliteConnection _connection;
-    private readonly DocumentStore _store;
+    private readonly IDocumentStore _store;
 
     public DocumentStoreIntegrationTests()
     {
         _testDbPath = Path.Combine(Path.GetTempPath(), $"test_integration_{Guid.NewGuid()}.db");
-        var options = new DocumentStoreOptions { ConnectionString = $"Data Source={_testDbPath}" };
-        var connectionFactory = new DefaultConnectionFactory();
 
-        // Manual connection management
-        _connection = connectionFactory.CreateConnection(options);
-        _store = new DocumentStore(_connection);
+        // The store owns its connection pool; the factory opens and configures it.
+        _store = new DocumentStoreFactory().Create(DocumentStoreOptions.ForFile(_testDbPath));
     }
 
     public void Dispose()
     {
-        _connection.Dispose();
+        _store.Dispose();
 
-        // Force garbage collection to ensure connection is fully closed
+        // Force garbage collection to ensure connections are fully closed
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        if (File.Exists(_testDbPath))
+        foreach (var file in new[] { _testDbPath, $"{_testDbPath}-wal", $"{_testDbPath}-shm" })
         {
-            try
+            if (File.Exists(file))
             {
-                File.Delete(_testDbPath);
-            }
-            catch (IOException)
-            {
-                // Sometimes the file is still locked, ignore for tests
+                try
+                {
+                    File.Delete(file);
+                }
+                catch (IOException)
+                {
+                    // Sometimes the file is still locked, ignore for tests
+                }
             }
         }
     }
+
+    // Raw-SQL helpers: the store exposes its connection only for the duration of a callback.
+    private Task<string?> QueryStringAsync(string sql) =>
+        _store.ExecuteRawAsync((connection, _) => connection.QueryFirstStringAsync(sql));
+
+    private Task<int> QueryIntAsync(string sql) =>
+        _store.ExecuteRawAsync((connection, _) => connection.ExecuteScalarAsync<int>(sql));
 
     [Fact]
     public async Task CreateTableAsync_CreatesTable()
@@ -50,7 +55,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert
         var checkSql = "SELECT name FROM sqlite_master WHERE type='table' AND name='Person'";
-        var result = await _store.Connection.QueryFirstStringAsync(checkSql);
+        var result = await QueryStringAsync(checkSql);
         Assert.Equal("Person", result);
     }
 
@@ -504,11 +509,11 @@ public class DocumentStoreIntegrationTests : IDisposable
         // Arrange
         await _store.CreateTableAsync<Person>();
 
-        // Act
-        await _store.ExecuteInTransactionAsync(async () =>
+        // Act - operations must run on the transaction to take part in it
+        await _store.ExecuteInTransactionAsync(async transaction =>
         {
-            await _store.UpsertAsync("1", new Person { Name = "A" });
-            await _store.UpsertAsync("2", new Person { Name = "B" });
+            await transaction.UpsertAsync("1", new Person { Name = "A" });
+            await transaction.UpsertAsync("2", new Person { Name = "B" });
         });
 
         // Assert
@@ -526,9 +531,9 @@ public class DocumentStoreIntegrationTests : IDisposable
         // Act & Assert
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await _store.ExecuteInTransactionAsync(async () =>
+            await _store.ExecuteInTransactionAsync(async transaction =>
             {
-                await _store.UpsertAsync("2", new Person { Name = "Should not exist" });
+                await transaction.UpsertAsync("2", new Person { Name = "Should not exist" });
                 throw new InvalidOperationException("Force rollback");
             });
         });
@@ -561,7 +566,7 @@ public class DocumentStoreIntegrationTests : IDisposable
         Assert.True(isHealthy);
 
         // Verify SQLite version is 3.45+
-        var version = await _connection.QueryFirstStringAsync("SELECT sqlite_version()");
+        var version = await QueryStringAsync("SELECT sqlite_version()");
         Assert.NotNull(version);
         Assert.True(Version.TryParse(version, out var sqliteVersion));
         Assert.True(sqliteVersion >= new Version(3, 45, 0),
@@ -598,7 +603,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_person_email'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -613,7 +618,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert - check that an index was created (name is auto-generated)
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_Person_name%'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -629,7 +634,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_person_email'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -644,7 +649,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_person_address_city'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -665,7 +670,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_person_name_age'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -685,7 +690,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert - check that a composite index was created
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_Person_composite_%'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -713,7 +718,7 @@ public class DocumentStoreIntegrationTests : IDisposable
 
         // Assert
         var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_person_name_age'";
-        var count = await _connection.ExecuteScalarAsync<int>(checkSql);
+        var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
 
@@ -740,18 +745,21 @@ public class DocumentStoreIntegrationTests : IDisposable
         // Assert - Verify the index exists and can be used
         // Note: JSON path uses PascalCase to match default System.Text.Json serialization
         // EXPLAIN QUERY PLAN yields a 'detail' column per step; read it by ordinal.
-        var planParts = new List<string>();
-        await using (var command = _connection.CreateCommand())
+        var planParts = await _store.ExecuteRawAsync(async (connection, _) =>
         {
+            var details = new List<string>();
+            await using var command = connection.CreateCommand();
             command.CommandText =
                 "EXPLAIN QUERY PLAN SELECT json(data) FROM Person WHERE json_extract(data, '$.Email') = 'person50@example.com'";
             await using var reader = await command.ExecuteReaderAsync();
             var detailOrdinal = reader.GetOrdinal("detail");
             while (await reader.ReadAsync())
             {
-                planParts.Add(reader.GetString(detailOrdinal));
+                details.Add(reader.GetString(detailOrdinal));
             }
-        }
+
+            return details;
+        });
 
         // The query plan should mention the index
         var planText = string.Join(" ", planParts);

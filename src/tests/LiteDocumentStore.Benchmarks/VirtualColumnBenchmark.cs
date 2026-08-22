@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
-using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -99,7 +98,8 @@ public class VirtualColumnBenchmark
         await _storeWithVirtual.AddVirtualColumnAsync<Product>(p => p.Metadata.Brand, "brand", createIndex: true);
 
         // Run ANALYZE to update statistics for query planner
-        await _storeWithVirtual.Connection.ExecuteAsync("ANALYZE", commandType: System.Data.CommandType.Text);
+        await _storeWithVirtual.ExecuteRawAsync(
+            (connection, _) => connection.ExecuteAsync("ANALYZE"));
     }
 
     [GlobalCleanup]
@@ -169,33 +169,74 @@ public class VirtualColumnBenchmark
     [Benchmark(Description = "Raw SQL: Category query (indexed)")]
     public async Task<int> Query_RawSQL_WithIndex_ByCategory()
     {
-        var results = await _storeWithVirtual.Connection.QueryAsync<byte[]>(
-            "SELECT data FROM Product WHERE category = 'Category 25'");
-        return results.Count();
+        var results = await _storeWithVirtual.ExecuteRawAsync(
+            (connection, cancellationToken) => QueryBlobsAsync(
+                connection,
+                "SELECT data FROM Product WHERE category = 'Category 25'",
+                cancellationToken));
+        return results.Count;
     }
 
     [Benchmark(Description = "Raw SQL: Category query (no index)")]
     public async Task<int> Query_RawSQL_NoIndex_ByCategory()
     {
-        var results = await _storeWithoutVirtual.Connection.QueryAsync<byte[]>(
-            "SELECT data FROM Product WHERE json_extract(data, '$.Category') = 'Category 25'");
-        return results.Count();
+        var results = await _storeWithoutVirtual.ExecuteRawAsync(
+            (connection, cancellationToken) => QueryBlobsAsync(
+                connection,
+                "SELECT data FROM Product WHERE json_extract(data, '$.Category') = 'Category 25'",
+                cancellationToken));
+        return results.Count;
     }
 
     [Benchmark(Description = "Raw SQL: SKU query (indexed)")]
     public async Task<int> Query_RawSQL_WithIndex_BySku()
     {
-        var results = await _storeWithVirtual.Connection.QueryAsync<byte[]>(
-            "SELECT data FROM Product WHERE sku = 'SKU-025000'");
-        return results.Count();
+        var results = await _storeWithVirtual.ExecuteRawAsync(
+            (connection, cancellationToken) => QueryBlobsAsync(
+                connection,
+                "SELECT data FROM Product WHERE sku = 'SKU-025000'",
+                cancellationToken));
+        return results.Count;
     }
 
     [Benchmark(Description = "Raw SQL: SKU query (no index)")]
     public async Task<int> Query_RawSQL_NoIndex_BySku()
     {
-        var results = await _storeWithoutVirtual.Connection.QueryAsync<byte[]>(
-            "SELECT data FROM Product WHERE json_extract(data, '$.Sku') = 'SKU-025000'");
-        return results.Count();
+        var results = await _storeWithoutVirtual.ExecuteRawAsync(
+            (connection, cancellationToken) => QueryBlobsAsync(
+                connection,
+                "SELECT data FROM Product WHERE json_extract(data, '$.Sku') = 'SKU-025000'",
+                cancellationToken));
+        return results.Count;
+    }
+
+    /// <summary>
+    /// Reads the first column of every row as a BLOB, by ordinal.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors the store's own reflection-free read path (see
+    /// <c>Core/SqliteCommandExtensions.cs</c>) so the raw-SQL benchmarks measure SQLite plus
+    /// the store rather than a third-party object mapper. The connection is supplied by
+    /// <see cref="IDocumentOperations.ExecuteRawAsync{TResult}"/> and is valid only inside
+    /// the callback.
+    /// </remarks>
+    private static async Task<List<byte[]>> QueryBlobsAsync(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        var results = new List<byte[]>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(reader.GetFieldValue<byte[]>(0));
+        }
+
+        return results;
     }
 
     [Benchmark(Description = "Add virtual column (column creation overhead)")]
