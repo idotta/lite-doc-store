@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/LiteDocumentStore.Benchmarks/LiteDocumentStore.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/AotVerification/AotVerification.csproj" />
+    <Project Path="examples/Examples/Examples.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.IntegrationTests.csproj" />
+    <Project Path="tests/LiteDocumentStore.UnitTests/LiteDocumentStore.UnitTests.csproj" />
+  </Folder>
+  <Project Path="src/LiteDocumentStore/LiteDocumentStore.csproj" />
+</Solution>

@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../LiteDocumentStore/LiteDocumentStore.csproj" />
+    <ProjectReference Include="../../src/LiteDocumentStore/LiteDocumentStore.csproj" />
   </ItemGroup>
 
 </Project>

@@ -7,7 +7,7 @@ This project contains BenchmarkDotNet benchmarks for validating performance char
 ### Run All Benchmarks
 
 ```bash
-cd src/tests/LiteDocumentStore.Benchmarks
+cd benchmarks/LiteDocumentStore.Benchmarks
 dotnet run -c Release
 ```
 
@@ -194,7 +194,7 @@ Consider integrating these benchmarks into your CI/CD pipeline:
 # Example GitHub Actions step
 - name: Run Benchmarks
   run: |
-    cd src/tests/LiteDocumentStore.Benchmarks
+    cd benchmarks/LiteDocumentStore.Benchmarks
     dotnet run -c Release --exporters json
     
 - name: Store Benchmark Results

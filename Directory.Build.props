@@ -1,0 +1,10 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Deterministic, normalized-path builds on CI so SourceLink (referenced by
+         LiteDocumentStore.csproj) actually resolves sources for released binaries. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(ContinuousIntegrationBuild)' == '' AND '$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

@@ -7,22 +7,21 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   DOTNET_VERSION: '10.0.x'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
-defaults:
-  run:
-    working-directory: ./src
-
 jobs:
   build-and-test:
-    name: Build and Test
+    name: Build and Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
       fail-fast: false
 
     steps:
@@ -41,10 +40,15 @@ jobs:
       run: dotnet build --configuration Release --no-restore
 
     - name: Run Unit Tests
-      run: dotnet test tests/LiteDocumentStore.UnitTests/LiteDocumentStore.UnitTests.csproj --configuration Release --verbosity normal --logger "trx;LogFileName=unit-test-results.trx"
+      run: dotnet test tests/LiteDocumentStore.UnitTests/LiteDocumentStore.UnitTests.csproj --configuration Release --verbosity normal --logger "trx;LogFileName=unit-test-results.trx" --collect:"XPlat Code Coverage"
 
     - name: Run Integration Tests
-      run: dotnet test tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.IntegrationTests.csproj --configuration Release --verbosity normal --logger "trx;LogFileName=integration-test-results.trx"
+      run: dotnet test tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.IntegrationTests.csproj --configuration Release --verbosity normal --logger "trx;LogFileName=integration-test-results.trx" --collect:"XPlat Code Coverage"
+
+    # The examples are compiled by the solution build above; running them is what catches
+    # a sample that still compiles but no longer works against the current API.
+    - name: Run all examples
+      run: dotnet run --project examples/Examples --configuration Release --no-build -- all
 
     - name: Upload Test Results
       uses: actions/upload-artifact@v7
@@ -53,7 +57,143 @@ jobs:
         name: test-results-${{ matrix.os }}
         path: |
           **/TestResults/*.trx
+          **/TestResults/**/coverage.cobertura.xml
         retention-days: 30
+
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Run tests with coverage
+      run: dotnet test --configuration Release --collect:"XPlat Code Coverage" --results-directory ./coverage
+
+    - name: Generate report
+      run: |
+        dotnet tool install --global dotnet-reportgenerator-globaltool
+        reportgenerator -reports:'coverage/**/coverage.cobertura.xml' -targetdir:coverage/report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary'
+        cat coverage/report/Summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: coverage-report
+        path: coverage/report
+        retention-days: 30
+
+  package:
+    name: Pack
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Pack
+      run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --configuration Release --output ./artifacts -p:Version=0.0.0-ci
+
+    - name: Verify package contents
+      run: |
+        nupkg=$(ls artifacts/*.nupkg)
+        snupkg=$(ls artifacts/*.snupkg)
+        echo "Inspecting $nupkg / $snupkg"
+        contents=$(unzip -Z1 "$nupkg")
+        echo "$contents"
+        for entry in README.md litedocstore-icon.png lib/net10.0/LiteDocumentStore.dll lib/net10.0/LiteDocumentStore.xml; do
+          echo "$contents" | grep -qx "$entry" || { echo "missing from package: $entry"; exit 1; }
+        done
+        unzip -Z1 "$snupkg" | grep -qx 'lib/net10.0/LiteDocumentStore.pdb' || { echo "missing pdb from symbol package"; exit 1; }
+
+    - name: Upload package
+      uses: actions/upload-artifact@v7
+      with:
+        name: nupkg
+        path: artifacts/*
+        retention-days: 30
+
+  aot-publish:
+    name: AOT Publish (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+      fail-fast: false
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Install Native AOT prerequisites
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+    # IL2xxx/IL3xxx trim + AOT warnings fail the build, so an AOT regression cannot ship silently.
+    - name: Publish AOT verification example
+      run: dotnet publish examples/AotVerification/AotVerification.csproj -c Release -r ${{ matrix.rid }} -o ./aot-out -warnaserror
+
+    - name: Run the AOT binary
+      shell: bash
+      run: |
+        binary=$(find ./aot-out -maxdepth 1 -type f \( -name 'AotVerification' -o -name 'AotVerification.exe' \) | head -n 1)
+        [ -n "$binary" ] || { echo "AOT binary not found in ./aot-out"; find ./aot-out -type f | head -50; exit 1; }
+        "$binary"
+
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    # `dotnet list package` exits 0 whatever it finds, so the gate is the output text —
+    # which is localized, hence the pinned UI language.
+    - name: Check for vulnerable packages
+      env:
+        DOTNET_CLI_UI_LANGUAGE: en
+      run: |
+        dotnet list package --vulnerable --include-transitive | tee vulnerable.log
+        if grep -q 'has the following vulnerable packages' vulnerable.log; then
+          echo "Vulnerable packages found"
+          exit 1
+        fi
+
+    # Informational only — deprecations are not a merge blocker.
+    - name: Check for deprecated packages
+      env:
+        DOTNET_CLI_UI_LANGUAGE: en
+      run: dotnet list package --deprecated
 
   security-scan:
     name: Security Scan
@@ -83,3 +223,15 @@ jobs:
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
+
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Review dependency changes
+      uses: actions/dependency-review-action@v4

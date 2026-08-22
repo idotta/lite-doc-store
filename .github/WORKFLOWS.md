@@ -12,42 +12,40 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 - Manual dispatch
 
 **Jobs:**
-- **Build and Test**: Builds the project and runs all tests on Ubuntu, Windows, and macOS
-- **Security Scan**: Performs CodeQL security analysis for vulnerability detection
-- **Package Validation**: Creates a NuGet package to validate packaging
+- **Build and Test**: Builds and runs unit + integration tests on Ubuntu, Windows, and macOS (matrix, `fail-fast: false`)
+- **Coverage Report**: Collects XPlat Code Coverage and renders a ReportGenerator summary into the job summary (no minimum-coverage gate yet)
+- **Pack**: Packs the library and asserts the nupkg/snupkg actually contain the README, icon, XML docs and PDB
+- **AOT Publish**: Publishes `examples/AotVerification.cs` for `linux-x64` and `win-x64` with trim/AOT warnings as errors, then runs the native binary
+- **Dependency Audit**: Fails on vulnerable packages (`dotnet list package --vulnerable --include-transitive`); reports deprecated ones
+- **Security Scan**: CodeQL analysis (`security-extended`)
+- **Dependency Review**: On pull requests only
 
 **Purpose:**
-This workflow focuses on core CI tasks - ensuring the code builds, tests pass on all platforms, security vulnerabilities are detected, and the package can be created successfully.
+Core CI: the code builds and tests pass on all three platforms, the package is well formed, the AOT claim is proven by an actual Native AOT publish + run, and no vulnerable dependency slips in.
 
 **Artifacts:**
-- Test results (TRX files) from all platforms
-- NuGet package (validation only)
+- Test results (TRX) and coverage files from all platforms
+- Coverage HTML report
+- NuGet package (validation only, versioned `0.0.0-ci`)
 
-**Note:** Code quality checks (formatting, coverage, static analysis) are handled by the separate Code Quality workflow to keep CI fast and focused.
+**Note:** Formatting, static analysis and documentation checks live in the separate Code Quality workflow.
 
 ### 2. Publish Workflow (`publish.yml`)
 
 **Triggers:**
-- When a release is published on GitHub
-- Manual dispatch with version input
+- When a release is published on GitHub (no manual dispatch)
 
-**Jobs:**
-- **Validate**: Runs all tests before publishing
-- **Publish**: Creates and publishes NuGet package to NuGet.org
-- **Create GitHub Release**: Attaches NuGet packages to GitHub release
+**Steps (single `deploy` job):**
+- Resolves `VERSION` from the release tag (`refs/tags/vX.Y.Z`) **before** building, and passes `-p:Version=` to build and pack, so the assembly version and the package version always match
+- Builds, tests, packs (symbols included as `.snupkg` via the csproj)
+- Attests build provenance for the packed nupkg
+- Pushes `*.nupkg` and `*.snupkg` separately, both with `--skip-duplicate`
 
-**Required Secrets:**
-- `NUGET_API_KEY`: Your NuGet.org API key
+**Required setup:**
+- `NUGET_API_KEY` repository secret
 
 **How to Publish:**
-
-1. **Automatic (Recommended):**
-   - Create a new release on GitHub with a tag like `v1.0.0`
-   - The workflow will automatically publish to NuGet.org
-
-2. **Manual:**
-   - Go to Actions → Publish NuGet Package → Run workflow
-   - Enter the version number (e.g., `1.0.0`)
+- Create a release on GitHub with a tag like `v1.0.0`; the workflow publishes to NuGet.org
 
 ### 3. Code Quality Workflow (`code-quality.yml`)
 
@@ -61,19 +59,11 @@ This workflow focuses on core CI tasks - ensuring the code builds, tests pass on
 - **Format Check**: Validates code formatting with `dotnet format`
 - **Static Code Analysis**: Runs .NET analyzers with warnings as errors
 - **Documentation Check**: Validates XML documentation and README
-- **Test Coverage**: Generates detailed coverage reports with ReportGenerator and comments on PRs
+
+(Coverage reporting lives in the CI workflow, not here.)
 
 **Purpose:**
-This workflow provides comprehensive code quality checks including formatting, static analysis, documentation validation, and detailed test coverage reporting. It runs in parallel with CI to provide feedback without blocking the main CI pipeline.
-
-**Artifacts:**
-- Detailed coverage reports (HTML and Markdown)
-
-**Note:** This workflow complements CI by providing deeper quality insights. While CI focuses on build/test/security, this workflow ensures code quality standards are met.
-- **Test Coverage**: Generates detailed coverage reports
-
-**Artifacts:**
-- Coverage reports (HTML and Markdown)
+Formatting, static analysis and documentation validation. Runs in parallel with CI to provide feedback without blocking the main pipeline.
 
 ### 4. Label PR Workflow (`label-pr.yml`)
 
