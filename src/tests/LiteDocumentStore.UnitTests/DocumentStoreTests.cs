@@ -89,7 +89,7 @@ public class DocumentStoreTests : IDisposable
 
         // Assert - verify table exists with correct name
         var checkSql = "SELECT name FROM sqlite_master WHERE type='table' AND name='TestPerson'";
-        var result = await store.ExecuteRawAsync((connection, _) => connection.QueryFirstStringAsync(checkSql));
+        var result = await store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(checkSql, ct));
         Assert.Equal("TestPerson", result);
     }
 
@@ -100,15 +100,15 @@ public class DocumentStoreTests : IDisposable
         await using var store = await CreateStoreAsync(FileOptions());
 
         // Act - the escape hatch: plain relational SQL in the same database
-        await store.ExecuteRawAsync((connection, _) =>
-            connection.ExecuteAsync("CREATE TABLE Relational (id INTEGER PRIMARY KEY, label TEXT)"));
+        await store.ExecuteRawAsync((connection, ct) =>
+            connection.ExecuteAsync("CREATE TABLE Relational (id INTEGER PRIMARY KEY, label TEXT)", ct));
 
-        await store.ExecuteRawAsync((connection, _) =>
-            connection.ExecuteAsync("INSERT INTO Relational (id, label) VALUES (1, 'first')"));
+        await store.ExecuteRawAsync((connection, ct) =>
+            connection.ExecuteAsync("INSERT INTO Relational (id, label) VALUES (1, 'first')", ct));
 
         // Assert - a later rent sees the committed writes
-        var label = await store.ExecuteRawAsync((connection, _) =>
-            connection.QueryFirstStringAsync("SELECT label FROM Relational WHERE id = 1"));
+        var label = await store.ExecuteRawAsync((connection, ct) =>
+            connection.QueryFirstStringAsync("SELECT label FROM Relational WHERE id = 1", ct));
 
         Assert.Equal("first", label);
     }
@@ -153,7 +153,7 @@ public class DocumentStoreTests : IDisposable
             await store.DeleteAsync<TestPerson>("test-id"));
 
         await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
-            await store.ExecuteRawAsync((connection, _) => connection.ExecuteAsync("SELECT 1")));
+            await store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync("SELECT 1", ct)));
 
         await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
             await store.BeginTransactionAsync());

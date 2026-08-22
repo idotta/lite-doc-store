@@ -20,13 +20,19 @@ public interface IMigration
     /// Applies the migration (upgrade operation).
     /// </summary>
     /// <param name="connection">The SQLite connection to execute the migration on</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>A task representing the asynchronous operation</returns>
-    Task UpAsync(Microsoft.Data.Sqlite.SqliteConnection connection);
+    Task UpAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reverts the migration (downgrade operation).
     /// </summary>
     /// <param name="connection">The SQLite connection to execute the rollback on</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>A task representing the asynchronous operation</returns>
-    Task DownAsync(Microsoft.Data.Sqlite.SqliteConnection connection);
+    Task DownAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        CancellationToken cancellationToken = default);
 }

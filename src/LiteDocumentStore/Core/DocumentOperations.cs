@@ -21,6 +21,11 @@ namespace LiteDocumentStore;
 /// <para>
 /// It is a struct so the per-operation rent path allocates nothing beyond the command itself.
 /// </para>
+/// <para>
+/// Every operation takes a required cancellation token: the public defaults live on
+/// <see cref="IDocumentOperations"/>, and making them explicit here keeps a caller's token
+/// from being dropped by an overload resolving to a default.
+/// </para>
 /// </remarks>
 internal readonly struct DocumentOperations
 {
@@ -42,16 +47,16 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateTableAsync{T}" />
-    public async Task CreateTableAsync<T>()
+    public async Task CreateTableAsync<T>(CancellationToken cancellationToken)
     {
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateCreateTableSql(tableName);
 
-        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.UpsertAsync{T}" />
-    public async Task<int> UpsertAsync<T>(string id, T data)
+    public async Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -64,11 +69,14 @@ internal readonly struct DocumentOperations
         var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
         var sql = SqlGenerator.GenerateUpsertSql(tableName);
 
-        return await _connection.ExecuteAsync(sql, ("Id", id), ("Data", jsonBytes)).ConfigureAwait(false);
+        return await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id), ("Data", jsonBytes))
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.UpsertManyAsync{T}" />
-    public async Task<int> UpsertManyAsync<T>(IEnumerable<(string id, T data)> items)
+    public async Task<int> UpsertManyAsync<T>(
+        IEnumerable<(string id, T data)> items,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(items);
 
@@ -101,11 +109,15 @@ internal readonly struct DocumentOperations
             parameters[(i * 2) + 1] = ($"Data{i}", jsonBytes);
         }
 
-        return await _connection.ExecuteAsync(sql, parameters).ConfigureAwait(false);
+        return await _connection.ExecuteAsync(sql, cancellationToken, parameters).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.UpsertWithVersionAsync{T}" />
-    public async Task<long> UpsertWithVersionAsync<T>(string id, T data, long expectedVersion)
+    public async Task<long> UpsertWithVersionAsync<T>(
+        string id,
+        T data,
+        long expectedVersion,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -122,14 +134,15 @@ internal readonly struct DocumentOperations
         if (expectedVersion == 0)
         {
             var sql = SqlGenerator.GenerateInsertIfAbsentSql(tableName);
-            affectedRows = await _connection.ExecuteAsync(sql, ("Id", id), ("Data", jsonBytes))
+            affectedRows = await _connection.ExecuteAsync(
+                sql, cancellationToken, ("Id", id), ("Data", jsonBytes))
                 .ConfigureAwait(false);
         }
         else
         {
             var sql = SqlGenerator.GenerateVersionedUpdateSql(tableName);
             affectedRows = await _connection.ExecuteAsync(
-                sql, ("Id", id), ("Data", jsonBytes), ("ExpectedVersion", expectedVersion))
+                sql, cancellationToken, ("Id", id), ("Data", jsonBytes), ("ExpectedVersion", expectedVersion))
                 .ConfigureAwait(false);
         }
 
@@ -147,7 +160,9 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetWithVersionAsync{T}" />
-    public async Task<VersionedDocument<T>?> GetWithVersionAsync<T>(string id)
+    public async Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
+        string id,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -157,7 +172,8 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetWithVersionSql(tableName);
 
-        var row = await _connection.QueryFirstStringInt64Async(sql, ("Id", id)).ConfigureAwait(false);
+        var row = await _connection.QueryFirstStringInt64Async(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
         if (row is not { Text: { Length: > 0 } json, Number: var version })
         {
             _logger.LogDebug("Document {Id} not found in table {TableName}", id, tableName);
@@ -169,7 +185,7 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetAsync{T}" />
-    public async Task<T?> GetAsync<T>(string id)
+    public async Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -179,7 +195,8 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetByIdSql(tableName);
 
-        var json = await _connection.QueryFirstStringAsync(sql, ("Id", id)).ConfigureAwait(false);
+        var json = await _connection.QueryFirstStringAsync(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
 
         if (string.IsNullOrEmpty(json))
         {
@@ -191,17 +208,17 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetAllAsync{T}" />
-    public async Task<IEnumerable<T>> GetAllAsync<T>()
+    public async Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken)
     {
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetAllSql(tableName);
 
-        var jsonResults = await _connection.QueryStringsAsync(sql).ConfigureAwait(false);
+        var jsonResults = await _connection.QueryStringsAsync(sql, cancellationToken).ConfigureAwait(false);
         return DeserializeResults<T>(jsonResults);
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteAsync{T}" />
-    public async Task<bool> DeleteAsync<T>(string id)
+    public async Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -211,7 +228,8 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateDeleteSql(tableName);
 
-        var affectedRows = await _connection.ExecuteAsync(sql, ("Id", id)).ConfigureAwait(false);
+        var affectedRows = await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
         var deleted = affectedRows > 0;
 
         if (!deleted)
@@ -223,7 +241,7 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteManyAsync{T}" />
-    public async Task<int> DeleteManyAsync<T>(IEnumerable<string> ids)
+    public async Task<int> DeleteManyAsync<T>(IEnumerable<string> ids, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(ids);
 
@@ -252,11 +270,11 @@ internal readonly struct DocumentOperations
             parameters[i] = ($"Id{i}", idsList[i]);
         }
 
-        return await _connection.ExecuteAsync(sql, parameters).ConfigureAwait(false);
+        return await _connection.ExecuteAsync(sql, cancellationToken, parameters).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}" />
-    public async Task<bool> ExistsAsync<T>(string id)
+    public async Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -266,20 +284,24 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateExistsSql(tableName);
 
-        return await _connection.ExecuteScalarAsync<bool>(sql, ("Id", id)).ConfigureAwait(false);
+        return await _connection.ExecuteScalarAsync<bool>(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CountAsync{T}" />
-    public async Task<long> CountAsync<T>()
+    public async Task<long> CountAsync<T>(CancellationToken cancellationToken)
     {
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateCountSql(tableName);
 
-        return await _connection.ExecuteScalarAsync<long>(sql).ConfigureAwait(false);
+        return await _connection.ExecuteScalarAsync<long>(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.QueryAsync{T, TValue}" />
-    public async Task<IEnumerable<T>> QueryAsync<T, TValue>(string jsonPath, TValue value)
+    public async Task<IEnumerable<T>> QueryAsync<T, TValue>(
+        string jsonPath,
+        TValue value,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(jsonPath))
         {
@@ -291,12 +313,16 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateQueryByJsonPathSql(tableName, jsonPath);
 
-        var jsonResults = await _connection.QueryStringsAsync(sql, ("Value", value)).ConfigureAwait(false);
+        var jsonResults = await _connection.QueryStringsAsync(sql, cancellationToken, ("Value", value))
+            .ConfigureAwait(false);
         return DeserializeResults<T>(jsonResults);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}" />
-    public async Task CreateIndexAsync<T>(Expression<Func<T, object>> jsonPath, string? indexName = null)
+    public async Task CreateIndexAsync<T>(
+        Expression<Func<T, object>> jsonPath,
+        string? indexName,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPath);
 
@@ -307,6 +333,7 @@ internal readonly struct DocumentOperations
         // Check if index already exists
         var indexExists = await _connection.ExecuteScalarAsync<int>(
             SqlGenerator.GenerateCheckIndexExistsSql(),
+            cancellationToken,
             ("IndexName", finalIndexName)).ConfigureAwait(false);
 
         if (indexExists > 0)
@@ -316,11 +343,14 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString);
-        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}" />
-    public async Task CreateCompositeIndexAsync<T>(Expression<Func<T, object>>[] jsonPaths, string? indexName = null)
+    public async Task CreateCompositeIndexAsync<T>(
+        Expression<Func<T, object>>[] jsonPaths,
+        string? indexName,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPaths);
         if (jsonPaths.Length == 0)
@@ -335,6 +365,7 @@ internal readonly struct DocumentOperations
         // Check if index already exists
         var indexExists = await _connection.ExecuteScalarAsync<int>(
             SqlGenerator.GenerateCheckIndexExistsSql(),
+            cancellationToken,
             ("IndexName", finalIndexName)).ConfigureAwait(false);
 
         if (indexExists > 0)
@@ -344,15 +375,16 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings);
-        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.AddVirtualColumnAsync{T}" />
     public async Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
-        bool createIndex = false,
-        string columnType = "TEXT")
+        bool createIndex,
+        string columnType,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPath);
 
@@ -366,7 +398,8 @@ internal readonly struct DocumentOperations
 
         // Check if column already exists using SchemaIntrospector
         var introspector = new SchemaIntrospector(_connection);
-        var columnExists = await introspector.ColumnExistsAsync(tableName, columnName).ConfigureAwait(false);
+        var columnExists = await introspector.ColumnExistsAsync(tableName, columnName, cancellationToken)
+            .ConfigureAwait(false);
 
         if (columnExists)
         {
@@ -376,7 +409,7 @@ internal readonly struct DocumentOperations
         else
         {
             var addColumnSql = SqlGenerator.GenerateAddVirtualColumnSql(tableName, columnName, pathString, columnType);
-            await _connection.ExecuteAsync(addColumnSql).ConfigureAwait(false);
+            await _connection.ExecuteAsync(addColumnSql, cancellationToken).ConfigureAwait(false);
         }
 
         // Create index on the virtual column if requested
@@ -387,6 +420,7 @@ internal readonly struct DocumentOperations
             // Check if index already exists
             var indexExists = await _connection.ExecuteScalarAsync<int>(
                 SqlGenerator.GenerateCheckIndexExistsSql(),
+                cancellationToken,
                 ("IndexName", indexName)).ConfigureAwait(false);
 
             if (indexExists > 0)
@@ -396,20 +430,20 @@ internal readonly struct DocumentOperations
             else
             {
                 var createIndexSql = SqlGenerator.GenerateCreateColumnIndexSql(tableName, indexName, columnName);
-                await _connection.ExecuteAsync(createIndexSql).ConfigureAwait(false);
+                await _connection.ExecuteAsync(createIndexSql, cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateBlobTableAsync" />
-    public async Task CreateBlobTableAsync()
+    public async Task CreateBlobTableAsync(CancellationToken cancellationToken)
     {
         var sql = SqlGenerator.GenerateCreateBlobTableSql();
-        await _connection.ExecuteAsync(sql).ConfigureAwait(false);
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.PutBlobAsync" />
-    public async Task PutBlobAsync(string id, ReadOnlyMemory<byte> data)
+    public async Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -426,11 +460,12 @@ internal readonly struct DocumentOperations
                 : data.ToArray();
 
         var sql = SqlGenerator.GeneratePutBlobSql();
-        await _connection.ExecuteAsync(sql, ("Id", id), ("Data", payload)).ConfigureAwait(false);
+        await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id), ("Data", payload))
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetBlobAsync" />
-    public async Task<byte[]?> GetBlobAsync(string id)
+    public async Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -438,7 +473,8 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateGetBlobSql();
-        var payload = await _connection.ExecuteScalarAsync<byte[]>(sql, ("Id", id)).ConfigureAwait(false);
+        var payload = await _connection.ExecuteScalarAsync<byte[]>(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
 
         if (payload is null)
         {
@@ -449,7 +485,7 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteBlobAsync" />
-    public async Task<bool> DeleteBlobAsync(string id)
+    public async Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -457,12 +493,13 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateDeleteBlobSql();
-        var affectedRows = await _connection.ExecuteAsync(sql, ("Id", id)).ConfigureAwait(false);
+        var affectedRows = await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
         return affectedRows > 0;
     }
 
     /// <inheritdoc cref="IDocumentOperations.BlobExistsAsync" />
-    public async Task<bool> BlobExistsAsync(string id)
+    public async Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -470,8 +507,10 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateBlobExistsSql();
-        return await _connection.ExecuteScalarAsync<bool>(sql, ("Id", id)).ConfigureAwait(false);
+        return await _connection.ExecuteScalarAsync<bool>(sql, cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
     }
+
 
     /// <summary>
     /// Deserializes JSON results to a list of typed objects.

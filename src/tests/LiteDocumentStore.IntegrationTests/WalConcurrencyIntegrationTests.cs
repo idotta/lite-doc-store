@@ -57,8 +57,8 @@ public class WalConcurrencyIntegrationTests : IDisposable
         await store.CreateTableAsync<Person>();
 
         // Assert - Verify WAL mode is enabled
-        var journalMode = await store.ExecuteRawAsync((connection, _) =>
-            connection.QueryFirstStringAsync("PRAGMA journal_mode"));
+        var journalMode = await store.ExecuteRawAsync((connection, ct) =>
+            connection.QueryFirstStringAsync("PRAGMA journal_mode", ct));
         Assert.Equal("wal", journalMode, StringComparer.OrdinalIgnoreCase);
 
         // Verify WAL file is created

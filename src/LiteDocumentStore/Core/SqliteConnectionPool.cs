@@ -20,6 +20,11 @@ namespace LiteDocumentStore;
 /// (<c>Pooling=False</c>, applied by <see cref="Normalize"/>).
 /// </para>
 /// <para>
+/// Every physical connection is checked against <see cref="SqliteVersionGuard"/> as it is
+/// opened, so a SQLite library without <c>jsonb()</c> fails at store creation with an
+/// actionable exception instead of at the first write with <c>no such function: jsonb</c>.
+/// </para>
+/// <para>
 /// Connections are never closed while the pool is alive, only returned to the idle bag. That
 /// is what keeps an in-memory database alive between operations: a shared-cache in-memory
 /// database is destroyed when its last connection closes, so the pool eagerly opens one
@@ -287,6 +292,17 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     private SqliteConnection CreateConnection()
     {
         var connection = _connectionFactory.CreateConnection(_options);
+
+        try
+        {
+            SqliteVersionGuard.EnsureSupported(connection);
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+
         var count = Interlocked.Increment(ref _created);
         _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);
         return connection;
@@ -297,6 +313,17 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         var connection = await _connectionFactory
             .CreateConnectionAsync(_options, cancellationToken)
             .ConfigureAwait(false);
+
+        try
+        {
+            await SqliteVersionGuard.EnsureSupportedAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+
         var count = Interlocked.Increment(ref _created);
         _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);
         return connection;

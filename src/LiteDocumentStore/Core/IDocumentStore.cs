@@ -61,6 +61,7 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// Checks that the store can reach the database and that SQLite is new enough for JSONB
     /// (3.45+).
     /// </summary>
+    /// <param name="cancellationToken">A token to cancel the check</param>
     /// <returns>True when the store is usable; false instead of throwing on any failure</returns>
-    Task<bool> IsHealthyAsync();
+    Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default);
 }

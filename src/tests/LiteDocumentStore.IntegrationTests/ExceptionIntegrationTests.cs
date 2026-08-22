@@ -46,8 +46,9 @@ public class ExceptionIntegrationTests : IDisposable
         await _store.CreateTableAsync<StrictModel>();
 
         // Manually insert invalid JSON through the raw-SQL escape hatch
-        await _store.ExecuteRawAsync((connection, _) => connection.ExecuteAsync(
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
             "INSERT INTO [StrictModel] (id, data) VALUES (@Id, jsonb(@Data))",
+            ct,
             ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}")));
 
         // Act & Assert - Deserialization should fail because "not-a-number" cannot be parsed as int

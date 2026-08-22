@@ -42,16 +42,16 @@ public class Migration : IMigration
     public string Name { get; }
 
     /// <inheritdoc />
-    public virtual async Task UpAsync(SqliteConnection connection)
+    public virtual async Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        await connection.ExecuteAsync(_upSql).ConfigureAwait(false);
+        await connection.ExecuteAsync(_upSql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public virtual async Task DownAsync(SqliteConnection connection)
+    public virtual async Task DownAsync(SqliteConnection connection, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        await connection.ExecuteAsync(_downSql).ConfigureAwait(false);
+        await connection.ExecuteAsync(_downSql, cancellationToken).ConfigureAwait(false);
     }
 }

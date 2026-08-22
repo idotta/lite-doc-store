@@ -50,8 +50,8 @@ public class VirtualColumnIntegrationTests : IDisposable
         string whereSql,
         params (string Name, object? Value)[] parameters)
     {
-        var ids = await _store.ExecuteRawAsync((connection, _) => connection.QueryStringsAsync(
-            $"SELECT id FROM Product WHERE {whereSql}", parameters));
+        var ids = await _store.ExecuteRawAsync((connection, ct) => connection.QueryStringsAsync(
+            $"SELECT id FROM Product WHERE {whereSql}", ct, parameters));
 
         var products = new List<Product>();
         foreach (var id in ids)
@@ -73,7 +73,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         using var memConnection = new SqliteConnection("Data Source=:memory:");
         await memConnection.OpenAsync();
 
-        var version = await memConnection.QueryFirstStringAsync("SELECT sqlite_version()");
+        var version = await memConnection.QueryFirstStringAsync("SELECT sqlite_version()", CancellationToken.None);
 
         await memConnection.ExecuteAsync(@"
             CREATE TABLE Test1 (
@@ -81,14 +81,14 @@ public class VirtualColumnIntegrationTests : IDisposable
                 a INTEGER,
                 b INTEGER,
                 c INTEGER GENERATED ALWAYS AS (a + b)
-            )");
+            )", CancellationToken.None);
 
         var introspector = new SchemaIntrospector(memConnection);
         var columns = await introspector.GetColumnsAsync("Test1");
         var colNames = columns.Select(c => c.Name).ToList();
 
-        await memConnection.ExecuteAsync("INSERT INTO Test1 (id, a, b) VALUES (1, 10, 20)");
-        var generated = await memConnection.ExecuteScalarAsync<long>("SELECT c FROM Test1 WHERE id = 1");
+        await memConnection.ExecuteAsync("INSERT INTO Test1 (id, a, b) VALUES (1, 10, 20)", CancellationToken.None);
+        var generated = await memConnection.ExecuteScalarAsync<long>("SELECT c FROM Test1 WHERE id = 1", CancellationToken.None);
 
         Assert.True(colNames.Contains("c") || generated == 30,
             $"Generated column 'c' not found. Columns: [{string.Join(", ", colNames)}]. SQLite version: {version}");
@@ -177,8 +177,8 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Price, "price", columnType: "REAL");
 
         // Assert - Query using virtual columns directly
-        var categories = await _store.ExecuteRawAsync((connection, _) => connection.QueryStringsAsync(
-            "SELECT category FROM Product WHERE category = 'Electronics' ORDER BY price"));
+        var categories = await _store.ExecuteRawAsync((connection, ct) => connection.QueryStringsAsync(
+            "SELECT category FROM Product WHERE category = 'Electronics' ORDER BY price", ct));
 
         Assert.Equal(2, categories.Count);
         Assert.Equal("Electronics", categories[0]);
@@ -289,9 +289,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category", createIndex: true);
 
         // Act - Query using index
-        var match = await _store.ExecuteRawAsync((connection, _) =>
+        var match = await _store.ExecuteRawAsync((connection, ct) =>
             connection.QueryFirstStringAsync(
                 "SELECT id FROM Product WHERE category = @Category",
+                ct,
                 ("Category", "Category 5")));
 
         // Assert

@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Text.Json;
+using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -84,77 +85,113 @@ internal sealed class DocumentStore : IDocumentStore
         _pool.InitializeAsync(cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateTableAsync<T>() => RunAsync(ops => ops.CreateTableAsync<T>());
+    public Task CreateTableAsync<T>(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CreateTableAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> UpsertAsync<T>(string id, T data) => RunAsync(ops => ops.UpsertAsync(id, data));
+    public Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.UpsertAsync(id, data, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> UpsertManyAsync<T>(IEnumerable<(string id, T data)> items) =>
-        RunAsync(ops => ops.UpsertManyAsync(items));
+    public Task<int> UpsertManyAsync<T>(
+        IEnumerable<(string id, T data)> items,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.UpsertManyAsync(items, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<long> UpsertWithVersionAsync<T>(string id, T data, long expectedVersion) =>
-        RunAsync(ops => ops.UpsertWithVersionAsync(id, data, expectedVersion));
+    public Task<long> UpsertWithVersionAsync<T>(
+        string id,
+        T data,
+        long expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.UpsertWithVersionAsync(id, data, expectedVersion, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(string id) =>
-        RunAsync(ops => ops.GetWithVersionAsync<T>(id));
+    public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
+        string id,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.GetWithVersionAsync<T>(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<T?> GetAsync<T>(string id) => RunAsync(ops => ops.GetAsync<T>(id));
+    public Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.GetAsync<T>(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<IEnumerable<T>> GetAllAsync<T>() => RunAsync(ops => ops.GetAllAsync<T>());
+    public Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.GetAllAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> DeleteAsync<T>(string id) => RunAsync(ops => ops.DeleteAsync<T>(id));
+    public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DeleteAsync<T>(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> DeleteManyAsync<T>(IEnumerable<string> ids) =>
-        RunAsync(ops => ops.DeleteManyAsync<T>(ids));
+    public Task<int> DeleteManyAsync<T>(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DeleteManyAsync<T>(ids, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> ExistsAsync<T>(string id) => RunAsync(ops => ops.ExistsAsync<T>(id));
+    public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.ExistsAsync<T>(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<long> CountAsync<T>() => RunAsync(ops => ops.CountAsync<T>());
+    public Task<long> CountAsync<T>(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CountAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<IEnumerable<T>> QueryAsync<T, TValue>(string jsonPath, TValue value) =>
-        RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value));
+    public Task<IEnumerable<T>> QueryAsync<T, TValue>(
+        string jsonPath,
+        TValue value,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateIndexAsync<T>(Expression<Func<T, object>> jsonPath, string? indexName = null) =>
-        RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName));
+    public Task CreateIndexAsync<T>(
+        Expression<Func<T, object>> jsonPath,
+        string? indexName = null,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateCompositeIndexAsync<T>(Expression<Func<T, object>>[] jsonPaths, string? indexName = null) =>
-        RunAsync(ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName));
+    public Task CreateCompositeIndexAsync<T>(
+        Expression<Func<T, object>>[] jsonPaths,
+        string? indexName = null,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
         bool createIndex = false,
-        string columnType = "TEXT") =>
-        RunAsync(ops => ops.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType));
+        string columnType = "TEXT",
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken),
+            cancellationToken);
 
     /// <inheritdoc />
-    public Task CreateBlobTableAsync() => RunAsync(ops => ops.CreateBlobTableAsync());
+    public Task CreateBlobTableAsync(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CreateBlobTableAsync(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task PutBlobAsync(string id, ReadOnlyMemory<byte> data) =>
-        RunAsync(ops => ops.PutBlobAsync(id, data));
+    public Task PutBlobAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.PutBlobAsync(id, data, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<byte[]?> GetBlobAsync(string id) => RunAsync(ops => ops.GetBlobAsync(id));
+    public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.GetBlobAsync(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> DeleteBlobAsync(string id) => RunAsync(ops => ops.DeleteBlobAsync(id));
+    public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DeleteBlobAsync(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> BlobExistsAsync(string id) => RunAsync(ops => ops.BlobExistsAsync(id));
+    public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.BlobExistsAsync(id, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
     public async Task<TResult> ExecuteRawAsync<TResult>(
@@ -217,7 +254,7 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
-    public async Task<bool> IsHealthyAsync()
+    public async Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default)
     {
         try
         {
@@ -229,39 +266,28 @@ internal sealed class DocumentStore : IDocumentStore
                 return false;
             }
 
-            await using var lease = await _pool.RentAsync().ConfigureAwait(false);
+            await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
             var connection = lease.Connection;
 
-            // Verify SQLite version supports JSONB (3.45+)
-            var versionString = await connection.QueryFirstStringAsync(
-                "SELECT sqlite_version()").ConfigureAwait(false);
-
-            if (string.IsNullOrWhiteSpace(versionString))
-            {
-                _logger.LogWarning("Health check failed: Could not retrieve SQLite version");
-                return false;
-            }
-
-            if (!Version.TryParse(versionString, out var version))
-            {
-                _logger.LogWarning("Health check failed: Invalid SQLite version format: {Version}", versionString);
-                return false;
-            }
-
-            var minVersion = new Version(3, 45, 0);
-            if (version < minVersion)
-            {
-                _logger.LogWarning(
-                    "Health check failed: SQLite version {Version} does not support JSONB (requires {MinVersion}+)",
-                    version, minVersion);
-                return false;
-            }
+            // Re-check rather than trust the open-time guard: the health endpoint's job is to
+            // report on the connection it is holding now, and this also covers a store built on
+            // a consumer-supplied IConnectionFactory that never went through the pool.
+            var version = await SqliteVersionGuard
+                .EnsureSupportedAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
 
             // Test basic query execution
-            await connection.ExecuteScalarAsync<long>("SELECT 1").ConfigureAwait(false);
+            await connection.ExecuteScalarAsync<long>("SELECT 1", cancellationToken).ConfigureAwait(false);
 
             _logger.LogDebug("Health check passed: SQLite version {Version}", version);
             return true;
+        }
+        catch (UnsupportedSqliteVersionException ex)
+        {
+            // A too-old library is a configuration problem, not a fault: report it as unhealthy
+            // at warning level rather than as an unexpected exception.
+            _logger.LogWarning(ex, "Health check failed: unsupported SQLite version");
+            return false;
         }
         catch (Exception ex)
         {
@@ -273,20 +299,27 @@ internal sealed class DocumentStore : IDocumentStore
     /// <summary>
     /// Rents a connection and runs one document operation on it.
     /// </summary>
-    private async Task<TResult> RunAsync<TResult>(Func<DocumentOperations, Task<TResult>> operation)
+    /// <remarks>
+    /// The token is taken here as well as captured by the caller's lambda because it must also
+    /// cancel the wait for a free connection — on a saturated pool that wait is the part of an
+    /// operation a caller is most likely to want to abandon.
+    /// </remarks>
+    private async Task<TResult> RunAsync<TResult>(
+        Func<DocumentOperations, Task<TResult>> operation,
+        CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
 
-        await using var lease = await _pool.RentAsync().ConfigureAwait(false);
+        await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         return await operation(Operations(lease.Connection)).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="RunAsync{TResult}" />
-    private async Task RunAsync(Func<DocumentOperations, Task> operation)
+    private async Task RunAsync(Func<DocumentOperations, Task> operation, CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
 
-        await using var lease = await _pool.RentAsync().ConfigureAwait(false);
+        await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         await operation(Operations(lease.Connection)).ConfigureAwait(false);
     }
 
@@ -342,13 +375,13 @@ internal sealed class DocumentStore : IDocumentStore
             await using var lease = await _pool.RentAsync(WalCheckpointRentTimeout).ConfigureAwait(false);
 
             var journalMode = await lease.Connection.QueryFirstStringAsync(
-                "PRAGMA journal_mode").ConfigureAwait(false);
+                "PRAGMA journal_mode", CancellationToken.None).ConfigureAwait(false);
 
             if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogDebug("Executing WAL checkpoint before disposal");
                 // PRAGMA wal_checkpoint(TRUNCATE) ensures all WAL frames are checkpointed and the WAL file is truncated
-                await lease.Connection.ExecuteAsync("PRAGMA wal_checkpoint(TRUNCATE)")
+                await lease.Connection.ExecuteAsync("PRAGMA wal_checkpoint(TRUNCATE)", CancellationToken.None)
                     .ConfigureAwait(false);
                 _logger.LogInformation("WAL checkpoint completed successfully");
             }

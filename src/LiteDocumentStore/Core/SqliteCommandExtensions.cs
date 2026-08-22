@@ -1,4 +1,3 @@
-using System.Data;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 
@@ -11,9 +10,17 @@ namespace LiteDocumentStore;
 /// generation (AOT/trim safe).
 /// </summary>
 /// <remarks>
+/// <para>
 /// Commands are created with <see cref="SqliteConnection.CreateCommand"/>, which assigns
 /// the connection's currently active transaction automatically, so callers do not need to
 /// pass a transaction explicitly to participate in one.
+/// </para>
+/// <para>
+/// The cancellation token sits <em>before</em> the trailing <c>params</c> array rather than
+/// last: C# allows only one params parameter and it must come last, and the alternative —
+/// dropping <c>params</c> so the token can trail — would force every call site to spell out
+/// an array, including the many that bind no parameters at all.
+/// </para>
 /// </remarks>
 internal static class SqliteCommandExtensions
 {
@@ -23,10 +30,11 @@ internal static class SqliteCommandExtensions
     public static async Task<int> ExecuteAsync(
         this SqliteConnection connection,
         string commandText,
+        CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
         await using var command = CreateCommand(connection, commandText, parameters);
-        return await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -48,10 +56,11 @@ internal static class SqliteCommandExtensions
     public static async Task<T?> ExecuteScalarAsync<T>(
         this SqliteConnection connection,
         string commandText,
+        CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
         await using var command = CreateCommand(connection, commandText, parameters);
-        var result = await command.ExecuteScalarAsync().ConfigureAwait(false);
+        var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return ConvertScalar<T>(result);
     }
 
@@ -62,13 +71,14 @@ internal static class SqliteCommandExtensions
     public static async Task<List<string?>> QueryStringsAsync(
         this SqliteConnection connection,
         string commandText,
+        CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
         await using var command = CreateCommand(connection, commandText, parameters);
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         var results = new List<string?>();
-        while (await reader.ReadAsync().ConfigureAwait(false))
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             results.Add(reader.IsDBNull(0) ? null : reader.GetString(0));
         }
@@ -83,12 +93,13 @@ internal static class SqliteCommandExtensions
     public static async Task<(string? Text, long Number)?> QueryFirstStringInt64Async(
         this SqliteConnection connection,
         string commandText,
+        CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
         await using var command = CreateCommand(connection, commandText, parameters);
-        await using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!await reader.ReadAsync().ConfigureAwait(false))
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -105,10 +116,11 @@ internal static class SqliteCommandExtensions
     public static async Task<string?> QueryFirstStringAsync(
         this SqliteConnection connection,
         string commandText,
+        CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
     {
         await using var command = CreateCommand(connection, commandText, parameters);
-        var result = await command.ExecuteScalarAsync().ConfigureAwait(false);
+        var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
     }
 

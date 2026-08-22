@@ -43,6 +43,10 @@ public interface IConnectionFactory
     /// </summary>
     /// <param name="connection">The connection to configure</param>
     /// <param name="options">Configuration options to apply</param>
+    /// <param name="cancellationToken">A token to cancel the configuration round trips</param>
     /// <returns>A task representing the asynchronous operation</returns>
-    Task ConfigureConnectionAsync(SqliteConnection connection, DocumentStoreOptions options);
+    Task ConfigureConnectionAsync(
+        SqliteConnection connection,
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default);
 }
