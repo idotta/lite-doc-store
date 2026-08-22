@@ -69,7 +69,7 @@ examples/
 
 `README.md` and `.github/instructions/*.md` (Copilot rules) describe an older `Repository` class with a `new Repository("app.db")` constructor and a `SqliteJsonbTypeHandler`. **That API no longer exists.** The real entry point is `IDocumentStore`, obtained through DI (`services.AddLiteDocumentStore(...)`) or `IDocumentStoreFactory.Create/CreateAsync(DocumentStoreOptions)`. When those docs conflict with the source, the source wins.
 
-`examples/` is now two real projects in the `.slnx`, so samples cannot rot silently: `examples/Examples` is one console app holding every sample (`dotnet run --project examples/Examples -- all`, or a single name — CI runs `all` on three OSes), and `examples/AotVerification` is the Native AOT gate that CI publishes with `-warnaserror` and then runs. The nine old loose file-based `.cs` samples were rewritten against `ExecuteRawAsync` and deleted.
+`examples/` is now two real projects in the `.slnx`, so samples cannot rot silently: `examples/Examples` is one console app holding every sample (`dotnet run --project examples/Examples -- all`, or a single name — CI runs `all` on every push), and `examples/AotVerification` is the Native AOT gate that CI publishes with `-warnaserror` and then runs. The nine old loose file-based `.cs` samples were rewritten against `ExecuteRawAsync` and deleted.
 
 ## Architecture
 

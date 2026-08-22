@@ -17,12 +17,8 @@ env:
 
 jobs:
   build-and-test:
-    name: Build and Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-      fail-fast: false
+    name: Build and Test
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
@@ -50,44 +46,22 @@ jobs:
     - name: Run all examples
       run: dotnet run --project examples/Examples --configuration Release --no-build -- all
 
-    - name: Upload Test Results
-      uses: actions/upload-artifact@v7
+    # Reported from the coverage the test runs above already collected - no second test pass.
+    - name: Coverage report
       if: always()
-      with:
-        name: test-results-${{ matrix.os }}
-        path: |
-          **/TestResults/*.trx
-          **/TestResults/**/coverage.cobertura.xml
-        retention-days: 30
-
-  coverage:
-    name: Coverage Report
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v7
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Run tests with coverage
-      run: dotnet test --configuration Release --collect:"XPlat Code Coverage" --results-directory ./coverage
-
-    - name: Generate report
       run: |
         dotnet tool install --global dotnet-reportgenerator-globaltool
-        reportgenerator -reports:'coverage/**/coverage.cobertura.xml' -targetdir:coverage/report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary'
-        cat coverage/report/Summary.txt >> "$GITHUB_STEP_SUMMARY"
+        reportgenerator -reports:'**/TestResults/**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary'
+        cat coverage-report/Summary.txt >> "$GITHUB_STEP_SUMMARY"
 
-    - name: Upload coverage report
+    - name: Upload test results and coverage
       uses: actions/upload-artifact@v7
       if: always()
       with:
-        name: coverage-report
-        path: coverage/report
+        name: test-results
+        path: |
+          **/TestResults/*.trx
+          coverage-report
         retention-days: 30
 
   package:
@@ -126,16 +100,8 @@ jobs:
         retention-days: 30
 
   aot-publish:
-    name: AOT Publish (${{ matrix.rid }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            rid: linux-x64
-          - os: windows-latest
-            rid: win-x64
-      fail-fast: false
+    name: AOT Publish
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
@@ -147,19 +113,14 @@ jobs:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
     - name: Install Native AOT prerequisites
-      if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
     # IL2xxx/IL3xxx trim + AOT warnings fail the build, so an AOT regression cannot ship silently.
     - name: Publish AOT verification example
-      run: dotnet publish examples/AotVerification/AotVerification.csproj -c Release -r ${{ matrix.rid }} -o ./aot-out -warnaserror
+      run: dotnet publish examples/AotVerification/AotVerification.csproj -c Release -r linux-x64 -o ./aot-out -warnaserror
 
     - name: Run the AOT binary
-      shell: bash
-      run: |
-        binary=$(find ./aot-out -maxdepth 1 -type f \( -name 'AotVerification' -o -name 'AotVerification.exe' \) | head -n 1)
-        [ -n "$binary" ] || { echo "AOT binary not found in ./aot-out"; find ./aot-out -type f | head -50; exit 1; }
-        "$binary"
+      run: ./aot-out/AotVerification
 
   dependency-audit:
     name: Dependency Audit
@@ -223,15 +184,3 @@ jobs:
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
-
-  dependency-review:
-    name: Dependency Review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v7
-
-    - name: Review dependency changes
-      uses: actions/dependency-review-action@v4

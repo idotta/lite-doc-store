@@ -50,7 +50,7 @@ turns any `IL2xxx`/`IL3xxx` trim or AOT warning into a build failure.
    `public static async Task RunAsync()`, model records nested inside the class (they must not
    collide with the other samples' models).
 2. Register it in the `examples` array in `Examples/Program.cs`.
-3. Keep it in-memory, keep it under a couple of seconds (CI runs `-- all` on three OSes), and
+3. Keep it in-memory, keep it under a couple of seconds (CI runs `-- all` on every push), and
    let it fail loudly rather than swallowing an exception.
 
 ## Notes that bite

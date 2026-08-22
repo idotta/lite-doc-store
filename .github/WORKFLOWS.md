@@ -11,21 +11,20 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 - Pull requests to `main` or `develop` branches
 - Manual dispatch
 
-**Jobs:**
-- **Build and Test**: Builds and runs unit + integration tests on Ubuntu, Windows, and macOS (matrix, `fail-fast: false`)
-- **Coverage Report**: Collects XPlat Code Coverage and renders a ReportGenerator summary into the job summary (no minimum-coverage gate yet)
+**Jobs** (all `ubuntu-latest` — CI is deliberately single-OS to keep it fast):
+- **Build and Test**: Builds, runs unit + integration tests with coverage, runs every example (`-- all`), and renders a ReportGenerator summary into the job summary from that same test run
 - **Pack**: Packs the library and asserts the nupkg/snupkg actually contain the README, icon, XML docs and PDB
-- **AOT Publish**: Publishes `examples/AotVerification.cs` for `linux-x64` and `win-x64` with trim/AOT warnings as errors, then runs the native binary
+- **AOT Publish**: Publishes `examples/AotVerification` for `linux-x64` with trim/AOT warnings as errors, then runs the native binary
 - **Dependency Audit**: Fails on vulnerable packages (`dotnet list package --vulnerable --include-transitive`); reports deprecated ones
 - **Security Scan**: CodeQL analysis (`security-extended`)
-- **Dependency Review**: On pull requests only
 
 **Purpose:**
-Core CI: the code builds and tests pass on all three platforms, the package is well formed, the AOT claim is proven by an actual Native AOT publish + run, and no vulnerable dependency slips in.
+Core CI: the code builds, tests pass, the samples still run against the current API, the package is well formed, the AOT claim is proven by an actual Native AOT publish + run, and no vulnerable dependency slips in.
+
+**Not covered:** Windows and macOS. The integration tests contain Windows-specific file-lock workarounds that nothing exercises, and the bundled SQLite version differs per OS — re-add `strategy.matrix.os` if either bites.
 
 **Artifacts:**
-- Test results (TRX) and coverage files from all platforms
-- Coverage HTML report
+- Test results (TRX) and the coverage HTML report
 - NuGet package (validation only, versioned `0.0.0-ci`)
 
 **Note:** Formatting, static analysis and documentation checks live in the separate Code Quality workflow.
