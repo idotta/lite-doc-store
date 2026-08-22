@@ -21,6 +21,8 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 **Purpose:**
 Core CI: the code builds, tests pass, the samples still run against the current API, the package is well formed, the AOT claim is proven by an actual Native AOT publish + run, and no vulnerable dependency slips in.
 
+**Also runs:** Dependency Review on pull requests.
+
 **Not covered:** Windows and macOS. The integration tests contain Windows-specific file-lock workarounds that nothing exercises, and the bundled SQLite version differs per OS — re-add `strategy.matrix.os` if either bites.
 
 **Artifacts:**
