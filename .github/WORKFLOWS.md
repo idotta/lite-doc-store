@@ -36,6 +36,7 @@ Core CI: the code builds, tests pass, the samples still run against the current 
 
 **Steps (single `deploy` job):**
 - Resolves `VERSION` from the release tag (`refs/tags/vX.Y.Z`) **before** building, and passes `-p:Version=` to build and pack, so the assembly version and the package version always match
+- Validates the resolved version against SemVer and fails the job otherwise. Git allows shell metacharacters (`;`, backticks) in a tag name, so the value is also read as `"$VERSION"` from the step environment rather than expanded into the `run` script by `${{ }}` — template expansion happens before Bash parses the line, which would let anyone who can publish a release inject a command ahead of attestation and push. Same reason `NUGET_API_KEY` is passed via `env:`
 - Builds, tests, packs (symbols included as `.snupkg` via the csproj)
 - Attests build provenance for the packed nupkg
 - Pushes `*.nupkg` and `*.snupkg` separately, both with `--skip-duplicate`

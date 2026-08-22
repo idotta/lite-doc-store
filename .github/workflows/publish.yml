@@ -22,20 +22,26 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Set version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+      - name: Resolve and validate version
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$'; then
+            echo "::error::Release tag '$GITHUB_REF' does not resolve to a valid SemVer version."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Restore dependencies
         run: dotnet restore LiteDocumentStore.slnx
 
       - name: Build
-        run: dotnet build LiteDocumentStore.slnx --no-restore --configuration Release -p:Version=${{ env.VERSION }}
+        run: dotnet build LiteDocumentStore.slnx --no-restore --configuration Release -p:Version="$VERSION"
 
       - name: Test
         run: dotnet test LiteDocumentStore.slnx --no-build --configuration Release
 
       - name: Pack
-        run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --no-build --configuration Release --output . -p:Version=${{ env.VERSION }} -p:PackageVersion=${{ env.VERSION }}
+        run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --no-build --configuration Release --output . -p:Version="$VERSION" -p:PackageVersion="$VERSION"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
@@ -43,7 +49,11 @@ jobs:
           subject-path: '*.nupkg'
 
       - name: Push package to NuGet
-        run: dotnet nuget push "*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }} --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
 
       - name: Push symbols to NuGet
-        run: dotnet nuget push "*.snupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGET_API_KEY }} --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "*.snupkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate

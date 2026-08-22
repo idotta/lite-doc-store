@@ -1,6 +1,6 @@
 # LiteDocumentStore examples
 
-Two projects, both in `src/LiteDocumentStore.slnx`, so CI compiles and runs them — a sample
+Two projects, both in `LiteDocumentStore.slnx`, so CI compiles and runs them — a sample
 cannot silently rot against an API change any more.
 
 | Project | What it is |
