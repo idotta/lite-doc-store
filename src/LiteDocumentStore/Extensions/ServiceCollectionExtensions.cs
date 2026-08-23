@@ -58,10 +58,9 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // Note: For multiple database support, use AddKeyedLiteDocumentStore() instead (requires .NET 8+).
 
     /// <summary>
-    /// Adds a keyed LiteDocumentStore document store for managing multiple databases (requires .NET 8+).
+    /// Adds a keyed LiteDocumentStore document store for managing multiple databases.
     /// </summary>
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="serviceKey">The key to identify this store instance</param>
@@ -83,7 +82,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds a keyed LiteDocumentStore document store for managing multiple databases (requires .NET 8+).
+    /// Adds a keyed LiteDocumentStore document store for managing multiple databases.
     /// </summary>
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="serviceKey">The key to identify this store instance</param>

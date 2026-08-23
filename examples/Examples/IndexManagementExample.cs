@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LiteDocumentStore.Examples;
@@ -79,8 +78,8 @@ internal static class IndexManagementExample
         var composite = await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = """
-                SELECT json(data) FROM Customer
+            cmd.CommandText = $"""
+                SELECT json(data) FROM [{store.GetTableName<Customer>()}]
                 WHERE json_extract(data, '$.LastName') = @LastName
                   AND json_extract(data, '$.Age') = @Age
                 """;
@@ -93,7 +92,7 @@ internal static class IndexManagementExample
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
-                rows.Add(JsonSerializer.Deserialize<Customer>(reader.GetString(0))!);
+                rows.Add(store.DeserializeDocument<Customer>(reader.GetString(0))!);
             }
 
             return rows;

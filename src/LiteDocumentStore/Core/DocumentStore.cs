@@ -218,6 +218,31 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
+    public string GetTableName<T>()
+    {
+        ThrowIfDisposed();
+
+        return _tableNamingConvention.GetTableName<T>();
+    }
+
+    /// <inheritdoc />
+    public byte[] SerializeDocument<T>(T value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ThrowIfDisposed();
+
+        return JsonHelper.SerializeToUtf8Bytes(value, _serializerOptions);
+    }
+
+    /// <inheritdoc />
+    public T? DeserializeDocument<T>(string? json)
+    {
+        ThrowIfDisposed();
+
+        return JsonHelper.Deserialize<T>(json, _serializerOptions);
+    }
+
+    /// <inheritdoc />
     public async Task<IDocumentTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();

@@ -259,4 +259,32 @@ public interface IDocumentOperations
     Task ExecuteRawAsync(
         Func<SqliteConnection, CancellationToken, Task> operation,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the table name this store uses for <typeparamref name="T"/>, for interpolating into
+    /// raw SQL.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <returns>The table name produced by the configured <see cref="ITableNamingConvention"/></returns>
+    string GetTableName<T>();
+
+    /// <summary>
+    /// Serializes a document to the same UTF-8 JSON bytes the store writes, for binding to a raw
+    /// <c>jsonb(@Data)</c> parameter.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="value">The document to serialize</param>
+    /// <returns>The UTF-8 JSON bytes</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is null</exception>
+    /// <exception cref="Exceptions.SerializationException">Thrown when serialization fails</exception>
+    byte[] SerializeDocument<T>(T value);
+
+    /// <summary>
+    /// Deserializes the JSON text a raw <c>SELECT json(data)</c> column yields.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="json">The JSON text, as returned by <c>json(data)</c></param>
+    /// <returns>The document, or default when <paramref name="json"/> is null or empty</returns>
+    /// <exception cref="Exceptions.SerializationException">Thrown when deserialization fails</exception>
+    T? DeserializeDocument<T>(string? json);
 }

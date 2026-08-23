@@ -190,6 +190,15 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         return operation(_lease.Connection, cancellationToken);
     }
 
+    /// <inheritdoc />
+    public string GetTableName<T>() => _operations.GetTableName<T>();
+
+    /// <inheritdoc />
+    public byte[] SerializeDocument<T>(T value) => _operations.SerializeDocument(value);
+
+    /// <inheritdoc />
+    public T? DeserializeDocument<T>(string? json) => _operations.DeserializeDocument<T>(json);
+
     /// <summary>
     /// Rolls back an uncommitted transaction, then releases the connection.
     /// </summary>

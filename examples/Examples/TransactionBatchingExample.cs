@@ -26,6 +26,8 @@ internal static class TransactionBatchingExample
         await store.CreateTableAsync<Order>();
         await store.CreateTableAsync<Customer>();
 
+        var orderTable = store.GetTableName<Order>();
+
         // Individual writes: each Upsert rents its own connection round trip.
         var sw = Stopwatch.StartNew();
         for (var i = 1; i <= OrderCount; i++)
@@ -40,7 +42,7 @@ internal static class TransactionBatchingExample
         await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM [Order]";
+            cmd.CommandText = $"DELETE FROM [{orderTable}]";
             await cmd.ExecuteNonQueryAsync(ct);
         });
 
@@ -62,7 +64,7 @@ internal static class TransactionBatchingExample
         await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM [Order]";
+            cmd.CommandText = $"DELETE FROM [{orderTable}]";
             await cmd.ExecuteNonQueryAsync(ct);
         });
 
@@ -104,7 +106,7 @@ internal static class TransactionBatchingExample
             await tx.ExecuteRawAsync(async (connection, ct) =>
             {
                 var cmd = connection.CreateCommand();
-                cmd.CommandText = "UPDATE Customer SET data = jsonb_set(data, '$.Name', json('\"David Miller\"')) WHERE id = 'c4'";
+                cmd.CommandText = $"UPDATE [{tx.GetTableName<Customer>()}] SET data = jsonb_set(data, '$.Name', json('\"David Miller\"')) WHERE id = 'c4'";
                 await cmd.ExecuteNonQueryAsync(ct);
             });
         });

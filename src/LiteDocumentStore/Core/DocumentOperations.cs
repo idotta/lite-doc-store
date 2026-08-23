@@ -511,6 +511,19 @@ internal readonly struct DocumentOperations
             .ConfigureAwait(false);
     }
 
+    /// <inheritdoc cref="IDocumentOperations.GetTableName{T}" />
+    public string GetTableName<T>() => _tableNamingConvention.GetTableName<T>();
+
+    /// <inheritdoc cref="IDocumentOperations.SerializeDocument{T}" />
+    public byte[] SerializeDocument<T>(T value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        return JsonHelper.SerializeToUtf8Bytes(value, _serializerOptions);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DeserializeDocument{T}" />
+    public T? DeserializeDocument<T>(string? json) => JsonHelper.Deserialize<T>(json, _serializerOptions);
 
     /// <summary>
     /// Deserializes JSON results to a list of typed objects.
