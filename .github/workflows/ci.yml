@@ -78,7 +78,7 @@ jobs:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
     - name: Pack
-      run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --configuration Release --output ./artifacts -p:Version=0.0.0-ci
+      run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --configuration Release --output ./artifacts -p:Version=0.0.0-ci -p:ExposeInternalsToTests=false
 
     - name: Verify package contents
       run: |
@@ -91,6 +91,13 @@ jobs:
           echo "$contents" | grep -qx "$entry" || { echo "missing from package: $entry"; exit 1; }
         done
         unzip -Z1 "$snupkg" | grep -qx 'lib/net10.0/LiteDocumentStore.pdb' || { echo "missing pdb from symbol package"; exit 1; }
+
+        # The assembly is unsigned, so a shipped InternalsVisibleTo would let any assembly
+        # claiming a test project's name reach internals.
+        unzip -p "$nupkg" lib/net10.0/LiteDocumentStore.dll > /tmp/shipped.dll
+        if grep -aq 'LiteDocumentStore.UnitTests' /tmp/shipped.dll; then
+          echo "InternalsVisibleTo leaked into the shipped assembly"; exit 1
+        fi
 
     - name: Upload package
       uses: actions/upload-artifact@v7

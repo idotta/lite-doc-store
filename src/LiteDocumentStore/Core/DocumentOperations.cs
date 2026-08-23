@@ -529,7 +529,7 @@ internal readonly struct DocumentOperations
     /// Deserializes JSON results to a list of typed objects.
     /// Uses a single-pass loop to avoid LINQ overhead and multiple enumerator allocations.
     /// </summary>
-    private List<T> DeserializeResults<T>(IReadOnlyCollection<string?> jsonResults)
+    private List<T> DeserializeResults<T>(List<string?> jsonResults)
     {
         var results = new List<T>(jsonResults.Count);
 

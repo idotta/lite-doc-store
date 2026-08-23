@@ -333,20 +333,20 @@ public class VirtualColumnIntegrationTests : IDisposable
 
     #region Test Models
 
-    private class Product
+    private sealed class Product
     {
         public string Name { get; set; } = string.Empty;
         public string Category { get; set; } = string.Empty;
         public decimal Price { get; set; }
     }
 
-    private class ProductWithMetadata
+    private sealed class ProductWithMetadata
     {
         public string Name { get; set; } = string.Empty;
         public ProductMetadata Metadata { get; set; } = new();
     }
 
-    private class ProductMetadata
+    private sealed class ProductMetadata
     {
         public string Brand { get; set; } = string.Empty;
         public string Country { get; set; } = string.Empty;

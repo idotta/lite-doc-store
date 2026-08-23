@@ -101,12 +101,12 @@ public class ExceptionIntegrationTests : IDisposable
         Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(ConcurrencyException)));
     }
 
-    private class CircularReference
+    private sealed class CircularReference
     {
         public CircularReference? Self { get; set; }
     }
 
-    private class StrictModel
+    private sealed class StrictModel
     {
         public int RequiredInt { get; set; }
         public string Name { get; set; } = string.Empty;
