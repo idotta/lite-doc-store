@@ -21,7 +21,7 @@
          be referenced. Moving off it means taking the whole SQLitePCLRaw 3.x chain
          (bundle -> config.e_sqlite3 + SQLite + managed core 3.x) under a Microsoft.Data.Sqlite
          built against core 2.1.x — a migration with its own validation, not a pin swap. -->
-    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
   </ItemGroup>
 
   <!-- DI / logging -->
