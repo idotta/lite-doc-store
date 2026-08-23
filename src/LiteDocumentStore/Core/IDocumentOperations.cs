@@ -152,6 +152,37 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Queries documents with a structured <see cref="DocumentQuery{T}"/> — comparisons,
+    /// <c>LIKE</c>/<c>GLOB</c>, <c>IN</c>, null tests and array membership, combined with
+    /// <c>AND</c>, plus ordering and paging.
+    /// </summary>
+    /// <remarks>
+    /// The query carries data, not SQL: every value is bound as a parameter and every JSON path
+    /// is validated before it reaches the statement.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="query">The query specification, built from <see cref="DocumentQuery{T}"/></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The matching documents</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Counts the documents matching a structured <see cref="DocumentQuery{T}"/>. Ordering and
+    /// paging on the query are ignored — only its predicates apply.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="query">The query specification, built from <see cref="DocumentQuery{T}"/></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The number of matching documents</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    Task<long> CountAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates an index over a JSON path, if it does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>
@@ -259,4 +290,32 @@ public interface IDocumentOperations
     Task ExecuteRawAsync(
         Func<SqliteConnection, CancellationToken, Task> operation,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the table name this store uses for <typeparamref name="T"/>, for interpolating into
+    /// raw SQL.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <returns>The table name produced by the configured <see cref="ITableNamingConvention"/></returns>
+    string GetTableName<T>();
+
+    /// <summary>
+    /// Serializes a document to the same UTF-8 JSON bytes the store writes, for binding to a raw
+    /// <c>jsonb(@Data)</c> parameter.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="value">The document to serialize</param>
+    /// <returns>The UTF-8 JSON bytes</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is null</exception>
+    /// <exception cref="Exceptions.SerializationException">Thrown when serialization fails</exception>
+    byte[] SerializeDocument<T>(T value);
+
+    /// <summary>
+    /// Deserializes the JSON text a raw <c>SELECT json(data)</c> column yields.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="json">The JSON text, as returned by <c>json(data)</c></param>
+    /// <returns>The document, or default when <paramref name="json"/> is null or empty</returns>
+    /// <exception cref="Exceptions.SerializationException">Thrown when deserialization fails</exception>
+    T? DeserializeDocument<T>(string? json);
 }

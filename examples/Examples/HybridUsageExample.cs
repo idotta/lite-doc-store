@@ -25,6 +25,9 @@ internal static class HybridUsageExample
         await store.CreateTableAsync<Customer>();
         await store.CreateTableAsync<Order>();
 
+        var customerTable = store.GetTableName<Customer>();
+        var orderTable = store.GetTableName<Order>();
+
         await store.UpsertAsync("c1", new Customer("c1", "Alice Smith", "alice@example.com", "New York"));
         await store.UpsertAsync("c2", new Customer("c2", "Bob Johnson", "bob@example.com", "Los Angeles"));
         await store.UpsertAsync("c3", new Customer("c3", "Carol Williams", "carol@example.com", "Chicago"));
@@ -38,15 +41,15 @@ internal static class HybridUsageExample
         var ordersWithCustomers = await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 SELECT
                     o.id AS OrderId,
                     json_extract(o.data, '$.OrderDate') AS OrderDate,
                     json_extract(o.data, '$.TotalAmount') AS TotalAmount,
                     json_extract(c.data, '$.Name') AS CustomerName,
                     json_extract(c.data, '$.Email') AS CustomerEmail
-                FROM [Order] o
-                INNER JOIN Customer c ON json_extract(o.data, '$.CustomerId') = c.id
+                FROM [{orderTable}] o
+                INNER JOIN [{customerTable}] c ON json_extract(o.data, '$.CustomerId') = c.id
                 ORDER BY OrderDate DESC
                 """;
 
@@ -75,12 +78,12 @@ internal static class HybridUsageExample
         var spending = await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 SELECT
                     json_extract(c.data, '$.Name') AS Name,
                     SUM(CAST(json_extract(o.data, '$.TotalAmount') AS REAL)) AS Total
-                FROM Customer c
-                LEFT JOIN [Order] o ON c.id = json_extract(o.data, '$.CustomerId')
+                FROM [{customerTable}] c
+                LEFT JOIN [{orderTable}] o ON c.id = json_extract(o.data, '$.CustomerId')
                 GROUP BY c.id
                 ORDER BY Total DESC
                 """;
@@ -105,7 +108,7 @@ internal static class HybridUsageExample
         await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 CREATE VIEW IF NOT EXISTS v_customer_orders AS
                 SELECT
                     c.id AS customer_id,
@@ -113,8 +116,8 @@ internal static class HybridUsageExample
                     json_extract(c.data, '$.City') AS city,
                     o.id AS order_id,
                     json_extract(o.data, '$.Status') AS status
-                FROM Customer c
-                LEFT JOIN [Order] o ON c.id = json_extract(o.data, '$.CustomerId')
+                FROM [{customerTable}] c
+                LEFT JOIN [{orderTable}] o ON c.id = json_extract(o.data, '$.CustomerId')
                 """;
             await cmd.ExecuteNonQueryAsync(ct);
         });
@@ -164,6 +167,7 @@ internal static class HybridUsageExample
             await insert.ExecuteNonQueryAsync(ct);
         });
 
+        // product_inventory is not a document table - it has no C# type, so no GetTableName<T>().
         var inventory = await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();

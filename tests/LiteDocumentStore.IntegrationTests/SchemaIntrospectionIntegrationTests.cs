@@ -177,13 +177,13 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     }
 
     // Test models
-    private class Customer
+    private sealed class Customer
     {
         public string Name { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
     }
 
-    private class Order
+    private sealed class Order
     {
         public string CustomerId { get; set; } = string.Empty;
         public decimal Total { get; set; }

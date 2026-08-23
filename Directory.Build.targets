@@ -1,0 +1,10 @@
+<Project>
+
+  <!-- Imported after each csproj, so IsPackable is set by the time this is evaluated. -->
+  <PropertyGroup Condition="'$(IsPackable)' == 'false'">
+    <!-- Non-shipping projects generate a doc file only to enable IDE0005; they owe no
+         XML docs. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

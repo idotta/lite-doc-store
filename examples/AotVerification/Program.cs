@@ -50,8 +50,8 @@ Console.WriteLine($"Healthy            => {await store.IsHealthyAsync()}");
 
 Console.WriteLine("\nAOT verification completed - all operations ran with source-generated JSON (no reflection).");
 
-record Person(string Id, string Name, string Email, int Age);
+sealed record Person(string Id, string Name, string Email, int Age);
 
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(Person))]
-internal partial class AppJsonContext : JsonSerializerContext;
+internal sealed partial class AppJsonContext : JsonSerializerContext;

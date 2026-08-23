@@ -1,8 +1,8 @@
-﻿using BenchmarkDotNet.Running;
+using BenchmarkDotNet.Running;
 
 namespace LiteDocumentStore.Benchmarks;
 
-class Program
+internal sealed class Program
 {
     static void Main(string[] args)
     {

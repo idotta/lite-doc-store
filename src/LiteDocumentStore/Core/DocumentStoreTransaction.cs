@@ -63,80 +63,142 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         Release();
     }
 
-    /// <inheritdoc />
-    public Task CreateTableAsync<T>(CancellationToken cancellationToken = default) =>
-        _operations.CreateTableAsync<T>(cancellationToken);
+    // Every operation below goes through ActiveTransaction() first: once the transaction has
+    // been committed, rolled back or disposed, its connection is back in the pool and may already
+    // be serving another renter, so the command must fail rather than run on a foreign connection.
 
     /// <inheritdoc />
-    public Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken = default) =>
-        _operations.UpsertAsync(id, data, cancellationToken);
+    public Task CreateTableAsync<T>(CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CreateTableAsync<T>(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.UpsertAsync(id, data, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<int> UpsertManyAsync<T>(
         IEnumerable<(string id, T data)> items,
-        CancellationToken cancellationToken = default) =>
-        _operations.UpsertManyAsync(items, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.UpsertManyAsync(items, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> UpsertWithVersionAsync<T>(
         string id,
         T data,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        _operations.UpsertWithVersionAsync(id, data, expectedVersion, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.UpsertWithVersionAsync(id, data, expectedVersion, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
-        CancellationToken cancellationToken = default) =>
-        _operations.GetWithVersionAsync<T>(id, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.GetWithVersionAsync<T>(id, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default) =>
-        _operations.GetAsync<T>(id, cancellationToken);
+    public Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.GetAsync<T>(id, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default) =>
-        _operations.GetAllAsync<T>(cancellationToken);
+    public Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.GetAllAsync<T>(cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default) =>
-        _operations.DeleteAsync<T>(id, cancellationToken);
+    public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteAsync<T>(id, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<int> DeleteManyAsync<T>(
         IEnumerable<string> ids,
-        CancellationToken cancellationToken = default) =>
-        _operations.DeleteManyAsync<T>(ids, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteManyAsync<T>(ids, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default) =>
-        _operations.ExistsAsync<T>(id, cancellationToken);
+    public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.ExistsAsync<T>(id, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<long> CountAsync<T>(CancellationToken cancellationToken = default) =>
-        _operations.CountAsync<T>(cancellationToken);
+    public Task<long> CountAsync<T>(CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CountAsync<T>(cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<IEnumerable<T>> QueryAsync<T, TValue>(
         string jsonPath,
         TValue value,
-        CancellationToken cancellationToken = default) =>
-        _operations.QueryAsync<T, TValue>(jsonPath, value, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.QueryAsync<T, TValue>(jsonPath, value, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.QueryAsync(query, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CountAsync(query, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,
-        CancellationToken cancellationToken = default) =>
-        _operations.CreateIndexAsync(jsonPath, indexName, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CreateIndexAsync(jsonPath, indexName, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
-        CancellationToken cancellationToken = default) =>
-        _operations.CreateCompositeIndexAsync(jsonPaths, indexName, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CreateCompositeIndexAsync(jsonPaths, indexName, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(
@@ -144,31 +206,49 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         string columnName,
         bool createIndex = false,
         string columnType = "TEXT",
-        CancellationToken cancellationToken = default) =>
-        _operations.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task CreateBlobTableAsync(CancellationToken cancellationToken = default) =>
-        _operations.CreateBlobTableAsync(cancellationToken);
+    public Task CreateBlobTableAsync(CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CreateBlobTableAsync(cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task PutBlobAsync(
         string id,
         ReadOnlyMemory<byte> data,
-        CancellationToken cancellationToken = default) =>
-        _operations.PutBlobAsync(id, data, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.PutBlobAsync(id, data, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default) =>
-        _operations.GetBlobAsync(id, cancellationToken);
+    public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.GetBlobAsync(id, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default) =>
-        _operations.DeleteBlobAsync(id, cancellationToken);
+    public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteBlobAsync(id, cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default) =>
-        _operations.BlobExistsAsync(id, cancellationToken);
+    public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.BlobExistsAsync(id, cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<TResult> ExecuteRawAsync<TResult>(
@@ -189,6 +269,15 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         ActiveTransaction();
         return operation(_lease.Connection, cancellationToken);
     }
+
+    /// <inheritdoc />
+    public string GetTableName<T>() => _operations.GetTableName<T>();
+
+    /// <inheritdoc />
+    public byte[] SerializeDocument<T>(T value) => _operations.SerializeDocument(value);
+
+    /// <inheritdoc />
+    public T? DeserializeDocument<T>(string? json) => _operations.DeserializeDocument<T>(json);
 
     /// <summary>
     /// Rolls back an uncommitted transaction, then releases the connection.

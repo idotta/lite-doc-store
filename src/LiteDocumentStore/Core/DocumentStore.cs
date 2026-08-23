@@ -146,6 +146,16 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
+    public Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.QueryAsync(query, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CountAsync(query, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
     public Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,
@@ -215,6 +225,31 @@ internal sealed class DocumentStore : IDocumentStore
 
         await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         await operation(lease.Connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public string GetTableName<T>()
+    {
+        ThrowIfDisposed();
+
+        return _tableNamingConvention.GetTableName<T>();
+    }
+
+    /// <inheritdoc />
+    public byte[] SerializeDocument<T>(T value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ThrowIfDisposed();
+
+        return JsonHelper.SerializeToUtf8Bytes(value, _serializerOptions);
+    }
+
+    /// <inheritdoc />
+    public T? DeserializeDocument<T>(string? json)
+    {
+        ThrowIfDisposed();
+
+        return JsonHelper.Deserialize<T>(json, _serializerOptions);
     }
 
     /// <inheritdoc />

@@ -160,6 +160,38 @@ public class DocumentStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task TransactionOperations_AfterCompletion_ThrowInsteadOfTouchingThePool()
+    {
+        // Arrange - committing hands the transaction's connection back to the pool, so a late
+        // operation must fail rather than run on a connection another renter now owns.
+        await using var store = await CreateStoreAsync(FileOptions());
+        await store.CreateTableAsync<TestPerson>();
+
+        var transaction = await store.BeginTransactionAsync();
+        await transaction.CommitAsync();
+
+        var query = DocumentQuery<TestPerson>.Where("$.Name", QueryOperator.Equal, "Test");
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await transaction.UpsertAsync("test-id", new TestPerson { Name = "Test" }));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await transaction.GetAsync<TestPerson>("test-id"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await transaction.QueryAsync(query));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await transaction.CountAsync(query));
+
+        await transaction.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            await transaction.CountAsync<TestPerson>());
+    }
+
+    [Fact]
     public async Task Dispose_CalledRepeatedly_IsIdempotent()
     {
         // Arrange
@@ -346,7 +378,7 @@ public class DocumentStoreTests : IDisposable
         }
     }
 
-    private class TestPerson
+    private sealed class TestPerson
     {
         public string Id { get; set; } = Guid.NewGuid().ToString();
         public string Name { get; set; } = string.Empty;

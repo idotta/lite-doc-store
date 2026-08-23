@@ -17,7 +17,7 @@ internal static class MultiDatabaseExample
         // The factory needs no container: its parameterless constructor composes the default
         // connection factory and naming convention. DI is only convenient when you want the
         // stores themselves injected (see the keyed example).
-        IDocumentStoreFactory factory = new DocumentStoreFactory();
+        var factory = new DocumentStoreFactory();
 
         // Multi-tenant split: one database per tenant.
         await using var tenantA = factory.Create(DocumentStoreOptions.Builder().UseSharedInMemory("TenantA").Build());

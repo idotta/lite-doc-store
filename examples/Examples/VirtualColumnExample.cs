@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LiteDocumentStore.Examples;
@@ -87,7 +86,7 @@ internal static class VirtualColumnExample
         return await store.ExecuteRawAsync(async (connection, ct) =>
         {
             var cmd = connection.CreateCommand();
-            cmd.CommandText = $"SELECT json(data) FROM Product WHERE {whereClause}";
+            cmd.CommandText = $"SELECT json(data) FROM [{store.GetTableName<Product>()}] WHERE {whereClause}";
             foreach (var (name, value) in parameters)
             {
                 cmd.Parameters.AddWithValue(name, value);
@@ -97,7 +96,7 @@ internal static class VirtualColumnExample
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
-                rows.Add(JsonSerializer.Deserialize<Product>(reader.GetString(0))!);
+                rows.Add(store.DeserializeDocument<Product>(reader.GetString(0))!);
             }
 
             return rows;

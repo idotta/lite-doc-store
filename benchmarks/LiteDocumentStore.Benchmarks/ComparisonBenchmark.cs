@@ -18,9 +18,7 @@ namespace LiteDocumentStore.Benchmarks;
 public class ComparisonBenchmark
 {
     // Test data sizes
-    private const int SingleOperationCount = 100;
     private const int BulkOperationCount = 1000;
-    private const int ScanCount = 1000;
 
     // LiteDocumentStore
     private IDocumentStore _documentStore = null!;
@@ -36,14 +34,12 @@ public class ComparisonBenchmark
 
     // Test data
     private List<TestDocument> _testDocuments = null!;
-    private List<string> _testIds = null!;
 
     [GlobalSetup]
     public async Task Setup()
     {
         // Generate test data
         _testDocuments = GenerateTestDocuments(BulkOperationCount);
-        _testIds = _testDocuments.Select(d => d.Id).ToList();
 
         // Setup LiteDocumentStore
         await SetupLiteDocumentStore();

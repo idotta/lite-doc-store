@@ -88,16 +88,31 @@ var byName = await store.QueryAsync<Customer, string>("$.Name", "Ada");
 
 // For ranges, joins, or virtual-column seeks, drop to raw SQL via the escape hatch.
 // The connection is on loan for the duration of the callback.
-var names = await store.ExecuteRawAsync(async (conn, ct) =>
+// GetTableName<T>() gives the table the store uses for T, so nothing is hardcoded,
+// and DeserializeDocument<T>() reads a json(data) column back with the store's
+// own serializer options.
+var table = store.GetTableName<Customer>();
+
+var adults = await store.ExecuteRawAsync(async (conn, ct) =>
 {
     await using var cmd = conn.CreateCommand();
-    cmd.CommandText = "SELECT json_extract(data, '$.Name') FROM [Customer] WHERE id LIKE 'c%'";
-    var results = new List<string>();
+    cmd.CommandText = $"SELECT json(data) FROM [{table}] WHERE json_extract(data, '$.Age') >= @Min";
+    cmd.Parameters.AddWithValue("@Min", 18);
+
+    var results = new List<Customer>();
     await using var reader = await cmd.ExecuteReaderAsync(ct);
-    while (await reader.ReadAsync(ct)) results.Add(reader.GetString(0));
+    while (await reader.ReadAsync(ct))
+    {
+        var doc = store.DeserializeDocument<Customer>(reader.GetString(0));
+        if (doc is not null) results.Add(doc);
+    }
     return results;
 });
 ```
+
+`SerializeDocument<T>(value)` is the write half: it returns the same UTF-8 JSON bytes the store
+writes, so a raw `INSERT INTO [table] (id, data, version) VALUES (@Id, jsonb(@Data), 1)` stores
+documents the store can read back. All three members are on `IDocumentTransaction` too.
 
 Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStoreOptions)`.
 

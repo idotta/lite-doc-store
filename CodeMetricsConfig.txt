@@ -1,0 +1,9 @@
+# Thresholds for CA1502/CA1505. These CANNOT live in .editorconfig — the code-metrics
+# analyzers read them only from this file, registered as an AdditionalFiles item in
+# Directory.Build.props. Severity still comes from .editorconfig.
+#
+# Both are set just above the current worst case so the gate is active, not vacuous:
+#   CA1502  max cyclomatic complexity is 17 (SqlGenerator.ValidateJsonPath)
+#   CA1505  min maintainability index is 48 (MigrationRunner.RollbackToVersionAsync)
+CA1502: 20
+CA1505: 40

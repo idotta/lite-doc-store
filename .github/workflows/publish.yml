@@ -41,7 +41,7 @@ jobs:
         run: dotnet test LiteDocumentStore.slnx --no-build --configuration Release
 
       - name: Pack
-        run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --no-build --configuration Release --output . -p:Version="$VERSION" -p:PackageVersion="$VERSION"
+        run: dotnet pack src/LiteDocumentStore/LiteDocumentStore.csproj --configuration Release --output . -p:Version="$VERSION" -p:PackageVersion="$VERSION" -p:ExposeInternalsToTests=false
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2

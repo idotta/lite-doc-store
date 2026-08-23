@@ -1,0 +1,117 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{xml,csproj,props,targets,slnx,yml,yaml,json,md}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# --- Conventions from CLAUDE.md -----------------------------------------------
+csharp_style_namespace_declarations = file_scoped:warning
+dotnet_style_readonly_field = true:warning
+csharp_prefer_static_local_function = true:warning
+csharp_style_prefer_primary_constructors = false:silent
+
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = when_on_single_line:suggestion
+csharp_style_expression_bodied_accessors = when_on_single_line:suggestion
+csharp_style_expression_bodied_lambdas = when_on_single_line:suggestion
+
+# Private fields are _camelCase, EXCEPT const and static readonly, which stay
+# PascalCase. The two specific rules must precede the general one.
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+
+dotnet_naming_rule.private_const_fields_pascal_case.severity = warning
+dotnet_naming_rule.private_const_fields_pascal_case.symbols = private_const_fields
+dotnet_naming_rule.private_const_fields_pascal_case.style = pascal_case
+dotnet_naming_symbols.private_const_fields.applicable_kinds = field
+dotnet_naming_symbols.private_const_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_const_fields.required_modifiers = const
+
+dotnet_naming_rule.private_static_readonly_fields_pascal_case.severity = warning
+dotnet_naming_rule.private_static_readonly_fields_pascal_case.symbols = private_static_readonly_fields
+dotnet_naming_rule.private_static_readonly_fields_pascal_case.style = pascal_case
+dotnet_naming_symbols.private_static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_readonly_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_readonly_fields.required_modifiers = static, readonly
+
+dotnet_naming_rule.private_fields_underscore_camel_case.severity = warning
+dotnet_naming_rule.private_fields_underscore_camel_case.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore_camel_case.style = underscore_camel_case
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+
+# --- General style ------------------------------------------------------------
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+dotnet_style_qualification_for_event = false:warning
+dotnet_style_predefined_type_for_locals_parameters_members = true:warning
+dotnet_style_predefined_type_for_member_access = true:warning
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_coalesce_expression = true:suggestion
+dotnet_style_null_propagation = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:silent
+dotnet_style_prefer_conditional_expression_over_return = true:silent
+
+csharp_style_var_for_built_in_types = false:silent
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:silent
+csharp_prefer_braces = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+csharp_style_throw_expression = true:suggestion
+csharp_using_directive_placement = outside_namespace:warning
+csharp_prefer_simple_using_statement = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+
+# Unused usings and unused private members are real rot — keep them visible.
+dotnet_diagnostic.IDE0005.severity = warning
+dotnet_diagnostic.IDE0051.severity = warning
+dotnet_diagnostic.IDE0052.severity = warning
+
+# Formatting/whitespace rules are noisy to enforce at build time; `dotnet format`
+# in CI is what keeps layout consistent.
+dotnet_diagnostic.IDE0055.severity = suggestion
+
+# --- Analyzer severities ------------------------------------------------------
+# Complexity gates. Off by default, so opted into explicitly. Their THRESHOLDS live in
+# CodeMetricsConfig.txt, not here — dotnet_code_quality.CA1502.threshold is ignored.
+dotnet_diagnostic.CA1502.severity = warning
+dotnet_diagnostic.CA1505.severity = warning
+
+# CA1848/CA1873: LoggerMessage source-generated delegates. 138 sites across the
+# library; converting them is its own task, not a build gate.
+dotnet_diagnostic.CA1848.severity = suggestion
+dotnet_diagnostic.CA1873.severity = suggestion
+
+[{tests,benchmarks,examples}/**/*.cs]
+# `Method_Scenario_Expected` test naming is mandated by CLAUDE.md.
+dotnet_diagnostic.CA1707.severity = none
+# Test/sample idiom, not shipped API: fixture disposal, culture-sensitive string
+# ops on literals, token forwarding, and reserved-suffix type names.
+dotnet_diagnostic.CA1001.severity = none
+dotnet_diagnostic.CA1304.severity = none
+dotnet_diagnostic.CA1305.severity = none
+dotnet_diagnostic.CA1311.severity = none
+dotnet_diagnostic.CA1711.severity = none
+dotnet_diagnostic.CA1816.severity = none
+dotnet_diagnostic.CA2016.severity = none
+dotnet_diagnostic.CA1822.severity = suggestion
+
+[examples/**/*.cs]
+# Samples are deliberately linear narratives read top to bottom, so a low
+# maintainability index is the intended shape, not rot.
+dotnet_diagnostic.CA1505.severity = none

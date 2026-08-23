@@ -823,20 +823,20 @@ public class DocumentStoreIntegrationTests : IDisposable
             await _store.QueryAsync<Person, int>("", 30));
     }
 
-    private class Person
+    private sealed class Person
     {
         public string Name { get; set; } = string.Empty;
         public int Age { get; set; }
         public string Email { get; set; } = string.Empty;
     }
 
-    private class PersonWithAddress
+    private sealed class PersonWithAddress
     {
         public string Name { get; set; } = string.Empty;
         public Address Address { get; set; } = new Address();
     }
 
-    private class Address
+    private sealed class Address
     {
         public string Street { get; set; } = string.Empty;
         public string City { get; set; } = string.Empty;

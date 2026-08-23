@@ -9,6 +9,9 @@ on:
     - cron: '0 0 * * 0'  # Weekly on Sunday at midnight
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   DOTNET_VERSION: '10.0.x'
 
@@ -48,33 +51,8 @@ jobs:
     - name: Restore dependencies
       run: dotnet restore
 
+    # TreatWarningsAsErrors, the analyzers and EnforceCodeStyleInBuild all live in
+    # Directory.Build.props, so a plain build is the gate — no ad hoc flags, and the same
+    # result locally.
     - name: Build with analyzers
-      run: dotnet build --configuration Release --no-restore /p:TreatWarningsAsErrors=false
-
-    - name: Run .NET analyzers
-      run: dotnet build --configuration Release --no-restore /warnaserror
-
-  documentation:
-    name: Documentation Check
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v7
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
-
-    - name: Check XML documentation
-      run: |
-        dotnet build --configuration Release /p:TreatWarningsAsErrors=true
-
-    - name: Validate README
-      run: |
-        if [ ! -f README.md ]; then
-          echo "README.md not found!"
-          exit 1
-        fi
-        echo "README.md exists and is valid"
+      run: dotnet build --configuration Release --no-restore
