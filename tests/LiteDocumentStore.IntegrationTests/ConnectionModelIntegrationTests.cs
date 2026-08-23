@@ -205,6 +205,35 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Transaction_AfterCompletion_RejectsEveryDocumentOperation()
+    {
+        await using var store = await CreateFileStoreAsync();
+
+        var transaction = await store.BeginTransactionAsync();
+        await transaction.UpsertAsync("committed", new Doc("committed", 1));
+        await transaction.CommitAsync();
+
+        var query = DocumentQuery<Doc>.Where("$.Name", QueryOperator.Equal, "committed");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.UpsertAsync("late", new Doc("late", 2)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.QueryAsync(query));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.CountAsync(query));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            transaction.PutBlobAsync("late", new byte[] { 1 }));
+
+        await transaction.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => transaction.GetAsync<Doc>("committed"));
+
+        // The rejected write never reached the database, and the committed one is still there.
+        Assert.Null(await store.GetAsync<Doc>("late"));
+        Assert.NotNull(await store.GetAsync<Doc>("committed"));
+    }
+
+    [Fact]
     public async Task Transaction_ExecuteRawAsync_SeesUncommittedWritesAndRollsBackWithThem()
     {
         await using var store = await CreateFileStoreAsync();
