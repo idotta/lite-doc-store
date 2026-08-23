@@ -11,7 +11,16 @@
     <!-- Pinned to a build with patched SQLite (>=3.50.2) to clear NU1903 / CVE-2025-6965:
          Microsoft.Data.Sqlite still pulls the vulnerable SQLitePCLRaw.lib.e_sqlite3 2.1.11
          transitively. Native bundle only (no managed deps), so the 2.x managed layer stays
-         intact and it remains Native-AOT compatible. Benchmarks mirror this same pin. -->
+         intact and it remains Native-AOT compatible. Benchmarks mirror this same pin.
+
+         The ID is deprecated ("Legacy", alternate SourceGear.sqlite3) and unlisted from 3.50.3
+         on, and it is kept deliberately: the override only works because it shares the ID of
+         the vulnerable transitive package. Referencing SourceGear.sqlite3 instead leaves
+         SQLitePCLRaw.lib.e_sqlite3 2.1.11 in the graph and NU1903 comes back (measured), and
+         both packages ship the same runtimes/<rid>/native/e_sqlite3 asset, so they cannot both
+         be referenced. Moving off it means taking the whole SQLitePCLRaw 3.x chain
+         (bundle -> config.e_sqlite3 + SQLite + managed core 3.x) under a Microsoft.Data.Sqlite
+         built against core 2.1.x — a migration with its own validation, not a pin swap. -->
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
   </ItemGroup>
 
