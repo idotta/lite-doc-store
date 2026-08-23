@@ -9,6 +9,11 @@
          reach internals. CI passes -p:ExposeInternalsToTests=false when packing. -->
     <ExposeInternalsToTests Condition="'$(ExposeInternalsToTests)' == ''">true</ExposeInternalsToTests>
 
+    <!-- Belt and braces: `dotnet pack` sets _IsPacking, so a pack that forgets the flag
+         above still cannot ship the attribute. CI passes -p:ExposeInternalsToTests=false
+         explicitly as well. -->
+    <ExposeInternalsToTests Condition="'$(_IsPacking)' == 'true'">false</ExposeInternalsToTests>
+
     <!-- NuGet Package Metadata -->
     <PackageId>LiteDocumentStore</PackageId>
     <Title>LiteDocumentStore</Title>

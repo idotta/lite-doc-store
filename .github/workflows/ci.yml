@@ -93,11 +93,14 @@ jobs:
         unzip -Z1 "$snupkg" | grep -qx 'lib/net10.0/LiteDocumentStore.pdb' || { echo "missing pdb from symbol package"; exit 1; }
 
         # The assembly is unsigned, so a shipped InternalsVisibleTo would let any assembly
-        # claiming a test project's name reach internals.
+        # claiming a test project's name reach internals. Every friend name the library
+        # declares has to be absent, not just the first one.
         unzip -p "$nupkg" lib/net10.0/LiteDocumentStore.dll > /tmp/shipped.dll
-        if grep -aq 'LiteDocumentStore.UnitTests' /tmp/shipped.dll; then
-          echo "InternalsVisibleTo leaked into the shipped assembly"; exit 1
-        fi
+        for friend in LiteDocumentStore.Benchmarks LiteDocumentStore.IntegrationTests LiteDocumentStore.UnitTests; do
+          if grep -aq "$friend" /tmp/shipped.dll; then
+            echo "InternalsVisibleTo leaked into the shipped assembly: $friend"; exit 1
+          fi
+        done
 
     - name: Upload package
       uses: actions/upload-artifact@v7
