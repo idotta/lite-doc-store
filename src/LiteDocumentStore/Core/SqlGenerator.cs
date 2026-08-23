@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace LiteDocumentStore;
@@ -16,6 +17,13 @@ internal static class SqlGenerator
     /// The reserved table name used for raw binary blob storage.
     /// </summary>
     public const string BlobTableName = "__store_blobs";
+
+    /// <summary>
+    /// The most bound parameters a generated statement may carry. SQLite's default
+    /// SQLITE_MAX_VARIABLE_NUMBER is 999; a long <c>IN</c> list would otherwise fail at
+    /// execution with an opaque error instead of at generation with a clear one.
+    /// </summary>
+    public const int MaxBoundParameters = 900;
 
     /// <summary>
     /// Generates SQL for creating a table with JSONB storage.
@@ -351,6 +359,215 @@ internal static class SqlGenerator
         return $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] ([{columnName}])";
     }
 
+    /// <summary>
+    /// Generates the SELECT for a structured <see cref="DocumentQuery{T}"/>: the document
+    /// projection, the <c>AND</c>-combined predicates, the orderings and the limit/offset.
+    /// </summary>
+    /// <remarks>
+    /// Takes structured predicates, never a caller-supplied SQL fragment. Values are bound as
+    /// <c>@p0..@pN</c> and returned alongside the SQL, assigned in one left-to-right pass so
+    /// the statement and the parameter order cannot drift apart.
+    /// </remarks>
+    /// <param name="tableName">The table name</param>
+    /// <param name="predicates">The filters to combine with <c>AND</c></param>
+    /// <param name="orderings">The <c>ORDER BY</c> terms, in order</param>
+    /// <param name="skip">The <c>OFFSET</c>, or null for none</param>
+    /// <param name="take">The <c>LIMIT</c>, or null for none</param>
+    public static GeneratedQuery GenerateQuerySql(
+        string tableName,
+        IReadOnlyList<QueryPredicate> predicates,
+        IReadOnlyList<QueryOrdering> orderings,
+        int? skip,
+        int? take)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+        ArgumentNullException.ThrowIfNull(predicates);
+        ArgumentNullException.ThrowIfNull(orderings);
+
+        var sb = new StringBuilder(128);
+        sb.Append("SELECT json(data) as data FROM [").Append(tableName).Append(']');
+
+        var values = AppendWhere(sb, predicates);
+        AppendOrderBy(sb, orderings);
+        AppendLimitOffset(sb, skip, take);
+
+        return new GeneratedQuery(sb.ToString(), values);
+    }
+
+    /// <summary>
+    /// Generates the row count for a structured <see cref="DocumentQuery{T}"/>'s predicates.
+    /// </summary>
+    /// <remarks>
+    /// Same contract as <see cref="GenerateQuerySql"/>: structured input only, values bound as
+    /// <c>@p0..@pN</c> and returned with the SQL.
+    /// </remarks>
+    /// <param name="tableName">The table name</param>
+    /// <param name="predicates">The filters to combine with <c>AND</c></param>
+    public static GeneratedQuery GenerateFilteredCountSql(
+        string tableName,
+        IReadOnlyList<QueryPredicate> predicates)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+        ArgumentNullException.ThrowIfNull(predicates);
+
+        var sb = new StringBuilder(64);
+        sb.Append("SELECT COUNT(*) FROM [").Append(tableName).Append(']');
+
+        var values = AppendWhere(sb, predicates);
+        return new GeneratedQuery(sb.ToString(), values);
+    }
+
+    private static List<object?> AppendWhere(StringBuilder sb, IReadOnlyList<QueryPredicate> predicates)
+    {
+        var values = new List<object?>();
+        if (predicates.Count == 0)
+        {
+            return values;
+        }
+
+        sb.Append(" WHERE ");
+        for (var i = 0; i < predicates.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(" AND ");
+            }
+
+            AppendPredicate(sb, predicates[i], values);
+        }
+
+        if (values.Count > MaxBoundParameters)
+        {
+            throw new ArgumentException(
+                $"The query binds {values.Count} parameters, more than the supported maximum of " +
+                $"{MaxBoundParameters}. Split it, or narrow the 'In' lists.",
+                nameof(predicates));
+        }
+
+        return values;
+    }
+
+    private static void AppendPredicate(StringBuilder sb, QueryPredicate predicate, List<object?> values)
+    {
+        var path = ValidateJsonPath(predicate.JsonPath, nameof(predicate));
+
+        switch (predicate.Operator)
+        {
+            case QueryOperator.IsNull:
+                AppendExtract(sb, path).Append(" IS NULL");
+                break;
+
+            case QueryOperator.IsNotNull:
+                AppendExtract(sb, path).Append(" IS NOT NULL");
+                break;
+
+            case QueryOperator.In:
+                AppendInList(sb, path, predicate.Values, values);
+                break;
+
+            case QueryOperator.ArrayContains:
+                sb.Append("EXISTS (SELECT 1 FROM json_each(data, '").Append(path)
+                    .Append("') WHERE value = ").Append(NextParameter(values, predicate.Value)).Append(')');
+                break;
+
+            default:
+                AppendExtract(sb, path).Append(' ').Append(ToSqlOperator(predicate.Operator)).Append(' ')
+                    .Append(NextParameter(values, predicate.Value));
+                break;
+        }
+    }
+
+    private static void AppendInList(
+        StringBuilder sb,
+        string jsonPath,
+        IReadOnlyList<object?> inValues,
+        List<object?> values)
+    {
+        if (inValues.Count == 0)
+        {
+            throw new ArgumentException(
+                $"The 'In' predicate on '{jsonPath}' has no values.",
+                nameof(inValues));
+        }
+
+        AppendExtract(sb, jsonPath).Append(" IN (");
+        for (var i = 0; i < inValues.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
+            sb.Append(NextParameter(values, inValues[i]));
+        }
+
+        sb.Append(')');
+    }
+
+    private static void AppendOrderBy(StringBuilder sb, IReadOnlyList<QueryOrdering> orderings)
+    {
+        if (orderings.Count == 0)
+        {
+            return;
+        }
+
+        sb.Append(" ORDER BY ");
+        for (var i = 0; i < orderings.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
+            AppendExtract(sb, ValidateJsonPath(orderings[i].JsonPath, nameof(orderings)))
+                .Append(orderings[i].Descending ? " DESC" : " ASC");
+        }
+    }
+
+    // SQLite only accepts OFFSET after a LIMIT, so a skip without a take emits LIMIT -1
+    // ("no limit").
+    private static void AppendLimitOffset(StringBuilder sb, int? skip, int? take)
+    {
+        if (take.HasValue)
+        {
+            sb.Append(" LIMIT ").Append(take.Value.ToString(CultureInfo.InvariantCulture));
+        }
+        else if (skip.HasValue)
+        {
+            sb.Append(" LIMIT -1");
+        }
+
+        if (skip.HasValue)
+        {
+            sb.Append(" OFFSET ").Append(skip.Value.ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
+    // Do not bind the path — see GenerateQueryByJsonPathSql: SQLite matches an expression
+    // index only when the indexed expression appears literally. It is validated instead.
+    private static StringBuilder AppendExtract(StringBuilder sb, string jsonPath) =>
+        sb.Append("json_extract(data, '").Append(jsonPath).Append("')");
+
+    private static string NextParameter(List<object?> values, object? value)
+    {
+        var index = values.Count;
+        values.Add(value);
+        return "@p" + index.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string ToSqlOperator(QueryOperator op) => op switch
+    {
+        QueryOperator.Equal => "=",
+        QueryOperator.NotEqual => "<>",
+        QueryOperator.GreaterThan => ">",
+        QueryOperator.GreaterThanOrEqual => ">=",
+        QueryOperator.LessThan => "<",
+        QueryOperator.LessThanOrEqual => "<=",
+        QueryOperator.Like => "LIKE",
+        QueryOperator.Glob => "GLOB",
+        _ => throw new ArgumentException($"Unsupported query operator '{op}'.", nameof(op))
+    };
+
     // Table, index and column names, restricted to [A-Za-z_][A-Za-z0-9_]*. Bracket quoting
     // alone is not enough: a ] in the name closes it early and the rest is parsed as SQL.
     // Returns the input so calls can be inlined into interpolation.
@@ -383,7 +600,7 @@ internal static class SqlGenerator
     }
 
     // Grammar: $(.member|[index])*  — a ' in the path would close the SQL literal it lands in.
-    private static string ValidateJsonPath(string jsonPath, string paramName)
+    internal static string ValidateJsonPath(string jsonPath, string paramName)
     {
         if (string.IsNullOrEmpty(jsonPath) || jsonPath[0] != '$')
         {

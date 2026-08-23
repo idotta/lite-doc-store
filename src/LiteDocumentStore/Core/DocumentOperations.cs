@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -288,7 +289,7 @@ internal readonly struct DocumentOperations
             .ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.CountAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.CountAsync{T}(CancellationToken)" />
     public async Task<long> CountAsync<T>(CancellationToken cancellationToken)
     {
         var tableName = _tableNamingConvention.GetTableName<T>();
@@ -313,9 +314,64 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateQueryByJsonPathSql(tableName, jsonPath);
 
-        var jsonResults = await _connection.QueryStringsAsync(sql, cancellationToken, ("Value", value))
+        // Same binding hazard as the structured API, so the same normalizer — otherwise a
+        // DateTime, Guid, decimal, float, byte[] or huge ulong here matches nothing.
+        var bound = DocumentQuery<T>.NormalizeBoundValue(value);
+
+        var jsonResults = await _connection.QueryStringsAsync(sql, cancellationToken, ("Value", bound))
             .ConfigureAwait(false);
         return DeserializeResults<T>(jsonResults);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.QueryAsync{T}(DocumentQuery{T}, CancellationToken)" />
+    public async Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var generated = SqlGenerator.GenerateQuerySql(
+            tableName,
+            query.Predicates,
+            query.Orderings,
+            query.SkipCount,
+            query.TakeCount);
+
+        var jsonResults = await _connection
+            .QueryStringsAsync(generated.Sql, cancellationToken, BindPositionally(generated))
+            .ConfigureAwait(false);
+        return DeserializeResults<T>(jsonResults);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.CountAsync{T}(DocumentQuery{T}, CancellationToken)" />
+    public async Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var generated = SqlGenerator.GenerateFilteredCountSql(tableName, query.Predicates);
+
+        return await _connection
+            .ExecuteScalarAsync<long>(generated.Sql, cancellationToken, BindPositionally(generated))
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Names the generator's values <c>p0..pN</c>, matching the <c>@p0..@pN</c> placeholders it
+    /// emitted in the same left-to-right pass.
+    /// </summary>
+    private static (string Name, object? Value)[] BindPositionally(GeneratedQuery generated)
+    {
+        var values = generated.ParameterValues;
+        var parameters = new (string Name, object? Value)[values.Count];
+
+        for (var i = 0; i < values.Count; i++)
+        {
+            parameters[i] = ("p" + i.ToString(CultureInfo.InvariantCulture), values[i]);
+        }
+
+        return parameters;
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}" />

@@ -152,6 +152,37 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Queries documents with a structured <see cref="DocumentQuery{T}"/> — comparisons,
+    /// <c>LIKE</c>/<c>GLOB</c>, <c>IN</c>, null tests and array membership, combined with
+    /// <c>AND</c>, plus ordering and paging.
+    /// </summary>
+    /// <remarks>
+    /// The query carries data, not SQL: every value is bound as a parameter and every JSON path
+    /// is validated before it reaches the statement.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="query">The query specification, built from <see cref="DocumentQuery{T}"/></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The matching documents</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Counts the documents matching a structured <see cref="DocumentQuery{T}"/>. Ordering and
+    /// paging on the query are ignored — only its predicates apply.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="query">The query specification, built from <see cref="DocumentQuery{T}"/></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The number of matching documents</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    Task<long> CountAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates an index over a JSON path, if it does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>

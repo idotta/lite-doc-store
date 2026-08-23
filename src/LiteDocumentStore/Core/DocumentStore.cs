@@ -146,6 +146,16 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
+    public Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.QueryAsync(query, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CountAsync(query, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
     public Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,

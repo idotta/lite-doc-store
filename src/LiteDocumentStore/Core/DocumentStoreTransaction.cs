@@ -125,6 +125,16 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         _operations.QueryAsync<T, TValue>(jsonPath, value, cancellationToken);
 
     /// <inheritdoc />
+    public Task<IEnumerable<T>> QueryAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default) =>
+        _operations.QueryAsync(query, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default) =>
+        _operations.CountAsync(query, cancellationToken);
+
+    /// <inheritdoc />
     public Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,

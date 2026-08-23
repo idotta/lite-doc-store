@@ -109,7 +109,23 @@ The pool **never disposes its `SemaphoreSlim`**. `SemaphoreSlim.Dispose()` is sa
 
 The helpers in `Core/SqliteCommandExtensions.cs` take the token **before** their trailing `params (string, object?)[]` — `ExecuteAsync(sql, cancellationToken, ("Id", id))`. C# allows one params parameter and it must come last; dropping `params` so the token could trail would force an explicit array at every call site, including the many that bind nothing. The two synchronous helpers (`Execute`, `QueryFirstString`) stay tokenless: every path that uses them is itself synchronous and has no caller token — the PRAGMA configuration in `DefaultConnectionFactory.ConfigureConnection`, `SqliteVersionGuard.EnsureSupported` on the sync connection-open path, and the WAL checkpoint on disposal.
 
-**Querying.** Documents are queried by JSON path + value via `QueryAsync<T, TValue>(jsonPath, value)`, which builds `WHERE json_extract(data, '$.Path') = @Value`. The LINQ-predicate `QueryAsync<T>(Expression<Func<T,bool>>)` and the `SelectAsync` projections were **removed** (they required runtime reflection / IL generation that AOT can't support). `CreateIndexAsync`, `CreateCompositeIndexAsync`, and `AddVirtualColumnAsync` still accept LINQ expressions, but only walk **member names** (`DocumentStore.ExtractJsonPath`) to build `$.Path` — no compilation or closure evaluation, so they stay AOT-safe. Property names map **as-is (PascalCase)** to match default STJ serialization. For richer filtering (ranges, virtual-column index seeks, joins), drop to raw SQL via `ExecuteRawAsync`.
+**Querying.** Two APIs, both AOT-safe. The simple one is `QueryAsync<T, TValue>(jsonPath, value)` — `WHERE json_extract(data, '$.Path') = @Value`. The composable one is `DocumentQuery<T>` (`Query/`), an immutable builder consumed by `QueryAsync<T>(DocumentQuery<T>)` and `CountAsync<T>(DocumentQuery<T>)` on `IDocumentOperations`, so it works on the store and inside a transaction:
+
+```csharp
+var q = DocumentQuery<Customer>.Where("$.Age", QueryOperator.GreaterThanOrEqual, 30)
+                               .AndIn("$.City", ["Boston", "Denver"])
+                               .AndIsNotNull("$.Email")
+                               .OrderBy("$.Age", descending: true)
+                               .Skip(10).Take(20);
+```
+
+Operators: `Equal`, `NotEqual`, `GreaterThan(OrEqual)`, `LessThan(OrEqual)`, `Like`, `Glob`, `In`, `IsNull`, `IsNotNull`, `ArrayContains` (`EXISTS (SELECT 1 FROM json_each(data, '$.Tags') WHERE value = @p0)`). Predicates combine with **AND only** — no OR groups. `Skip` without `Take` emits `LIMIT -1 OFFSET n`, which SQLite requires.
+
+The builder never accepts a SQL fragment: `SqlGenerator.GenerateQuerySql`/`GenerateFilteredCountSql` take the structured `QueryPredicate`/`QueryOrdering` records and return a `GeneratedQuery(Sql, ParameterValues)` — values bound `@p0..@pN` in one left-to-right pass, so SQL and parameter order cannot drift. Paths are still interpolated (validated by `ValidateJsonPath`) for the index-matching reason above; a query binding more than `SqlGenerator.MaxBoundParameters` (900) throws rather than hitting `SQLITE_MAX_VARIABLE_NUMBER`. Arguments are validated at *build* time, so a bad path or a nonsensical operator/value pairing throws at the call site.
+
+**Bound values are normalized to what STJ wrote into the document** (`DocumentQuery<T>.NormalizeBoundValue`, shared with the older overload). ADO otherwise binds a shape that matches nothing *silently*: `DateTime`/`DateTimeOffset` as `"2024-03-01 00:00:00"` vs the stored `"2024-03-01T00:00:00"`, `byte[]` as a blob vs base64 text, `decimal` as TEXT vs the REAL `json_extract` yields, `float` widened instead of round-tripped, `ulong` above `long.MaxValue` wrapped negative. Each was measured against real SQLite, not assumed. This assumes default serialization — a custom converter for one of those types breaks the alignment.
+
+The LINQ-predicate `QueryAsync<T>(Expression<Func<T,bool>>)` and the `SelectAsync` projections stay **removed** (runtime reflection / IL generation that AOT can't support). `CreateIndexAsync`, `CreateCompositeIndexAsync`, and `AddVirtualColumnAsync` still accept LINQ expressions, but only walk **member names** (`DocumentStore.ExtractJsonPath`) to build `$.Path` — no compilation or closure evaluation, so they stay AOT-safe. Property names map **as-is (PascalCase)** to match default STJ serialization. For joins, aggregates and virtual-column seeks, drop to raw SQL via `ExecuteRawAsync`.
 
 **Optimistic concurrency.** Every document row carries a `version` (starts at 1 on insert, incremented on every write, including plain `UpsertAsync`/`UpsertManyAsync`). `UpsertWithVersionAsync<T>(id, data, expectedVersion)` is the compare-and-swap write: `expectedVersion == 0` means "insert, must not exist"; non-zero means "update only if the stored version matches". A 0-row write throws `ConcurrencyException` (DocumentId + TableName). `GetWithVersionAsync<T>` returns `VersionedDocument<T>(Data, Version)` for read-modify-write cycles.
 
@@ -142,7 +158,7 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - Library code uses `.ConfigureAwait(false)` on awaits and `Async` suffix on async methods.
 - Validate arguments up front and fail fast (`ArgumentException`/`ArgumentNullException.ThrowIfNull`). Rethrow inside `catch` on transaction rollback rather than wrapping.
 - All public API needs XML doc comments (`GenerateDocumentationFile` is on; missing docs surface as warnings).
-- Package versions are inline `<PackageReference Version="...">` in the csproj — there is no Central Package Management here.
+- Package versions are centralized in `Directory.Packages.props` (Central Package Management); csproj files carry a bare `<PackageReference Include="..." />` with no version.
 - New features need both a unit and an integration test.
 - Don't add AI-attribution trailers (`Co-Authored-By: Claude`, "Generated with Claude Code") to commits or PRs.
 - Never auto-commit — stage and commit only when the user explicitly asks.
@@ -153,6 +169,7 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - `src/LiteDocumentStore/Core/DocumentOperations.cs` — where every document operation is actually implemented (shared by the store and by transactions).
 - `src/LiteDocumentStore/Core/SqliteConnectionPool.cs` — connection lifetime, PRAGMA-once configuration, the `:memory:` guard.
 - `src/LiteDocumentStore/Core/SqlGenerator.cs` — the JSONB SQL contract; change SQL here, nowhere else.
+- `src/LiteDocumentStore/Query/DocumentQuery.cs` — the composable filter builder; validation and bound-value normalization live here.
 - `src/LiteDocumentStore/Core/SqliteCommandExtensions.cs` — the raw ADO.NET helpers that replaced Dapper.
 - `src/LiteDocumentStore/Serialization/JsonHelper.cs` — the AOT-safe serialization funnel (`JsonTypeInfo<T>` + reflection fallback).
 - `src/LiteDocumentStore/Extensions/ServiceCollectionExtensions.cs` — how consumers wire it up (DI + lifetimes).
