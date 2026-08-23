@@ -1,0 +1,10 @@
+# The repository stores every text file with LF, and checks it out with LF on every
+# platform, so `.editorconfig`'s `end_of_line = lf` describes what a working tree
+# actually holds. Without this, `core.autocrlf` decided per developer: blobs landed
+# LF, Windows trees were CRLF, and `dotnet format --verify-no-changes` passed locally
+# while rewriting all 82 .cs files on the Linux CI runner.
+* text=auto eol=lf
+
+*.png binary
+*.db binary
+*.ico binary
