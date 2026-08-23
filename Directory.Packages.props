@@ -7,7 +7,7 @@
 
   <!-- Runtime: SQLite data access + the pinned native binary -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
     <!-- Pinned to a build with patched SQLite (>=3.50.2) to clear NU1903 / CVE-2025-6965:
          Microsoft.Data.Sqlite still pulls the vulnerable SQLitePCLRaw.lib.e_sqlite3 2.1.11
          transitively. Native bundle only (no managed deps), so the 2.x managed layer stays
