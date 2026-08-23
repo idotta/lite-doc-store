@@ -62,3 +62,6 @@ BenchmarkDotNet.Artifacts
 .vs/
 # Native AOT publish output used by CI (ci.yml aot-publish job)
 aot-out/
+
+# Local audit working notes — deliberately untracked.
+AUDIT.md

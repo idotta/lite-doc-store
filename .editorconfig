@@ -93,7 +93,7 @@ dotnet_diagnostic.CA1502.severity = warning
 dotnet_diagnostic.CA1505.severity = warning
 
 # CA1848/CA1873: LoggerMessage source-generated delegates. 138 sites across the
-# library; converting them is its own task (see AUDIT.md P3-3), not a build gate.
+# library; converting them is its own task, not a build gate.
 dotnet_diagnostic.CA1848.severity = suggestion
 dotnet_diagnostic.CA1873.severity = suggestion
 
