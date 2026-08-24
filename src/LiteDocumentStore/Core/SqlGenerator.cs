@@ -34,6 +34,27 @@ internal static class SqlGenerator
     public const int MaxBatchItemsPerStatement = 500;
 
     /// <summary>
+    /// The most arguments a single SQL function call may take, matching SQLITE_MAX_FUNCTION_ARG
+    /// in the bundled SQLite provider. It is a separate budget from
+    /// <see cref="MaxBoundParameters"/> and a patch reaches it first: <c>jsonb_set</c> takes two
+    /// arguments per set and <c>jsonb_remove</c> one per remove, on top of the document, while a
+    /// remove binds no parameter at all.
+    /// </summary>
+    public const int MaxJsonFunctionArguments = 1000;
+
+    /// <summary>
+    /// The most paths one patch may set — <c>jsonb_set(data, path, value, ...)</c> spends two
+    /// arguments per path on top of the document.
+    /// </summary>
+    public const int MaxPatchSetOperations = (MaxJsonFunctionArguments - 1) / 2;
+
+    /// <summary>
+    /// The most paths one patch may remove — <c>jsonb_remove(data, path, ...)</c> spends one
+    /// argument per path on top of the document.
+    /// </summary>
+    public const int MaxPatchRemoveOperations = MaxJsonFunctionArguments - 1;
+
+    /// <summary>
     /// Generates SQL for creating a table with JSONB storage.
     /// The version column backs optimistic concurrency: rows start at 1 and
     /// every write increments it. The column default is 1 as well, so a row inserted by raw
@@ -556,6 +577,19 @@ internal static class SqlGenerator
     /// matches an expression index only against a literal expression — and values are bound
     /// <c>@p0..@pN</c> in one left-to-right pass with the SQL.
     /// </para>
+    /// <para>
+    /// Within each function SQLite applies the paths sequentially left to right, each one seeing
+    /// the document as the previous ones left it. The builder rejects only an exactly repeated
+    /// path, so <i>related</i> paths still compose in call order: removing <c>$.Items[0]</c>
+    /// before <c>$.Items[1]</c> shifts the array under the second path, and setting <c>$.A</c>
+    /// before <c>$.A.B</c> writes into the value the first set just installed.
+    /// </para>
+    /// <para>
+    /// The operation counts are capped by <see cref="MaxPatchSetOperations"/> and
+    /// <see cref="MaxPatchRemoveOperations"/>, which come from SQLITE_MAX_FUNCTION_ARG rather
+    /// than from <see cref="MaxBoundParameters"/> — a patch reaches the argument budget first,
+    /// and a remove binds no parameter at all, so the parameter cap cannot be reached from here.
+    /// </para>
     /// </remarks>
     /// <param name="tableName">The table name</param>
     /// <param name="operations">The changes to apply; at least one</param>
@@ -582,16 +616,6 @@ internal static class SqlGenerator
 
         AppendPatchExpression(sb, operations, values);
 
-        // The id and the optional expected version bind on top of the operations' values.
-        var boundParameters = values.Count + 1 + (versioned ? 1 : 0);
-        if (boundParameters > MaxBoundParameters)
-        {
-            throw new ArgumentException(
-                $"The patch binds {boundParameters} parameters, more than the supported maximum of " +
-                $"{MaxBoundParameters}. Split it into several patches.",
-                nameof(operations));
-        }
-
         sb.Append(", version = version + 1 WHERE id = @Id");
         if (versioned)
         {
@@ -610,23 +634,46 @@ internal static class SqlGenerator
         IReadOnlyList<PatchOperation> operations,
         List<object?> values)
     {
-        var hasSets = false;
-        var hasRemoves = false;
+        var setCount = 0;
+        var removeCount = 0;
         for (var i = 0; i < operations.Count; i++)
         {
             switch (operations[i].Kind)
             {
                 case PatchOperationKind.Set:
-                    hasSets = true;
+                    setCount++;
                     break;
                 case PatchOperationKind.Remove:
-                    hasRemoves = true;
+                    removeCount++;
                     break;
                 default:
                     throw new ArgumentException(
                         $"Unsupported patch operation '{operations[i].Kind}'.", nameof(operations));
             }
         }
+
+        // SQLITE_MAX_FUNCTION_ARG, not SQLITE_MAX_VARIABLE_NUMBER, is what a patch runs into
+        // first: a set binds one parameter but spends two function arguments, and a remove
+        // binds none at all. Both would otherwise fail at execution with SQLite's opaque
+        // "too many arguments on function jsonb_set".
+        if (setCount > MaxPatchSetOperations)
+        {
+            throw new ArgumentException(
+                $"The patch sets {setCount} paths, more than the supported maximum of " +
+                $"{MaxPatchSetOperations}. Split it into several patches.",
+                nameof(operations));
+        }
+
+        if (removeCount > MaxPatchRemoveOperations)
+        {
+            throw new ArgumentException(
+                $"The patch removes {removeCount} paths, more than the supported maximum of " +
+                $"{MaxPatchRemoveOperations}. Split it into several patches.",
+                nameof(operations));
+        }
+
+        var hasSets = setCount > 0;
+        var hasRemoves = removeCount > 0;
 
         if (hasRemoves)
         {

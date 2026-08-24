@@ -330,6 +330,17 @@ public sealed class DocumentQuery<T>
                 paramName);
         }
 
+        // System.Text.Json refuses to write these, so no document can hold one: a query would
+        // never match and a patch would store SQLite's 9e999, which is not something the
+        // serializer could have produced. ADO rejects NaN at bind time anyway, far from here.
+        if (value is (float or double) && !double.IsFinite(Convert.ToDouble(value, CultureInfo.InvariantCulture)))
+        {
+            throw new ArgumentException(
+                $"The value '{value}' is not finite. NaN and infinity have no JSON representation, " +
+                "so no stored document can contain one.",
+                paramName);
+        }
+
         return NormalizeBoundValue(value);
     }
 

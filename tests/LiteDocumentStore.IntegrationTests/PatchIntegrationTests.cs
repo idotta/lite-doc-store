@@ -164,6 +164,60 @@ public sealed class PatchIntegrationTests : IAsyncLifetime
         Assert.Equal("blob", columnType);
     }
 
+    // --- Operation caps ------------------------------------------------------------------
+
+    // The caps come from SQLITE_MAX_FUNCTION_ARG, so they are only right if real SQLite accepts
+    // exactly that many. One more fails there with "too many arguments on function jsonb_set",
+    // which is what the generator's ArgumentException replaces.
+    [Fact]
+    public async Task PatchAsync_AtTheSetCap_IsAcceptedBySqlite()
+    {
+        var patch = DocumentPatch<Gadget>.Set("$.F0", 0);
+        for (var i = 1; i < SqlGenerator.MaxPatchSetOperations; i++)
+        {
+            patch = patch.AndSet($"$.F{i}", i);
+        }
+
+        Assert.Equal(2, await _store.PatchAsync("g1", patch));
+    }
+
+    [Fact]
+    public async Task PatchAsync_AtTheRemoveCap_IsAcceptedBySqlite()
+    {
+        var patch = DocumentPatch<Gadget>.Remove("$.F0");
+        for (var i = 1; i < SqlGenerator.MaxPatchRemoveOperations; i++)
+        {
+            patch = patch.AndRemove($"$.F{i}");
+        }
+
+        Assert.Equal(2, await _store.PatchAsync("g1", patch));
+    }
+
+    [Fact]
+    public async Task PatchAsync_OneSetBeyondTheCap_ThrowsBeforeReachingSqlite()
+    {
+        var patch = DocumentPatch<Gadget>.Set("$.F0", 0);
+        for (var i = 1; i <= SqlGenerator.MaxPatchSetOperations; i++)
+        {
+            patch = patch.AndSet($"$.F{i}", i);
+        }
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.PatchAsync("g1", patch));
+    }
+
+    // A remove binds no parameter, so nothing but this cap stands between it and SQLite.
+    [Fact]
+    public async Task PatchAsync_OneRemoveBeyondTheCap_ThrowsBeforeReachingSqlite()
+    {
+        var patch = DocumentPatch<Gadget>.Remove("$.F0");
+        for (var i = 1; i <= SqlGenerator.MaxPatchRemoveOperations; i++)
+        {
+            patch = patch.AndRemove($"$.F{i}");
+        }
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.PatchAsync("g1", patch));
+    }
+
     // --- Conflicts -----------------------------------------------------------------------
 
     [Fact]

@@ -127,18 +127,67 @@ public class PatchSqlTests
         Assert.Equal("operations", exception.ParamName);
     }
 
-    [Fact]
-    public void GeneratePatchSql_BeyondTheParameterCap_ThrowsRatherThanFailingInSqlite()
-    {
-        // The id counts towards the cap too, so the cap's worth of sets is already one too many.
-        var operations = Enumerable.Range(0, SqlGenerator.MaxBoundParameters)
-            .Select(i => Set($"$.F{i}", i))
-            .ToArray();
+    private static PatchOperation[] Sets(int count) =>
+        [.. Enumerable.Range(0, count).Select(i => Set($"$.F{i}", i))];
 
-        var exception = Assert.Throws<ArgumentException>(() => Generate(operations));
+    private static PatchOperation[] Removes(int count) =>
+        [.. Enumerable.Range(0, count).Select(i => Remove($"$.F{i}"))];
+
+    // SQLITE_MAX_FUNCTION_ARG, not SQLITE_MAX_VARIABLE_NUMBER, is the budget a patch runs into:
+    // a set spends two function arguments but binds one parameter, and a remove binds none, so
+    // the parameter cap is unreachable from here.
+    [Fact]
+    public void GeneratePatchSql_AtTheSetCap_StaysWithinSqlitesFunctionArgumentBudget()
+    {
+        var patch = Generate(Sets(SqlGenerator.MaxPatchSetOperations));
+
+        Assert.Equal(SqlGenerator.MaxPatchSetOperations, patch.ParameterValues.Count);
+        Assert.InRange(
+            (SqlGenerator.MaxPatchSetOperations * 2) + 1, 0, SqlGenerator.MaxJsonFunctionArguments);
+    }
+
+    [Fact]
+    public void GeneratePatchSql_OneSetBeyondTheCap_ThrowsRatherThanFailingInSqlite()
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => Generate(Sets(SqlGenerator.MaxPatchSetOperations + 1)));
 
         Assert.Equal("operations", exception.ParamName);
-        Assert.Contains(SqlGenerator.MaxBoundParameters.ToString(), exception.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            SqlGenerator.MaxPatchSetOperations.ToString(), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GeneratePatchSql_AtTheRemoveCap_BindsNothingAndGenerates()
+    {
+        var patch = Generate(Removes(SqlGenerator.MaxPatchRemoveOperations));
+
+        Assert.Empty(patch.ParameterValues);
+    }
+
+    // A remove binds no parameter, so the parameter cap never sees a remove-only patch at all.
+    [Fact]
+    public void GeneratePatchSql_OneRemoveBeyondTheCap_ThrowsRatherThanFailingInSqlite()
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => Generate(Removes(SqlGenerator.MaxPatchRemoveOperations + 1)));
+
+        Assert.Equal("operations", exception.ParamName);
+        Assert.Contains(
+            SqlGenerator.MaxPatchRemoveOperations.ToString(), exception.Message, StringComparison.Ordinal);
+    }
+
+    // The two budgets are independent: the nested jsonb_set counts as one argument to
+    // jsonb_remove, so a full set list does not eat into the remove list.
+    [Fact]
+    public void GeneratePatchSql_AtBothCapsTogether_Generates()
+    {
+        var patch = Generate([
+            .. Sets(SqlGenerator.MaxPatchSetOperations),
+            .. Removes(SqlGenerator.MaxPatchRemoveOperations).Select(o => Remove($"$.R{o.JsonPath[3..]}"))
+        ]);
+
+        Assert.Equal(SqlGenerator.MaxPatchSetOperations, patch.ParameterValues.Count);
     }
 
     // --- Builder -------------------------------------------------------------------------
@@ -179,6 +228,32 @@ public class PatchSqlTests
 
         Assert.Equal("value", exception.ParamName);
     }
+
+    // System.Text.Json refuses to write these, so no stored document can hold one; NaN would
+    // otherwise fail at ADO bind time and infinity would store SQLite's 9e999.
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void Set_WithANonFiniteDouble_ThrowsAtTheCallSite(double value)
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => DocumentPatch<Person>.Set("$.Ratio", value));
+
+        Assert.Equal("value", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    [InlineData(float.NegativeInfinity)]
+    public void Set_WithANonFiniteFloat_ThrowsAtTheCallSite(float value) =>
+        Assert.Throws<ArgumentException>(() => DocumentPatch<Person>.Set("$.Ratio", value));
+
+    [Fact]
+    public void Where_WithANonFiniteDouble_ThrowsAtTheCallSiteToo() =>
+        Assert.Throws<ArgumentException>(
+            () => DocumentQuery<Person>.Where("$.Ratio", QueryOperator.Equal, double.NaN));
 
     [Fact]
     public void Set_WithNull_StoresJsonNullRatherThanThrowing()

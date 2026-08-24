@@ -32,6 +32,13 @@ namespace LiteDocumentStore;
 /// Arguments are validated as the patch is built, so a malformed path, an unsupported value
 /// type or a path touched twice throws at the call site rather than at execution time.
 /// </para>
+/// <para>
+/// Only an exactly repeated path is rejected, and SQLite applies the paths in call order, each
+/// seeing the document as the previous ones left it. <i>Related</i> paths therefore compose:
+/// removing <c>$.Items[0]</c> before <c>$.Items[1]</c> shifts the array under the second path,
+/// and setting <c>$.A</c> before <c>$.A.B</c> writes into the value the first set just
+/// installed. Sets always run before removes, whatever order they were added in.
+/// </para>
 /// </remarks>
 /// <typeparam name="T">The document type the patch applies to</typeparam>
 [SuppressMessage("Design", "CA1000:Do not declare static members on generic types",
