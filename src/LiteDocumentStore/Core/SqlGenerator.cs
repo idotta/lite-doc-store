@@ -285,13 +285,18 @@ internal static class SqlGenerator
     /// <param name="tableName">The table name</param>
     /// <param name="indexName">The index name</param>
     /// <param name="jsonPath">The JSON path to index (e.g., '$.email')</param>
-    public static string GenerateCreateJsonIndexSql(string tableName, string indexName, string jsonPath)
+    /// <param name="options">Uniqueness, collation, direction and partial filter, or null for none</param>
+    public static string GenerateCreateJsonIndexSql(
+        string tableName,
+        string indexName,
+        string jsonPath,
+        IndexOptions? options = null)
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
         ValidateJsonPath(jsonPath, nameof(jsonPath));
 
-        return $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] (json_extract(data, '{jsonPath}'))";
+        return BuildCreateIndexSql(tableName, indexName, [jsonPath], options);
     }
 
     /// <summary>
@@ -307,14 +312,76 @@ internal static class SqlGenerator
     /// <param name="tableName">The table name</param>
     /// <param name="indexName">The index name</param>
     /// <param name="jsonPaths">The JSON paths to index</param>
-    public static string GenerateCreateCompositeJsonIndexSql(string tableName, string indexName, IEnumerable<string> jsonPaths)
+    /// <param name="options">
+    /// Uniqueness, collation, direction and partial filter, or null for none. Collation and
+    /// direction apply to every indexed column.
+    /// </param>
+    public static string GenerateCreateCompositeJsonIndexSql(
+        string tableName,
+        string indexName,
+        IEnumerable<string> jsonPaths,
+        IndexOptions? options = null)
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
 
-        var extractClauses = string.Join(", ", jsonPaths.Select(p =>
-            $"json_extract(data, '{ValidateJsonPath(p, nameof(jsonPaths))}')"));
-        return $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] ({extractClauses})";
+        var paths = jsonPaths.Select(p => ValidateJsonPath(p, nameof(jsonPaths))).ToList();
+        return BuildCreateIndexSql(tableName, indexName, paths, options);
+    }
+
+    // Identifiers and paths arrive validated; the options carry two more interpolated pieces —
+    // the collation name and the filter paths — so both are validated here, the one boundary
+    // where that happens. Default options emit the statement these generators emitted before
+    // the options existed: no UNIQUE, no COLLATE, no direction (SQLite's default is ascending)
+    // and no WHERE.
+    private static string BuildCreateIndexSql(
+        string tableName,
+        string indexName,
+        IReadOnlyList<string> validatedPaths,
+        IndexOptions? options)
+    {
+        var columnSuffix = new StringBuilder();
+        if (options?.Collation is { } collation)
+        {
+            columnSuffix.Append(" COLLATE ").Append(ValidateIdentifier(collation, "options.Collation"));
+        }
+
+        if (options?.Descending == true)
+        {
+            columnSuffix.Append(" DESC");
+        }
+
+        var columns = string.Join(", ", validatedPaths.Select(p =>
+            $"json_extract(data, '{p}'){columnSuffix}"));
+
+        var sb = new StringBuilder("CREATE ");
+        if (options?.Unique == true)
+        {
+            sb.Append("UNIQUE ");
+        }
+
+        sb.Append("INDEX IF NOT EXISTS [").Append(indexName)
+          .Append("] ON [").Append(tableName).Append("] (").Append(columns).Append(')');
+
+        if (options?.Filter is { } filter)
+        {
+            sb.Append(" WHERE ");
+            for (var i = 0; i < filter.Terms.Count; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(" AND ");
+                }
+
+                var term = filter.Terms[i];
+                sb.Append("json_extract(data, '")
+                  .Append(ValidateJsonPath(term.JsonPath, "options.Filter"))
+                  .Append("') IS ")
+                  .Append(term.RequiresNull ? "NULL" : "NOT NULL");
+            }
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>

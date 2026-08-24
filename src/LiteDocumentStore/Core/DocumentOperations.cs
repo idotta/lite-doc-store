@@ -718,10 +718,11 @@ internal readonly struct DocumentOperations
         return parameters;
     }
 
-    /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}(Expression{Func{T, object}}, string, IndexOptions, CancellationToken)" />
     public async Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName,
+        IndexOptions? options,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPath);
@@ -742,14 +743,15 @@ internal readonly struct DocumentOperations
             return;
         }
 
-        var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString);
+        var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString, options);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}(Expression{Func{T, object}}[], string, IndexOptions, CancellationToken)" />
     public async Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName,
+        IndexOptions? options,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPaths);
@@ -774,7 +776,7 @@ internal readonly struct DocumentOperations
             return;
         }
 
-        var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings);
+        var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
