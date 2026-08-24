@@ -333,7 +333,7 @@ public class StorePathBenchmark
         await SeedAsync(_fileStore);
         _fileHeldConnection = await connectionFactory.CreateConnectionAsync(fileOptions);
         _fileHeldOperations = new DocumentOperations(
-            _fileHeldConnection, convention, serializerOptions, NullLogger.Instance);
+            _fileHeldConnection, convention, serializerOptions, NullLogger.Instance, inAmbientTransaction: false);
 
         // One shared-cache in-memory database, reached by both the store and the held connection.
         var memoryOptions = DocumentStoreOptions.ForInMemory();
@@ -341,7 +341,7 @@ public class StorePathBenchmark
         await SeedAsync(_memoryStore);
         _memoryHeldConnection = await connectionFactory.CreateConnectionAsync(memoryOptions);
         _memoryHeldOperations = new DocumentOperations(
-            _memoryHeldConnection, convention, serializerOptions, NullLogger.Instance);
+            _memoryHeldConnection, convention, serializerOptions, NullLogger.Instance, inAmbientTransaction: false);
 
         // A private :memory: database — what ForInMemory() produced before pooling forced the
         // move to shared cache. Measures the shared-cache tax, with no store involved.
@@ -352,7 +352,7 @@ public class StorePathBenchmark
                 SynchronousMode = SynchronousMode.Off
             });
         _privateMemoryOperations = new DocumentOperations(
-            _privateMemoryConnection, convention, serializerOptions, NullLogger.Instance);
+            _privateMemoryConnection, convention, serializerOptions, NullLogger.Instance, inAmbientTransaction: false);
         await _privateMemoryOperations.CreateTableAsync<StoreDoc>(CancellationToken.None);
         await _privateMemoryOperations.UpsertManyAsync(Enumerable.Range(0, RowCount)
             .Select(i => ($"doc-{i:D6}", new StoreDoc { Name = $"Document {i}", Age = 20 + (i % 50) })),

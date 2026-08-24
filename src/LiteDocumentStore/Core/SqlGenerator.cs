@@ -26,6 +26,14 @@ internal static class SqlGenerator
     public const int MaxBoundParameters = 900;
 
     /// <summary>
+    /// The most documents a single bulk upsert or delete statement may carry. Batch
+    /// operations chunk to this size, keeping the bound parameter count (2N for an upsert)
+    /// and the statement text well inside SQLITE_MAX_VARIABLE_NUMBER and
+    /// SQLITE_MAX_SQL_LENGTH.
+    /// </summary>
+    public const int MaxBatchItemsPerStatement = 500;
+
+    /// <summary>
     /// Generates SQL for creating a table with JSONB storage.
     /// The version column backs optimistic concurrency: rows start at 1 and
     /// every write increments it.
@@ -251,6 +259,8 @@ internal static class SqlGenerator
             throw new ArgumentException("Count must be greater than zero.", nameof(count));
         }
 
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, MaxBatchItemsPerStatement);
+
         // Use StringBuilder to avoid O(n) string allocations
         // Estimated size: ~45 chars per value clause + ~130 chars for statement
         var sb = new StringBuilder(130 + (count * 45));
@@ -282,6 +292,8 @@ internal static class SqlGenerator
         {
             throw new ArgumentException("Count must be greater than zero.", nameof(count));
         }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, MaxBatchItemsPerStatement);
 
         // Use StringBuilder to avoid O(n) string allocations
         // Estimated size: ~6 chars per param + ~50 chars for statement

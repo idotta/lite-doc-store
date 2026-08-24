@@ -359,7 +359,7 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     private DocumentOperations Operations(SqliteConnection connection) =>
-        new(connection, _tableNamingConvention, _serializerOptions, _logger);
+        new(connection, _tableNamingConvention, _serializerOptions, _logger, inAmbientTransaction: false);
 
     /// <summary>
     /// Disposes the store: checkpoints the WAL and closes every pooled connection.

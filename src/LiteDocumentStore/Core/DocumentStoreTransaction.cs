@@ -34,7 +34,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         _lease = lease;
         _transaction = transaction;
         _logger = logger;
-        _operations = new DocumentOperations(lease.Connection, tableNamingConvention, serializerOptions, logger);
+        _operations = new DocumentOperations(lease.Connection, tableNamingConvention, serializerOptions, logger, inAmbientTransaction: true);
     }
 
     /// <inheritdoc />
