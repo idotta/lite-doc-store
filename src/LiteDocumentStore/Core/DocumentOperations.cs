@@ -731,6 +731,10 @@ internal readonly struct DocumentOperations
         var pathString = ExtractJsonPath(jsonPath);
         var finalIndexName = indexName ?? GenerateIndexName(tableName, pathString);
 
+        // Generated before the pre-check so an invalid identifier, path or collation throws
+        // whether or not the index happens to exist already: a bad argument is a bad argument.
+        var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString, options);
+
         // Check if index already exists
         var indexExists = await _connection.ExecuteScalarAsync<int>(
             SqlGenerator.GenerateCheckIndexExistsSql(),
@@ -743,7 +747,6 @@ internal readonly struct DocumentOperations
             return;
         }
 
-        var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString, options);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
@@ -764,6 +767,9 @@ internal readonly struct DocumentOperations
         var pathStrings = jsonPaths.Select(ExtractJsonPath).ToList();
         var finalIndexName = indexName ?? GenerateCompositeIndexName(tableName, pathStrings);
 
+        // Generated before the pre-check, for the reason in CreateIndexAsync.
+        var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
+
         // Check if index already exists
         var indexExists = await _connection.ExecuteScalarAsync<int>(
             SqlGenerator.GenerateCheckIndexExistsSql(),
@@ -776,7 +782,6 @@ internal readonly struct DocumentOperations
             return;
         }
 
-        var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 

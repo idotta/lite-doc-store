@@ -208,6 +208,28 @@ public sealed class IndexOptionsIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateIndexAsync_WithAnInvalidCollation_ThrowsEvenWhenTheIndexAlreadyExists()
+    {
+        // The name pre-check skips creation, but a bad argument is still a bad argument: the
+        // statement is generated — and therefore validated — before the existence query runs.
+        await _store.CreateIndexAsync<Member>(x => x.Email!, "idx_members_email");
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.CreateIndexAsync<Member>(
+                x => x.Email!,
+                "idx_members_email",
+                new IndexOptions { Collation = "NO CASE" }));
+
+        await _store.CreateCompositeIndexAsync<Member>([x => x.Email!, x => x.Age], "idx_members_pair");
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.CreateCompositeIndexAsync<Member>(
+                [x => x.Email!, x => x.Age],
+                "idx_members_pair",
+                new IndexOptions { Collation = "NO CASE" }));
+    }
+
+    [Fact]
     public async Task CreateIndexAsync_WithAnAlreadyCancelledToken_Throws()
     {
         using var cts = new CancellationTokenSource();
