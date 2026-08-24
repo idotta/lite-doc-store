@@ -373,7 +373,14 @@ public class MigrationIntegrationTests : IAsyncLifetime
             // A holds the write lock inside UpAsync; B then contends for it. A one-way gate, not
             // a barrier: B cannot reach UpAsync until A commits, so waiting on B here would hang.
             var first = storeA.MigrateAsync([gated]);
-            await entered.Task;
+
+            // `entered` only completes from inside UpAsync, so a failure before that point
+            // would park this await forever. Surface the fault instead of hanging the run.
+            if (await Task.WhenAny(entered.Task, first) == first)
+            {
+                await first;
+                Assert.Fail("The gated migration finished without entering UpAsync.");
+            }
 
             var second = Task.Run(() => storeB.MigrateAsync([plain]));
             await Task.Delay(250);
