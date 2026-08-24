@@ -19,4 +19,10 @@ public sealed class MigrationHistoryRecord
     /// Gets or sets the timestamp when the migration was applied.
     /// </summary>
     public DateTimeOffset AppliedAt { get; set; }
+
+    /// <summary>
+    /// Gets or sets the checksum recorded when the migration was applied, or null when the
+    /// migration carried none or the row predates checksum tracking.
+    /// </summary>
+    public string? Checksum { get; set; }
 }

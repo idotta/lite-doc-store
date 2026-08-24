@@ -93,7 +93,7 @@ public sealed class CancellationIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task MigrationRunner_WithAnAlreadyCancelledToken_AppliesNothing()
+    public async Task MigrateAsync_WithAnAlreadyCancelledToken_AppliesNothing()
     {
         await using var store = await CreateFileStoreAsync();
         var migration = new Migration(
@@ -105,18 +105,15 @@ public sealed class CancellationIntegrationTests : IDisposable
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
-        await store.ExecuteRawAsync(async (connection, _) =>
-        {
-            var runner = new MigrationRunner(connection);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => store.MigrateAsync([migration], cts.Token));
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => runner.ApplyMigrationAsync(migration, cts.Token));
+        Assert.Equal(0, await store.GetCurrentMigrationVersionAsync());
 
-            Assert.Equal(0, await runner.GetCurrentVersionAsync());
+        var exists = await store.ExecuteRawAsync((connection, token) =>
+            new SchemaIntrospector(connection).TableExistsAsync("Widget", token));
 
-            var introspector = new SchemaIntrospector(connection);
-            Assert.False(await introspector.TableExistsAsync("Widget"));
-        });
+        Assert.False(exists);
     }
 
     [Fact]

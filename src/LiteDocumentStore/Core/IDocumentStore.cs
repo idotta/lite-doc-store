@@ -64,4 +64,84 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// <param name="cancellationToken">A token to cancel the check</param>
     /// <returns>True when the store is usable; false instead of throwing on any failure</returns>
     Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Applies every supplied migration that is not already recorded in the history table, in
+    /// ascending version order, under <see cref="MigrationOptions.Default"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The whole run holds one pooled connection, but each migration commits in its own
+    /// <c>BEGIN IMMEDIATE</c> transaction: if versions 1 and 2 commit and 3 throws, 1 and 2 stay
+    /// applied. "Already applied" is decided by the version being present in the history table,
+    /// not by comparing against the highest applied version, so a back-filled migration is not
+    /// silently skipped — it is rejected (see <see cref="MigrationOptions.AllowOutOfOrder"/>).
+    /// </para>
+    /// <para>
+    /// Safe to call from two processes at once: the second waits for the first to commit, then
+    /// re-reads the history table under the same write lock and reports the migration as
+    /// already applied.
+    /// </para>
+    /// <para>
+    /// Migrations are not available on <see cref="IDocumentTransaction"/>: a migration owns its
+    /// own transaction.
+    /// </para>
+    /// </remarks>
+    /// <param name="migrations">The migrations to apply; order is irrelevant, versions must be unique</param>
+    /// <param name="cancellationToken">A token to cancel the run</param>
+    /// <returns>The number of migrations applied</returns>
+    /// <exception cref="ArgumentException">A migration is null, or two share a version</exception>
+    /// <exception cref="Exceptions.MigrationOutOfOrderException">
+    /// A migration that has never been applied sits below the highest applied version
+    /// </exception>
+    /// <exception cref="Exceptions.MigrationChecksumMismatchException">
+    /// An applied migration was edited since it was applied
+    /// </exception>
+    Task<int> MigrateAsync(IEnumerable<IMigration> migrations, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="MigrateAsync(IEnumerable{IMigration}, CancellationToken)" />
+    /// <param name="migrations">The migrations to apply; order is irrelevant, versions must be unique</param>
+    /// <param name="options">The out-of-order and checksum policy for this run</param>
+    /// <param name="cancellationToken">A token to cancel the run</param>
+    Task<int> MigrateAsync(
+        IEnumerable<IMigration> migrations,
+        MigrationOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets every applied migration, ordered by version.
+    /// </summary>
+    /// <param name="cancellationToken">A token to cancel the read</param>
+    /// <returns>The history rows, including the checksum recorded with each</returns>
+    Task<IReadOnlyList<MigrationHistoryRecord>> GetAppliedMigrationsAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the highest applied migration version, or 0 when none have been applied.
+    /// </summary>
+    /// <param name="cancellationToken">A token to cancel the read</param>
+    /// <returns>The highest applied version</returns>
+    Task<long> GetCurrentMigrationVersionAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Rolls back every applied migration above <paramref name="targetVersion"/>, newest first.
+    /// </summary>
+    /// <remarks>
+    /// Refuses the whole operation when any migration in the rollback range has no definition in
+    /// <paramref name="migrations"/> — a partial rollback would leave the schema and the history
+    /// table inconsistent. Checksums are never verified on this path, so a migration whose down
+    /// SQL was edited still rolls back.
+    /// </remarks>
+    /// <param name="targetVersion">The version to roll back to; 0 rolls back everything</param>
+    /// <param name="migrations">The available migration definitions</param>
+    /// <param name="cancellationToken">A token to cancel the run</param>
+    /// <returns>The number of migrations rolled back</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="targetVersion"/> is negative</exception>
+    /// <exception cref="Exceptions.LiteDocumentStoreException">
+    /// A migration in the rollback range has no definition
+    /// </exception>
+    Task<int> RollbackToVersionAsync(
+        long targetVersion,
+        IEnumerable<IMigration> migrations,
+        CancellationToken cancellationToken = default);
 }
