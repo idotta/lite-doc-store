@@ -114,6 +114,21 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.DeleteWithVersionAsync<T>(id, expectedVersion, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
+    public Task<long> PatchAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.PatchAsync(id, patch, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> PatchWithVersionAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        long expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.PatchWithVersionAsync(id, patch, expectedVersion, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
     public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
         CancellationToken cancellationToken = default) =>

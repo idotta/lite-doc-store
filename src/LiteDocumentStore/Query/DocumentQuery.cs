@@ -302,7 +302,8 @@ public sealed class DocumentQuery<T>
 
     // The path grammar lives in SqlGenerator.ValidateJsonPath, the single boundary guarding
     // interpolated paths. Calling it here only moves the failure forward to the call site.
-    private static string NormalizePath(string jsonPath)
+    // Internal so DocumentPatch<T> validates paths through the same rule.
+    internal static string NormalizePath(string jsonPath)
     {
         if (string.IsNullOrWhiteSpace(jsonPath))
         {
@@ -314,7 +315,8 @@ public sealed class DocumentQuery<T>
 
     // Only types Microsoft.Data.Sqlite binds directly. Anything else would either throw deep
     // inside ADO or, worse, round-trip through an unexpected representation.
-    private static object ValidateValue(object? value, string paramName)
+    // Internal so DocumentPatch<T> stores values in the shape a query compares against.
+    internal static object ValidateValue(object? value, string paramName)
     {
         ArgumentNullException.ThrowIfNull(value, paramName);
 

@@ -540,6 +540,148 @@ internal static class SqlGenerator
         return new GeneratedQuery(sb.ToString(), values);
     }
 
+    /// <summary>
+    /// Generates the field-level update for a <see cref="DocumentPatch{T}"/>, bumping the
+    /// version and returning the version SQLite stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>jsonb_set</c> / <c>jsonb_remove</c>, never their <c>json_*</c> siblings: those return
+    /// JSON <i>text</i>, which would silently de-binary the <c>data</c> column and break the
+    /// JSONB contract every read (<c>SELECT json(data)</c>) depends on.
+    /// </para>
+    /// <para>
+    /// Sets are applied before removes, since removes wrap the set expression. Paths are
+    /// interpolated after validation — the same reason as everywhere else here, that SQLite
+    /// matches an expression index only against a literal expression — and values are bound
+    /// <c>@p0..@pN</c> in one left-to-right pass with the SQL.
+    /// </para>
+    /// </remarks>
+    /// <param name="tableName">The table name</param>
+    /// <param name="operations">The changes to apply; at least one</param>
+    /// <param name="versioned">
+    /// True to guard the update with <c>AND version = @ExpectedVersion</c> for a compare-and-swap
+    /// patch; false to patch whichever version is stored
+    /// </param>
+    public static GeneratedQuery GeneratePatchSql(
+        string tableName,
+        IReadOnlyList<PatchOperation> operations,
+        bool versioned)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+        ArgumentNullException.ThrowIfNull(operations);
+
+        if (operations.Count == 0)
+        {
+            throw new ArgumentException("A patch needs at least one operation.", nameof(operations));
+        }
+
+        var values = new List<object?>();
+        var sb = new StringBuilder(160);
+        sb.Append("UPDATE [").Append(tableName).Append("] SET data = ");
+
+        AppendPatchExpression(sb, operations, values);
+
+        // The id and the optional expected version bind on top of the operations' values.
+        var boundParameters = values.Count + 1 + (versioned ? 1 : 0);
+        if (boundParameters > MaxBoundParameters)
+        {
+            throw new ArgumentException(
+                $"The patch binds {boundParameters} parameters, more than the supported maximum of " +
+                $"{MaxBoundParameters}. Split it into several patches.",
+                nameof(operations));
+        }
+
+        sb.Append(", version = version + 1 WHERE id = @Id");
+        if (versioned)
+        {
+            sb.Append(" AND version = @ExpectedVersion");
+        }
+
+        sb.Append(" RETURNING version");
+
+        return new GeneratedQuery(sb.ToString(), values);
+    }
+
+    // jsonb_remove(jsonb_set(data, '$.A', @p0, '$.B', json(@p1)), '$.C') — either call is
+    // elided when the patch has no operation of that kind.
+    private static void AppendPatchExpression(
+        StringBuilder sb,
+        IReadOnlyList<PatchOperation> operations,
+        List<object?> values)
+    {
+        var hasSets = false;
+        var hasRemoves = false;
+        for (var i = 0; i < operations.Count; i++)
+        {
+            switch (operations[i].Kind)
+            {
+                case PatchOperationKind.Set:
+                    hasSets = true;
+                    break;
+                case PatchOperationKind.Remove:
+                    hasRemoves = true;
+                    break;
+                default:
+                    throw new ArgumentException(
+                        $"Unsupported patch operation '{operations[i].Kind}'.", nameof(operations));
+            }
+        }
+
+        if (hasRemoves)
+        {
+            sb.Append("jsonb_remove(");
+        }
+
+        if (hasSets)
+        {
+            sb.Append("jsonb_set(");
+        }
+
+        sb.Append("data");
+
+        for (var i = 0; i < operations.Count; i++)
+        {
+            var operation = operations[i];
+            if (operation.Kind != PatchOperationKind.Set)
+            {
+                continue;
+            }
+
+            sb.Append(", '").Append(ValidateJsonPath(operation.JsonPath, nameof(operations))).Append("', ");
+
+            var parameter = NextParameter(values, operation.Value);
+            if (operation.AsJson)
+            {
+                sb.Append("json(").Append(parameter).Append(')');
+            }
+            else
+            {
+                sb.Append(parameter);
+            }
+        }
+
+        if (hasSets)
+        {
+            sb.Append(')');
+        }
+
+        for (var i = 0; i < operations.Count; i++)
+        {
+            if (operations[i].Kind == PatchOperationKind.Remove)
+            {
+                sb.Append(", '")
+                    .Append(ValidateJsonPath(operations[i].JsonPath, nameof(operations)))
+                    .Append('\'');
+            }
+        }
+
+        if (hasRemoves)
+        {
+            sb.Append(')');
+        }
+    }
+
     private static List<object?> AppendWhere(StringBuilder sb, IReadOnlyList<QueryPredicate> predicates)
     {
         var values = new List<object?>();

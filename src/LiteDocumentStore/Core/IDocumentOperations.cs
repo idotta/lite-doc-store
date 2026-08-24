@@ -93,6 +93,59 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Applies field-level changes to a stored document in a single statement, leaving every
+    /// field the patch does not name untouched.
+    /// </summary>
+    /// <remarks>
+    /// This is the alternative to a read-modify-write cycle, which reserializes the whole
+    /// document and therefore overwrites a concurrent writer's edits to unrelated fields. All
+    /// of the patch's operations apply in one statement and bump the version once.
+    /// A patch carries no full document, so it cannot insert: a missing id is a conflict, not
+    /// a silent no-op.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="id">The document identifier</param>
+    /// <param name="patch">The changes to apply</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The stored version of the document after the patch</returns>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="id"/> is null or empty</exception>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="patch"/> is null</exception>
+    /// <exception cref="Exceptions.ConcurrencyException">
+    /// Thrown when no document with that id exists, carrying
+    /// <see cref="Exceptions.ConcurrencyConflictKind.DocumentNotFound"/>.
+    /// </exception>
+    Task<long> PatchAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Compare-and-swap form of <see cref="PatchAsync{T}"/>: applies the patch only when the
+    /// stored version still matches.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="id">The document identifier</param>
+    /// <param name="patch">The changes to apply</param>
+    /// <param name="expectedVersion">The version the caller expects to patch</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The stored version of the document after the patch</returns>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="id"/> is null or empty</exception>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="patch"/> is null</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="expectedVersion"/> is negative
+    /// </exception>
+    /// <exception cref="Exceptions.ConcurrencyException">
+    /// Thrown when the document does not exist or its stored version does not match
+    /// <paramref name="expectedVersion"/>. The exception carries both versions and a
+    /// <see cref="Exceptions.ConcurrencyConflictKind"/>.
+    /// </exception>
+    Task<long> PatchWithVersionAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Retrieves a document together with its current version, for read-modify-write cycles.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>

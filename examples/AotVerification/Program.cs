@@ -48,6 +48,11 @@ Console.WriteLine($"Exists p2          => {await store.ExistsAsync<Person>("p2")
 Console.WriteLine($"Any @example.com   => " +
     $"{await store.ExistsAsync(DocumentQuery<Person>.Where("$.Email", QueryOperator.Like, "%@example.com"))}");
 
+// A patch binds scalars, so no JsonTypeInfo for the value type is needed - part of what
+// keeps it AOT-safe.
+var patched = await store.PatchAsync("p1", DocumentPatch<Person>.Set("$.Age", 37));
+Console.WriteLine($"Patch p1 age       => v{patched} ({(await store.GetAsync<Person>("p1"))?.Age})");
+
 Console.WriteLine($"Delete p3          => {await store.DeleteAsync<Person>("p3")}");
 Console.WriteLine($"Count after delete => {await store.CountAsync<Person>()}");
 

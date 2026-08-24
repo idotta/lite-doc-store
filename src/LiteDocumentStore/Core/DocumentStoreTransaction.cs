@@ -112,6 +112,27 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task<long> PatchAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.PatchAsync(id, patch, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long> PatchWithVersionAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        long expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.PatchWithVersionAsync(id, patch, expectedVersion, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
         CancellationToken cancellationToken = default)
