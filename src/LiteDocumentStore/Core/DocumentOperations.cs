@@ -183,7 +183,8 @@ internal readonly struct DocumentOperations
         if (newVersion is null)
         {
             throw await BuildConflictAsync(
-                "writing", id, tableName, expectedVersion, cancellationToken).ConfigureAwait(false);
+                "writing", id, tableName, expectedVersion,
+                insertAttempt: expectedVersion == 0, cancellationToken).ConfigureAwait(false);
         }
 
         return newVersion.Value;
@@ -212,7 +213,8 @@ internal readonly struct DocumentOperations
         if (affectedRows == 0)
         {
             throw await BuildConflictAsync(
-                "deleting", id, tableName, expectedVersion, cancellationToken).ConfigureAwait(false);
+                "deleting", id, tableName, expectedVersion,
+                insertAttempt: false, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -222,24 +224,33 @@ internal readonly struct DocumentOperations
     /// </summary>
     /// <remarks>
     /// The extra SELECT runs only on the conflict path, so the happy path pays nothing for it.
+    /// It is a separate statement, so outside a transaction it observes the row as it stands
+    /// afterwards rather than at the instant the guard rejected the operation.
+    /// <para>
+    /// <c>insertAttempt</c> is true only for a write that requested an insert, so a taken id
+    /// reads as <see cref="ConcurrencyConflictKind.AlreadyExists"/>. A version-guarded delete
+    /// passes false: expected version 0 there means "delete the row still at 0" (a legacy row
+    /// written by raw SQL under the old column default), not "insert".
+    /// </para>
     /// </remarks>
     private async Task<ConcurrencyException> BuildConflictAsync(
         string verb,
         string id,
         string tableName,
         long expectedVersion,
+        bool insertAttempt,
         CancellationToken cancellationToken)
     {
         var actualVersion = await _connection.QueryFirstInt64Async(
             SqlGenerator.GenerateGetVersionSql(tableName), cancellationToken, ("Id", id))
             .ConfigureAwait(false);
 
-        // An insert (expected version 0) that reached here found the id taken at a version the
-        // 0-guard could not match — so it is reported as already existing, unless the row is
-        // gone by the time this reads it (a concurrent delete), which reads as not found.
+        // An insert that reached here found the id taken at a version the 0-guard could not
+        // match — so it is reported as already existing, unless the row is gone by the time
+        // this reads it (a concurrent delete), which reads as not found.
         var kind = actualVersion is null
             ? ConcurrencyConflictKind.DocumentNotFound
-            : expectedVersion == 0
+            : insertAttempt
                 ? ConcurrencyConflictKind.AlreadyExists
                 : ConcurrencyConflictKind.VersionMismatch;
 

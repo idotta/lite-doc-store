@@ -289,6 +289,26 @@ public class ConcurrencyIntegrationTests
     }
 
     [Fact]
+    public async Task DeleteWithVersion_ExpectedZeroOnANonZeroRow_ReportsVersionMismatch()
+    {
+        // Expected version 0 means "insert" only for a write; for a delete it targets a legacy
+        // row still at 0, so a row at version 1 is a mismatch, not AlreadyExists.
+        var store = await CreateStoreWithTableAsync();
+        await store.UpsertWithVersionAsync("p1", new VersionedPerson("Ada"), expectedVersion: 0);
+
+        var exception = await Assert.ThrowsAsync<ConcurrencyException>(
+            () => store.DeleteWithVersionAsync<VersionedPerson>("p1", expectedVersion: 0));
+
+        Assert.Equal(ConcurrencyConflictKind.VersionMismatch, exception.Kind);
+        Assert.Equal(0, exception.ExpectedVersion);
+        Assert.Equal(1, exception.ActualVersion);
+
+        var stored = await store.GetWithVersionAsync<VersionedPerson>("p1");
+        Assert.NotNull(stored);
+        Assert.Equal(1, stored.Version);
+    }
+
+    [Fact]
     public async Task DeleteWithVersion_NegativeExpectedVersion_ThrowsArgumentOutOfRange()
     {
         var store = await CreateStoreWithTableAsync();

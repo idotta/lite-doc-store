@@ -1,8 +1,10 @@
 namespace LiteDocumentStore.Exceptions;
 
 /// <summary>
-/// Why an optimistic-concurrency write or delete was rejected, so a caller can pick a retry
-/// strategy without parsing the exception message.
+/// A classification of an optimistic-concurrency conflict, so a caller can pick a retry strategy
+/// without parsing the exception message. The value is derived from a stored-version read taken
+/// after the guard rejected the operation, so outside a transaction it describes the row as
+/// observed then, which need not be the state that caused the rejection.
 /// </summary>
 public enum ConcurrencyConflictKind
 {
@@ -12,17 +14,18 @@ public enum ConcurrencyConflictKind
     Unspecified = 0,
 
     /// <summary>
-    /// An insert was requested (expected version 0) but the document already exists.
+    /// An insert was requested (a write with expected version 0) and the id was found taken.
+    /// Never reported for a delete, where expected version 0 targets a row still at 0.
     /// </summary>
     AlreadyExists = 1,
 
     /// <summary>
-    /// The document exists but its stored version differs from the expected version.
+    /// The document was found, but at a version other than the expected one.
     /// </summary>
     VersionMismatch = 2,
 
     /// <summary>
-    /// The document does not exist, so there was no version to match.
+    /// No document with that id was found, so there was no version to match.
     /// </summary>
     DocumentNotFound = 3,
 }

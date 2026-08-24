@@ -23,13 +23,19 @@ public class ConcurrencyException : LiteDocumentStoreException
     public long? ExpectedVersion { get; }
 
     /// <summary>
-    /// Gets the version actually stored when the conflict was detected, or null when the
-    /// document did not exist.
+    /// Gets the stored version read after the conflict was detected, or null when the document
+    /// did not exist. Outside a transaction this is a post-conflict observation, not a snapshot
+    /// of the state that rejected the operation: the guarded statement and this read are
+    /// separate, so another connection can update, delete or recreate the row in between. It is
+    /// exact when the operation runs through an existing transaction, which holds the SQLite
+    /// locks across both statements.
     /// </summary>
     public long? ActualVersion { get; }
 
     /// <summary>
-    /// Gets the reason the operation was rejected.
+    /// Gets a conflict classification derived from <see cref="ActualVersion"/> and therefore
+    /// carrying the same post-conflict observation semantics. Outside a transaction it need not
+    /// describe the state that originally rejected the operation.
     /// </summary>
     public ConcurrencyConflictKind Kind { get; }
 
