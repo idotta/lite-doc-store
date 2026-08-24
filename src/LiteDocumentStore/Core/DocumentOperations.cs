@@ -156,33 +156,104 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
 
-        int affectedRows;
+        long? newVersion;
         if (expectedVersion == 0)
         {
-            var sql = SqlGenerator.GenerateInsertIfAbsentSql(tableName);
-            affectedRows = await _connection.ExecuteAsync(
-                sql, cancellationToken, ("Id", id), ("Data", jsonBytes))
+            newVersion = await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateInsertIfAbsentSql(tableName),
+                cancellationToken, ("Id", id), ("Data", jsonBytes))
+                .ConfigureAwait(false);
+
+            // No row back means the id is taken. A row left at version 0 by raw SQL (the old
+            // column default) is still CAS-able: the version-guarded update matches 0 and lifts
+            // it to 1, so such a row is not stuck outside the concurrency model forever.
+            newVersion ??= await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateVersionedUpdateSql(tableName),
+                cancellationToken, ("Id", id), ("Data", jsonBytes), ("ExpectedVersion", 0L))
                 .ConfigureAwait(false);
         }
         else
         {
-            var sql = SqlGenerator.GenerateVersionedUpdateSql(tableName);
-            affectedRows = await _connection.ExecuteAsync(
-                sql, cancellationToken, ("Id", id), ("Data", jsonBytes), ("ExpectedVersion", expectedVersion))
+            newVersion = await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateVersionedUpdateSql(tableName),
+                cancellationToken, ("Id", id), ("Data", jsonBytes), ("ExpectedVersion", expectedVersion))
                 .ConfigureAwait(false);
         }
 
-        if (affectedRows == 0)
+        if (newVersion is null)
         {
-            var reason = expectedVersion == 0
-                ? "the document already exists"
-                : $"the stored version does not match the expected version {expectedVersion} (or the document does not exist)";
-            throw new ConcurrencyException(
-                $"Concurrency conflict writing document '{id}' in table '{tableName}': {reason}.",
-                id, tableName);
+            throw await BuildConflictAsync(
+                "writing", id, tableName, expectedVersion, cancellationToken).ConfigureAwait(false);
         }
 
-        return expectedVersion + 1;
+        return newVersion.Value;
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DeleteWithVersionAsync{T}" />
+    public async Task DeleteWithVersionAsync<T>(
+        string id,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var sql = SqlGenerator.GenerateVersionedDeleteSql(tableName);
+
+        var affectedRows = await _connection.ExecuteAsync(
+            sql, cancellationToken, ("Id", id), ("ExpectedVersion", expectedVersion))
+            .ConfigureAwait(false);
+
+        if (affectedRows == 0)
+        {
+            throw await BuildConflictAsync(
+                "deleting", id, tableName, expectedVersion, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Builds the <see cref="ConcurrencyException"/> for a version-guarded write or delete that
+    /// affected no row, reading the stored version so the caller can see both sides.
+    /// </summary>
+    /// <remarks>
+    /// The extra SELECT runs only on the conflict path, so the happy path pays nothing for it.
+    /// </remarks>
+    private async Task<ConcurrencyException> BuildConflictAsync(
+        string verb,
+        string id,
+        string tableName,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var actualVersion = await _connection.QueryFirstInt64Async(
+            SqlGenerator.GenerateGetVersionSql(tableName), cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
+
+        // An insert (expected version 0) that reached here found the id taken at a version the
+        // 0-guard could not match — so it is reported as already existing, unless the row is
+        // gone by the time this reads it (a concurrent delete), which reads as not found.
+        var kind = actualVersion is null
+            ? ConcurrencyConflictKind.DocumentNotFound
+            : expectedVersion == 0
+                ? ConcurrencyConflictKind.AlreadyExists
+                : ConcurrencyConflictKind.VersionMismatch;
+
+        var reason = kind switch
+        {
+            ConcurrencyConflictKind.DocumentNotFound => "the document does not exist",
+            ConcurrencyConflictKind.AlreadyExists =>
+                $"the document already exists at version {actualVersion}",
+            _ => $"the stored version {actualVersion} does not match the expected version {expectedVersion}",
+        };
+
+        return new ConcurrencyException(
+            $"Concurrency conflict {verb} document '{id}' in table '{tableName}': {reason}.",
+            id, tableName, expectedVersion, actualVersion, kind);
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetWithVersionAsync{T}" />
@@ -207,7 +278,13 @@ internal readonly struct DocumentOperations
         }
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
-        return document is null ? null : new VersionedDocument<T>(document, version);
+        if (document is null)
+        {
+            // Returning null here would read as "not found" and hide a real row.
+            throw NullDocument<T>(id, tableName);
+        }
+
+        return new VersionedDocument<T>(document, version);
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetAsync{T}" />
@@ -230,7 +307,14 @@ internal readonly struct DocumentOperations
             return default;
         }
 
-        return JsonHelper.Deserialize<T>(json, _serializerOptions);
+        var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
+        if (document is null)
+        {
+            // The row exists; returning default would be indistinguishable from not found.
+            throw NullDocument<T>(id, tableName);
+        }
+
+        return document;
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetAllAsync{T}" />
@@ -239,8 +323,8 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetAllSql(tableName);
 
-        var jsonResults = await _connection.QueryStringsAsync(sql, cancellationToken).ConfigureAwait(false);
-        return DeserializeResults<T>(jsonResults);
+        var rows = await _connection.QueryStringPairsAsync(sql, cancellationToken).ConfigureAwait(false);
+        return DeserializeResults<T>(rows, tableName);
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetManyAsync{T}" />
@@ -294,17 +378,15 @@ internal readonly struct DocumentOperations
 
             foreach (var (id, json) in rows)
             {
-                // A row with no id or no document has nothing to key or deserialize; skipping it
-                // keeps the dictionary free of null values.
-                if (id is null || string.IsNullOrEmpty(json))
+                // A row that deserializes to null throws instead of being skipped, so a broken
+                // row cannot masquerade as a missing document. The id cannot be null: an
+                // 'id IN (...)' list never matches one.
+                if (JsonHelper.Deserialize<T>(json, _serializerOptions) is not { } document)
                 {
-                    continue;
+                    throw NullDocument<T>(id, tableName);
                 }
 
-                if (JsonHelper.Deserialize<T>(json, _serializerOptions) is { } document)
-                {
-                    documents[id] = document;
-                }
+                documents[id!] = document;
             }
         }
 
@@ -486,9 +568,9 @@ internal readonly struct DocumentOperations
         // DateTime, Guid, decimal, float, byte[] or huge ulong here matches nothing.
         var bound = DocumentQuery<T>.NormalizeBoundValue(value);
 
-        var jsonResults = await _connection.QueryStringsAsync(sql, cancellationToken, ("Value", bound))
+        var rows = await _connection.QueryStringPairsAsync(sql, cancellationToken, ("Value", bound))
             .ConfigureAwait(false);
-        return DeserializeResults<T>(jsonResults);
+        return DeserializeResults<T>(rows, tableName);
     }
 
     /// <inheritdoc cref="IDocumentOperations.QueryAsync{T}(DocumentQuery{T}, CancellationToken)" />
@@ -506,10 +588,10 @@ internal readonly struct DocumentOperations
             query.SkipCount,
             query.TakeCount);
 
-        var jsonResults = await _connection
-            .QueryStringsAsync(generated.Sql, cancellationToken, BindPositionally(generated))
+        var rows = await _connection
+            .QueryStringPairsAsync(generated.Sql, cancellationToken, BindPositionally(generated))
             .ConfigureAwait(false);
-        return DeserializeResults<T>(jsonResults);
+        return DeserializeResults<T>(rows, tableName);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CountAsync{T}(DocumentQuery{T}, CancellationToken)" />
@@ -787,23 +869,37 @@ internal readonly struct DocumentOperations
     public T? DeserializeDocument<T>(string? json) => JsonHelper.Deserialize<T>(json, _serializerOptions);
 
     /// <summary>
-    /// Deserializes JSON results to a list of typed objects.
+    /// Deserializes <c>(id, json(data))</c> rows to a list of typed objects.
     /// Uses a single-pass loop to avoid LINQ overhead and multiple enumerator allocations.
     /// </summary>
-    private List<T> DeserializeResults<T>(List<string?> jsonResults)
+    /// <remarks>
+    /// A row that deserializes to null throws rather than being dropped: silently returning
+    /// fewer documents than the table holds is data loss the caller cannot detect.
+    /// </remarks>
+    private List<T> DeserializeResults<T>(List<(string? First, string? Second)> rows, string tableName)
     {
-        var results = new List<T>(jsonResults.Count);
+        var results = new List<T>(rows.Count);
 
-        foreach (var json in jsonResults)
+        foreach (var (id, json) in rows)
         {
-            if (JsonHelper.Deserialize<T>(json, _serializerOptions) is { } item)
+            if (JsonHelper.Deserialize<T>(json, _serializerOptions) is not { } item)
             {
-                results.Add(item);
+                throw NullDocument<T>(id, tableName);
             }
+
+            results.Add(item);
         }
 
         return results;
     }
+
+    /// <summary>
+    /// The exception for a row that exists but whose stored JSON deserializes to null.
+    /// </summary>
+    private static SerializationException NullDocument<T>(string? id, string tableName) =>
+        new($"Document '{id}' in table '{tableName}' deserialized to null as {typeof(T).Name}. " +
+            "The stored JSON is null or empty; fix or remove the row.",
+            typeof(T));
 
     /// <summary>
     /// Extracts the JSON path from a lambda expression.

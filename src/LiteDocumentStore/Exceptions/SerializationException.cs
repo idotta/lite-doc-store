@@ -30,6 +30,19 @@ public class SerializationException : LiteDocumentStoreException
     }
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="SerializationException"/> class with type
+    /// information, for a failure that has no underlying exception (such as stored JSON that
+    /// deserializes to null).
+    /// </summary>
+    /// <param name="message">The message that describes the error.</param>
+    /// <param name="targetType">The type that was being serialized or deserialized.</param>
+    public SerializationException(string message, Type targetType)
+        : base(message)
+    {
+        TargetType = targetType;
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="SerializationException"/> class with type information.
     /// </summary>
     /// <param name="message">The message that describes the error.</param>

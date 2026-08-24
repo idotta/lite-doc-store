@@ -48,9 +48,9 @@ src/
     Migrations/      MigrationRunner, IMigration/Migration, SchemaIntrospector
     Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>)
     Exceptions/      LiteDocumentStoreException + Concurrency/Serialization/TableNotFound/
-                     UnsupportedSqliteVersion (ConcurrencyException is thrown by
-                     UpsertWithVersionAsync on CAS conflicts; UnsupportedSqliteVersionException
-                     by the 3.45+ guard when a connection is opened)
+                     UnsupportedSqliteVersion (ConcurrencyException + ConcurrencyConflictKind
+                     come from Upsert/DeleteWithVersionAsync on CAS conflicts;
+                     UnsupportedSqliteVersionException from the 3.45+ guard on connection open)
 tests/
   LiteDocumentStore.UnitTests/               xUnit, mocked/isolated
   LiteDocumentStore.IntegrationTests/        xUnit, real SQLite (mostly :memory:)
@@ -73,7 +73,7 @@ examples/
 
 ## Architecture
 
-**All SQL is centralized in `SqlGenerator`** (static, one method per statement shape). Nothing else hand-writes SQL against document tables. Table schema is uniform: `id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 0`. The JSONB contract, enforced there, is load-bearing:
+**All SQL is centralized in `SqlGenerator`** (static, one method per statement shape). Nothing else hand-writes SQL against document tables. Table schema is uniform: `id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 1`. The JSONB contract, enforced there, is load-bearing:
 - **Write:** `jsonb(@Data)` — `@Data` is UTF-8 JSON *bytes* from `JsonHelper.SerializeToUtf8Bytes`, not a string.
 - **Read:** `SELECT json(data)` — converts JSONB binary back to JSON text for deserialization. JSONB is binary; a raw `SELECT data` is not deserializable.
 - All *values* are parameterized. Identifiers and JSON paths **cannot** be, so they are interpolated — and every one is validated inside `SqlGenerator`, the single boundary where that happens: `ValidateIdentifier` restricts table/index/column names to `[A-Za-z_][A-Za-z0-9_]*` (bracket quoting alone is not enough — a `]` closes it early), `ValidateJsonPath` enforces `$(.member|[index])*` (a `'` would close the SQL literal `json_extract(data, '…')` sits in), and `ValidateColumnType` whitelists the five SQLite storage classes. Table names come from `ITableNamingConvention`, which is pluggable, so they are validated like anything else.
@@ -127,7 +127,13 @@ The builder never accepts a SQL fragment: `SqlGenerator.GenerateQuerySql`/`Gener
 
 The LINQ-predicate `QueryAsync<T>(Expression<Func<T,bool>>)` and the `SelectAsync` projections stay **removed** (runtime reflection / IL generation that AOT can't support). `CreateIndexAsync`, `CreateCompositeIndexAsync`, `DropIndexAsync<T>`, and `AddVirtualColumnAsync` still accept LINQ expressions, but only walk **member names** (`DocumentStore.ExtractJsonPath`) to build `$.Path` — no compilation or closure evaluation, so they stay AOT-safe. Property names map **as-is (PascalCase)** to match default STJ serialization. For joins, aggregates and virtual-column seeks, drop to raw SQL via `ExecuteRawAsync`.
 
-**Optimistic concurrency.** Every document row carries a `version` (starts at 1 on insert, incremented on every write, including plain `UpsertAsync`/`UpsertManyAsync`). `UpsertWithVersionAsync<T>(id, data, expectedVersion)` is the compare-and-swap write: `expectedVersion == 0` means "insert, must not exist"; non-zero means "update only if the stored version matches". A 0-row write throws `ConcurrencyException` (DocumentId + TableName). `GetWithVersionAsync<T>` returns `VersionedDocument<T>(Data, Version)` for read-modify-write cycles.
+**Optimistic concurrency.** Every document row carries a `version` (starts at 1 on insert, incremented on every write, including plain `UpsertAsync`/`UpsertManyAsync`). The DDL default is `1` too, so a row a consumer inserts with their own SQL is CAS-able like any other. `GetWithVersionAsync<T>` returns `VersionedDocument<T>(Data, Version)` for read-modify-write cycles.
+
+`UpsertWithVersionAsync<T>(id, data, expectedVersion)` is the compare-and-swap write and `DeleteWithVersionAsync<T>(id, expectedVersion)` the compare-and-swap delete (added because a plain `DeleteAsync` ignores the version, so a read-modify-delete could silently drop a concurrent update). Non-zero `expectedVersion` means "only if the stored version matches"; `0` means "insert, must not exist" — and when the id *is* taken, the write retries as a `version = 0`-guarded update, so a legacy row left at 0 by the old column default is lifted to 1 instead of being un-CAS-able forever. Both write paths end in `RETURNING version`, so the returned value is the version SQLite stored, not `expectedVersion + 1`.
+
+A 0-row write or delete throws `ConcurrencyException` carrying `DocumentId`, `TableName`, `ExpectedVersion`, `ActualVersion` and a `ConcurrencyConflictKind` (`AlreadyExists` / `VersionMismatch` / `DocumentNotFound`), so a caller picks a retry strategy from the enum instead of string-matching the message. `ActualVersion` costs one `SELECT version` on the conflict path only — the happy path pays nothing for it.
+
+**Null documents are never dropped.** A row whose stored JSON deserializes to null (only reachable through raw SQL — every store write rejects a null document) used to be skipped, so `GetAllAsync`/`QueryAsync` returned fewer documents than the table held, and `GetWithVersionAsync`/`GetAsync` returned null, indistinguishable from not-found. All of them now throw `SerializationException` naming the id and table. That is why `GenerateGetAllSql`, `GenerateQueryByJsonPathSql` and `GenerateQuerySql` select `id, json(data)` and read through `QueryStringPairsAsync`: the id has to travel with the document to be named. A genuinely absent id is still absent, not an error — `GetAsync` returns `default`, `GetManyAsync` omits the key.
 
 **Blobs.** Raw binary payloads live in a reserved `__store_blobs (id TEXT PK, data BLOB NOT NULL)` table (`SqlGenerator.BlobTableName`), created via `CreateBlobTableAsync()`. `PutBlobAsync`/`GetBlobAsync`/`DeleteBlobAsync`/`BlobExistsAsync` — no JSONB conversion, bytes stored verbatim. Blob operations exist on `IDocumentOperations`, so calling them on an `IDocumentTransaction` commits a document and its blob atomically.
 

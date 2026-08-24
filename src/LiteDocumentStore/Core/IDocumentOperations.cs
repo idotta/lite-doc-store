@@ -24,7 +24,7 @@ public interface IDocumentOperations
 {
     /// <summary>
     /// Creates the document table for <typeparamref name="T"/> if it does not exist.
-    /// Schema: <c>id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 0</c>.
+    /// Schema: <c>id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 1</c>.
     /// </summary>
     /// <typeparam name="T">The document type whose table should be created</typeparam>
     /// <param name="cancellationToken">A token to cancel the operation</param>
@@ -59,17 +59,36 @@ public interface IDocumentOperations
     /// <param name="data">The document to store</param>
     /// <param name="expectedVersion">
     /// The version the caller expects to overwrite. Pass 0 to insert a document that must not
-    /// already exist.
+    /// already exist — a row left at version 0 by raw SQL is updated instead, lifting it to 1.
     /// </param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
-    /// <returns>The new version of the document</returns>
+    /// <returns>The stored version of the document after the write</returns>
     /// <exception cref="Exceptions.ConcurrencyException">
     /// Thrown when the stored version does not match <paramref name="expectedVersion"/>, or
-    /// when <paramref name="expectedVersion"/> is 0 and the document already exists.
+    /// when <paramref name="expectedVersion"/> is 0 and the document already exists. The
+    /// exception carries both versions and a <see cref="Exceptions.ConcurrencyConflictKind"/>.
     /// </exception>
     Task<long> UpsertWithVersionAsync<T>(
         string id,
         T data,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Compare-and-swap delete for optimistic concurrency: removes the document only when its
+    /// stored version still matches, so a read-modify-delete cannot drop a concurrent update.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="id">The document identifier</param>
+    /// <param name="expectedVersion">The version the caller expects to delete</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="Exceptions.ConcurrencyException">
+    /// Thrown when the document does not exist or its stored version does not match
+    /// <paramref name="expectedVersion"/>. The exception carries both versions and a
+    /// <see cref="Exceptions.ConcurrencyConflictKind"/>.
+    /// </exception>
+    Task DeleteWithVersionAsync<T>(
+        string id,
         long expectedVersion,
         CancellationToken cancellationToken = default);
 
@@ -80,6 +99,10 @@ public interface IDocumentOperations
     /// <param name="id">The document identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The document and its version, or null when not found</returns>
+    /// <exception cref="Exceptions.SerializationException">
+    /// Thrown when the row exists but its stored JSON deserializes to null, which would
+    /// otherwise be indistinguishable from not found.
+    /// </exception>
     Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
         CancellationToken cancellationToken = default);
@@ -91,6 +114,9 @@ public interface IDocumentOperations
     /// <param name="id">The document identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The document, or default when not found</returns>
+    /// <exception cref="Exceptions.SerializationException">
+    /// Thrown when the row exists but its stored JSON deserializes to null.
+    /// </exception>
     Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
