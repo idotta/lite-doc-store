@@ -102,6 +102,16 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task DeleteWithVersionAsync<T>(
+        string id,
+        long expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteWithVersionAsync<T>(id, expectedVersion, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
         CancellationToken cancellationToken = default)

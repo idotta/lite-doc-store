@@ -11,7 +11,7 @@ namespace LiteDocumentStore.UnitTests;
 public class QuerySqlGenerationTests
 {
     private const string Table = "Person";
-    private const string SelectPrefix = "SELECT json(data) as data FROM [Person]";
+    private const string SelectPrefix = "SELECT id, json(data) as data FROM [Person]";
 
     private static readonly QueryPredicate[] NoPredicates = [];
     private static readonly QueryOrdering[] NoOrderings = [];

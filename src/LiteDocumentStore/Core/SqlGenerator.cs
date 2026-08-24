@@ -36,7 +36,8 @@ internal static class SqlGenerator
     /// <summary>
     /// Generates SQL for creating a table with JSONB storage.
     /// The version column backs optimistic concurrency: rows start at 1 and
-    /// every write increments it.
+    /// every write increments it. The column default is 1 as well, so a row inserted by raw
+    /// SQL is CAS-able like any other.
     /// </summary>
     public static string GenerateCreateTableSql(string tableName)
     {
@@ -46,7 +47,7 @@ internal static class SqlGenerator
             CREATE TABLE IF NOT EXISTS [{tableName}] (
                 id TEXT PRIMARY KEY,
                 data BLOB NOT NULL,
-                version INTEGER NOT NULL DEFAULT 0
+                version INTEGER NOT NULL DEFAULT 1
             )";
     }
 
@@ -76,8 +77,8 @@ internal static class SqlGenerator
 
     /// <summary>
     /// Generates SQL for an insert-only write used by optimistic concurrency with
-    /// an expected version of 0 ("must not exist"). Affects 0 rows when the id
-    /// already exists.
+    /// an expected version of 0 ("must not exist"). Returns the stored version on
+    /// insert and no row at all when the id already exists.
     /// </summary>
     public static string GenerateInsertIfAbsentSql(string tableName)
     {
@@ -86,13 +87,14 @@ internal static class SqlGenerator
         return $@"
             INSERT INTO [{tableName}] (id, data, version)
             VALUES (@Id, jsonb(@Data), 1)
-            ON CONFLICT(id) DO NOTHING";
+            ON CONFLICT(id) DO NOTHING
+            RETURNING version";
     }
 
     /// <summary>
     /// Generates SQL for a version-guarded update used by optimistic concurrency.
-    /// Affects 0 rows when the id is missing or the stored version differs from
-    /// the expected version.
+    /// Returns the new stored version, and no row at all when the id is missing or
+    /// the stored version differs from the expected version.
     /// </summary>
     public static string GenerateVersionedUpdateSql(string tableName)
     {
@@ -102,7 +104,31 @@ internal static class SqlGenerator
             UPDATE [{tableName}] SET
                 data = jsonb(@Data),
                 version = version + 1
-            WHERE id = @Id AND version = @ExpectedVersion";
+            WHERE id = @Id AND version = @ExpectedVersion
+            RETURNING version";
+    }
+
+    /// <summary>
+    /// Generates SQL for a version-guarded delete used by optimistic concurrency.
+    /// Affects 0 rows when the id is missing or the stored version differs from
+    /// the expected version.
+    /// </summary>
+    public static string GenerateVersionedDeleteSql(string tableName)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+
+        return $"DELETE FROM [{tableName}] WHERE id = @Id AND version = @ExpectedVersion";
+    }
+
+    /// <summary>
+    /// Generates SQL for reading just a document's version, used to report the stored version
+    /// on a concurrency conflict.
+    /// </summary>
+    public static string GenerateGetVersionSql(string tableName)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+
+        return $"SELECT version FROM [{tableName}] WHERE id = @Id";
     }
 
     /// <summary>
@@ -174,13 +200,17 @@ internal static class SqlGenerator
     }
 
     /// <summary>
-    /// Generates SQL for retrieving all documents from a table.
+    /// Generates SQL for retrieving all documents from a table, each with its id.
     /// </summary>
+    /// <remarks>
+    /// The id travels with the document so a row that deserializes to null can be named in a
+    /// <see cref="Exceptions.SerializationException"/> instead of being silently dropped.
+    /// </remarks>
     public static string GenerateGetAllSql(string tableName)
     {
         ValidateIdentifier(tableName, nameof(tableName));
 
-        return $"SELECT json(data) as data FROM [{tableName}]";
+        return $"SELECT id, json(data) as data FROM [{tableName}]";
     }
 
     /// <summary>
@@ -383,7 +413,7 @@ internal static class SqlGenerator
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateJsonPath(jsonPath, nameof(jsonPath));
 
-        return $"SELECT json(data) as data FROM [{tableName}] WHERE json_extract(data, '{jsonPath}') = @Value";
+        return $"SELECT id, json(data) as data FROM [{tableName}] WHERE json_extract(data, '{jsonPath}') = @Value";
     }
 
     /// <summary>
@@ -452,7 +482,7 @@ internal static class SqlGenerator
         ArgumentNullException.ThrowIfNull(orderings);
 
         var sb = new StringBuilder(128);
-        sb.Append("SELECT json(data) as data FROM [").Append(tableName).Append(']');
+        sb.Append("SELECT id, json(data) as data FROM [").Append(tableName).Append(']');
 
         var values = AppendWhere(sb, predicates);
         AppendOrderBy(sb, orderings);

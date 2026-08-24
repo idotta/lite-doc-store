@@ -111,6 +111,33 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
+    /// Executes a statement whose first row has a single integer column, and returns null when
+    /// it produced no row at all. Used for the version-returning concurrency writes
+    /// (<c>RETURNING version</c>, where no row means the guard did not match) and for reading a
+    /// stored version.
+    /// </summary>
+    /// <remarks>
+    /// A <c>RETURNING</c> statement must be stepped through a reader, not
+    /// <c>ExecuteNonQuery</c>, for SQLite to run it to completion.
+    /// </remarks>
+    public static async Task<long?> QueryFirstInt64Async(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false) || reader.IsDBNull(0))
+        {
+            return null;
+        }
+
+        return reader.GetInt64(0);
+    }
+
+    /// <summary>
     /// Executes a query whose first row has a string first column and an integer second
     /// column (e.g. <c>SELECT json(data), version</c>). Returns null when there is no row.
     /// </summary>

@@ -18,6 +18,28 @@ public class ConcurrencyException : LiteDocumentStoreException
     public string? TableName { get; }
 
     /// <summary>
+    /// Gets the version the caller expected to overwrite, or null when the operation carried none.
+    /// </summary>
+    public long? ExpectedVersion { get; }
+
+    /// <summary>
+    /// Gets the stored version read after the conflict was detected, or null when the document
+    /// did not exist. Outside a transaction this is a post-conflict observation, not a snapshot
+    /// of the state that rejected the operation: the guarded statement and this read are
+    /// separate, so another connection can update, delete or recreate the row in between. It is
+    /// exact when the operation runs through an existing transaction, which holds the SQLite
+    /// locks across both statements.
+    /// </summary>
+    public long? ActualVersion { get; }
+
+    /// <summary>
+    /// Gets a conflict classification derived from <see cref="ActualVersion"/> and therefore
+    /// carrying the same post-conflict observation semantics. Outside a transaction it need not
+    /// describe the state that originally rejected the operation.
+    /// </summary>
+    public ConcurrencyConflictKind Kind { get; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="ConcurrencyException"/> class.
     /// </summary>
     /// <param name="message">The message that describes the error.</param>
@@ -61,5 +83,31 @@ public class ConcurrencyException : LiteDocumentStoreException
     {
         DocumentId = documentId;
         TableName = tableName;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ConcurrencyException"/> class carrying the
+    /// full conflict detail: both versions and the reason the operation was rejected.
+    /// </summary>
+    /// <param name="message">The message that describes the error.</param>
+    /// <param name="documentId">The ID of the document that encountered the concurrency conflict.</param>
+    /// <param name="tableName">The table name where the concurrency conflict occurred.</param>
+    /// <param name="expectedVersion">The version the caller expected to overwrite.</param>
+    /// <param name="actualVersion">The stored version, or null when the document does not exist.</param>
+    /// <param name="kind">The reason the operation was rejected.</param>
+    public ConcurrencyException(
+        string message,
+        string? documentId,
+        string? tableName,
+        long? expectedVersion,
+        long? actualVersion,
+        ConcurrencyConflictKind kind)
+        : base(message)
+    {
+        DocumentId = documentId;
+        TableName = tableName;
+        ExpectedVersion = expectedVersion;
+        ActualVersion = actualVersion;
+        Kind = kind;
     }
 }

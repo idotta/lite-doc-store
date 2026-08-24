@@ -13,7 +13,7 @@ public class VersionAndBlobSqlTests
     {
         var sql = SqlGenerator.GenerateCreateTableSql("Person");
 
-        Assert.Contains("version INTEGER NOT NULL DEFAULT 0", sql);
+        Assert.Contains("version INTEGER NOT NULL DEFAULT 1", sql);
     }
 
     [Fact]
