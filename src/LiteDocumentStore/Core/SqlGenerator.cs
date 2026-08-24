@@ -51,6 +51,13 @@ internal static class SqlGenerator
     }
 
     /// <summary>
+    /// Generates SQL for dropping a document table, if it exists.
+    /// </summary>
+    /// <param name="tableName">The table name</param>
+    public static string GenerateDropTableSql(string tableName) =>
+        $"DROP TABLE IF EXISTS [{ValidateIdentifier(tableName, nameof(tableName))}]";
+
+    /// <summary>
     /// Generates SQL for upserting a document using JSONB format (last-writer-wins).
     /// Inserts start the version at 1; updates increment it so versions stay coherent
     /// with the optimistic-concurrency operations.
@@ -187,6 +194,13 @@ internal static class SqlGenerator
     }
 
     /// <summary>
+    /// Generates SQL for deleting every document in a table.
+    /// </summary>
+    /// <param name="tableName">The table name</param>
+    public static string GenerateDeleteAllSql(string tableName) =>
+        $"DELETE FROM [{ValidateIdentifier(tableName, nameof(tableName))}]";
+
+    /// <summary>
     /// Generates SQL to check if a document exists by ID.
     /// </summary>
     public static string GenerateExistsSql(string tableName)
@@ -228,6 +242,13 @@ internal static class SqlGenerator
 
         return $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] (json_extract(data, '{jsonPath}'))";
     }
+
+    /// <summary>
+    /// Generates SQL for dropping an index, if it exists.
+    /// </summary>
+    /// <param name="indexName">The index name</param>
+    public static string GenerateDropIndexSql(string indexName) =>
+        $"DROP INDEX IF EXISTS [{ValidateIdentifier(indexName, nameof(indexName))}]";
 
     /// <summary>
     /// Generates SQL for creating a composite index on multiple JSON paths.
@@ -299,6 +320,40 @@ internal static class SqlGenerator
         // Estimated size: ~6 chars per param + ~50 chars for statement
         var sb = new StringBuilder(50 + (count * 6));
         sb.Append("DELETE FROM [").Append(tableName).Append("] WHERE id IN (");
+
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+            sb.Append("@Id").Append(i);
+        }
+
+        sb.Append(')');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Generates SQL for retrieving multiple documents by their IDs using a single statement.
+    /// </summary>
+    /// <param name="tableName">The table name</param>
+    /// <param name="count">The number of items to retrieve</param>
+    public static string GenerateBulkGetSql(string tableName, int count)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+
+        if (count <= 0)
+        {
+            throw new ArgumentException("Count must be greater than zero.", nameof(count));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(count, MaxBatchItemsPerStatement);
+
+        // Use StringBuilder to avoid O(n) string allocations
+        // Estimated size: ~6 chars per param + ~70 chars for statement
+        var sb = new StringBuilder(70 + (count * 6));
+        sb.Append("SELECT id, json(data) as data FROM [").Append(tableName).Append("] WHERE id IN (");
 
         for (int i = 0; i < count; i++)
         {

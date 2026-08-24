@@ -102,6 +102,28 @@ public interface IDocumentOperations
     Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Retrieves several documents by id in one statement per chunk, keyed by id.
+    /// </summary>
+    /// <remarks>
+    /// Ids that are not stored are simply absent from the result, so the dictionary may hold
+    /// fewer entries than <paramref name="ids"/> has elements. Duplicates are collapsed, and an
+    /// empty input performs no round trip at all. A large input is read in several statements,
+    /// so the result is only a point-in-time snapshot when the call is made on an
+    /// <see cref="IDocumentTransaction"/>.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="ids">The document identifiers to read</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The documents that were found, keyed by their id</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="ids"/> is null</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when any id is null, empty or whitespace
+    /// </exception>
+    Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Deletes a document by id.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>
@@ -118,6 +140,14 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The number of deleted rows</returns>
     Task<int> DeleteManyAsync<T>(IEnumerable<string> ids, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes every document of the given type, leaving the table itself in place.
+    /// </summary>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The number of deleted rows</returns>
+    Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Determines whether a document exists.
@@ -221,6 +251,42 @@ public interface IDocumentOperations
         string columnName,
         bool createIndex = false,
         string columnType = "TEXT",
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Drops the document table for <typeparamref name="T"/> if it exists, discarding every
+    /// document in it.
+    /// </summary>
+    /// <remarks>Idempotent: dropping a table that does not exist is a no-op.</remarks>
+    /// <typeparam name="T">The document type whose table should be dropped</typeparam>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    Task DropTableAsync<T>(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Drops an index by name if it exists.
+    /// </summary>
+    /// <remarks>Idempotent: dropping an index that does not exist is a no-op.</remarks>
+    /// <param name="indexName">The index name</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="indexName"/> is null, empty or whitespace
+    /// </exception>
+    Task DropIndexAsync(string indexName, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Drops the index <see cref="CreateIndexAsync{T}"/> derives for the same JSON path, if it
+    /// exists.
+    /// </summary>
+    /// <remarks>
+    /// The name is derived exactly as <see cref="CreateIndexAsync{T}"/> derives it, so this drops
+    /// the index that call created. An index created under an explicit name must be dropped
+    /// through <see cref="DropIndexAsync(string, CancellationToken)"/>.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="expression">A property-access expression, e.g. <c>x => x.Email</c></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    Task DropIndexAsync<T>(
+        Expression<Func<T, object>> expression,
         CancellationToken cancellationToken = default);
 
     /// <summary>

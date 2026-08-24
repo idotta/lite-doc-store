@@ -87,6 +87,30 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
+    /// Executes a query and returns the first two columns of every row as strings (NULL values
+    /// are preserved as null). Used for reading <c>id, json(data)</c> pairs.
+    /// </summary>
+    public static async Task<List<(string? First, string? Second)>> QueryStringPairsAsync(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        var results = new List<(string? First, string? Second)>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            results.Add((
+                reader.IsDBNull(0) ? null : reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1)));
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Executes a query whose first row has a string first column and an integer second
     /// column (e.g. <c>SELECT json(data), version</c>). Returns null when there is no row.
     /// </summary>
