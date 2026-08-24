@@ -218,6 +218,65 @@ internal readonly struct DocumentOperations
         }
     }
 
+    /// <inheritdoc cref="IDocumentOperations.PatchAsync{T}" />
+    public Task<long> PatchAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        CancellationToken cancellationToken) =>
+        PatchCoreAsync(id, patch, expectedVersion: null, cancellationToken);
+
+    /// <inheritdoc cref="IDocumentOperations.PatchWithVersionAsync{T}" />
+    public Task<long> PatchWithVersionAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+        return PatchCoreAsync(id, patch, expectedVersion, cancellationToken);
+    }
+
+    /// <summary>
+    /// Applies a patch as one statement, optionally guarded by an expected version.
+    /// </summary>
+    /// <remarks>
+    /// A patch cannot insert — it carries no full document — so a missing row is a conflict
+    /// rather than a no-op, unlike <see cref="DeleteAsync{T}"/>.
+    /// </remarks>
+    private async Task<long> PatchCoreAsync<T>(
+        string id,
+        DocumentPatch<T> patch,
+        long? expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ArgumentNullException.ThrowIfNull(patch);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var generated = SqlGenerator.GeneratePatchSql(tableName, patch.Operations, expectedVersion.HasValue);
+
+        var parameters = expectedVersion.HasValue
+            ? BindPositionally(generated, ("Id", id), ("ExpectedVersion", expectedVersion.Value))
+            : BindPositionally(generated, ("Id", id));
+
+        var newVersion = await _connection
+            .QueryFirstInt64Async(generated.Sql, cancellationToken, parameters)
+            .ConfigureAwait(false);
+
+        if (newVersion is null)
+        {
+            throw await BuildConflictAsync(
+                "patching", id, tableName, expectedVersion,
+                insertAttempt: false, cancellationToken).ConfigureAwait(false);
+        }
+
+        return newVersion.Value;
+    }
+
     /// <summary>
     /// Builds the <see cref="ConcurrencyException"/> for a version-guarded write or delete that
     /// affected no row, reading the stored version so the caller can see both sides.
@@ -232,18 +291,25 @@ internal readonly struct DocumentOperations
     /// passes false: expected version 0 there means "delete the row still at 0" (a legacy row
     /// written by raw SQL under the old column default), not "insert".
     /// </para>
+    /// <para>
+    /// A null <paramref name="expectedVersion"/> is an unguarded operation — an unversioned
+    /// patch. It has no version to mismatch, so no row back means no such document and the
+    /// stored-version read is skipped entirely.
+    /// </para>
     /// </remarks>
     private async Task<ConcurrencyException> BuildConflictAsync(
         string verb,
         string id,
         string tableName,
-        long expectedVersion,
+        long? expectedVersion,
         bool insertAttempt,
         CancellationToken cancellationToken)
     {
-        var actualVersion = await _connection.QueryFirstInt64Async(
-            SqlGenerator.GenerateGetVersionSql(tableName), cancellationToken, ("Id", id))
-            .ConfigureAwait(false);
+        var actualVersion = expectedVersion is null
+            ? null
+            : await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateGetVersionSql(tableName), cancellationToken, ("Id", id))
+                .ConfigureAwait(false);
 
         // An insert that reached here found the id taken at a version the 0-guard could not
         // match — so it is reported as already existing, unless the row is gone by the time
@@ -633,18 +699,22 @@ internal readonly struct DocumentOperations
 
     /// <summary>
     /// Names the generator's values <c>p0..pN</c>, matching the <c>@p0..@pN</c> placeholders it
-    /// emitted in the same left-to-right pass.
+    /// emitted in the same left-to-right pass, followed by any named parameters the statement
+    /// binds on top of them (a patch's <c>@Id</c> and <c>@ExpectedVersion</c>).
     /// </summary>
-    private static (string Name, object? Value)[] BindPositionally(GeneratedQuery generated)
+    private static (string Name, object? Value)[] BindPositionally(
+        GeneratedQuery generated,
+        params (string Name, object? Value)[] named)
     {
         var values = generated.ParameterValues;
-        var parameters = new (string Name, object? Value)[values.Count];
+        var parameters = new (string Name, object? Value)[values.Count + named.Length];
 
         for (var i = 0; i < values.Count; i++)
         {
             parameters[i] = ("p" + i.ToString(CultureInfo.InvariantCulture), values[i]);
         }
 
+        named.CopyTo(parameters, values.Count);
         return parameters;
     }
 

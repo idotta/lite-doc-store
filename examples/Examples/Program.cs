@@ -9,6 +9,7 @@ var examples = new (string Name, string Description, Func<Task> Run)[]
     ("quickstart", "CRUD basics: create, upsert, get, update, delete", QuickStartExample.RunAsync),
     ("hybrid", "Document API and raw SQL over the same tables", HybridUsageExample.RunAsync),
     ("structured-query", "DocumentQuery filters, ordering, paging, filtered count", StructuredQueryExample.RunAsync),
+    ("patch", "Field-level updates that survive a concurrent writer", PatchExample.RunAsync),
     ("indexes", "Expression indexes, composite indexes, before/after timings", IndexManagementExample.RunAsync),
     ("virtual-columns", "Generated columns for indexed range queries", VirtualColumnExample.RunAsync),
     ("transactions", "Transaction batching, rollback, raw SQL inside a transaction", TransactionBatchingExample.RunAsync),

@@ -302,7 +302,8 @@ public sealed class DocumentQuery<T>
 
     // The path grammar lives in SqlGenerator.ValidateJsonPath, the single boundary guarding
     // interpolated paths. Calling it here only moves the failure forward to the call site.
-    private static string NormalizePath(string jsonPath)
+    // Internal so DocumentPatch<T> validates paths through the same rule.
+    internal static string NormalizePath(string jsonPath)
     {
         if (string.IsNullOrWhiteSpace(jsonPath))
         {
@@ -314,7 +315,8 @@ public sealed class DocumentQuery<T>
 
     // Only types Microsoft.Data.Sqlite binds directly. Anything else would either throw deep
     // inside ADO or, worse, round-trip through an unexpected representation.
-    private static object ValidateValue(object? value, string paramName)
+    // Internal so DocumentPatch<T> stores values in the shape a query compares against.
+    internal static object ValidateValue(object? value, string paramName)
     {
         ArgumentNullException.ThrowIfNull(value, paramName);
 
@@ -325,6 +327,17 @@ public sealed class DocumentQuery<T>
             throw new ArgumentException(
                 $"Values of type '{value.GetType()}' cannot be bound. Supported types are string, bool, " +
                 "the integral types, float, double, decimal, DateTime, DateTimeOffset, Guid and byte[].",
+                paramName);
+        }
+
+        // System.Text.Json refuses to write these, so no document can hold one: a query would
+        // never match and a patch would store SQLite's 9e999, which is not something the
+        // serializer could have produced. ADO rejects NaN at bind time anyway, far from here.
+        if (value is (float or double) && !double.IsFinite(Convert.ToDouble(value, CultureInfo.InvariantCulture)))
+        {
+            throw new ArgumentException(
+                $"The value '{value}' is not finite. NaN and infinity have no JSON representation, " +
+                "so no stored document can contain one.",
                 paramName);
         }
 
