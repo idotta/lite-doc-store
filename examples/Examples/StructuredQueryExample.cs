@@ -73,7 +73,12 @@ internal static class StructuredQueryExample
 
         // CountAsync applies the predicates and ignores ordering and paging.
         Console.WriteLine($"Count of the paged query   => {await store.CountAsync(page)} (paging ignored)");
-        Console.WriteLine($"Count of 'AND of four'     => {await store.CountAsync(anded)}\n");
+        Console.WriteLine($"Count of 'AND of four'     => {await store.CountAsync(anded)}");
+
+        // ExistsAsync applies the same predicates but stops at the first matching row.
+        Console.WriteLine($"Any 'AND of four'          => {await store.ExistsAsync(anded)}");
+        Console.WriteLine($"Any customer in Helsinki   => " +
+            $"{await store.ExistsAsync(DocumentQuery<Customer>.Where("$.City", QueryOperator.Equal, "Helsinki"))}\n");
 
         // The path is interpolated, not bound, so an expression index over the same path is used.
         await store.CreateIndexAsync<Customer>(c => c.City, "idx_customer_city");

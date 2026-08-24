@@ -421,7 +421,7 @@ public class DocumentStoreIntegrationTests : IDisposable
         // Act & Assert
         await Assert.ThrowsAsync<ArgumentException>(async () =>
         {
-            await _store.ExistsAsync<Person>(null!);
+            await _store.ExistsAsync<Person>((string)null!);
         });
     }
 

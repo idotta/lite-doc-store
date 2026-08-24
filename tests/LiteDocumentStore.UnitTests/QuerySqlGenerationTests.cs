@@ -246,6 +246,66 @@ public class QuerySqlGenerationTests
         Assert.DoesNotContain("LIMIT", query.Sql, StringComparison.Ordinal);
     }
 
+    // --- Filtered exists ------------------------------------------------------------------
+
+    [Fact]
+    public void GenerateFilteredExistsSql_WithNoPredicates_TestsForAnyRow()
+    {
+        var query = SqlGenerator.GenerateFilteredExistsSql(Table, NoPredicates);
+
+        Assert.Equal("SELECT EXISTS(SELECT 1 FROM [Person] LIMIT 1)", query.Sql);
+        Assert.Empty(query.ParameterValues);
+    }
+
+    [Fact]
+    public void GenerateFilteredExistsSql_WithPredicates_EmitsTheWhereClauseAndStopsAtOneRow()
+    {
+        var predicates = new[]
+        {
+            Predicate("$.Status", QueryOperator.Equal, "open"),
+            InPredicate("$.Region", "eu", "us")
+        };
+
+        var query = SqlGenerator.GenerateFilteredExistsSql(Table, predicates);
+
+        Assert.Equal(
+            "SELECT EXISTS(SELECT 1 FROM [Person] WHERE json_extract(data, '$.Status') = @p0" +
+            " AND json_extract(data, '$.Region') IN (@p1, @p2) LIMIT 1)",
+            query.Sql);
+        Assert.Collection(
+            query.ParameterValues,
+            v => Assert.Equal("open", v),
+            v => Assert.Equal("eu", v),
+            v => Assert.Equal("us", v));
+        Assert.DoesNotContain("ORDER BY", query.Sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenerateFilteredExistsSql_WithAnInvalidTableName_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredExistsSql("Person]; DROP TABLE Person; --", NoPredicates));
+    }
+
+    [Fact]
+    public void GenerateFilteredExistsSql_WithAMalformedPredicatePath_ThrowsArgumentException()
+    {
+        var predicates = new[] { Predicate("$.a' --", QueryOperator.Equal, 1) };
+
+        Assert.Throws<ArgumentException>(() => SqlGenerator.GenerateFilteredExistsSql(Table, predicates));
+    }
+
+    [Fact]
+    public void GenerateFilteredExistsSql_BeyondTheParameterCap_ThrowsArgumentException()
+    {
+        var tooMany = Enumerable.Range(0, SqlGenerator.MaxBoundParameters + 1)
+            .Select(i => (object?)i)
+            .ToArray();
+
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredExistsSql(Table, [InPredicate("$.Id", tooMany)]));
+    }
+
     // --- Validation at generation time ------------------------------------------------------
 
     [Fact]
