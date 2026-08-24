@@ -4,346 +4,438 @@ using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
 
+[Trait("Category", "Integration")]
 public class MigrationIntegrationTests : IAsyncLifetime
 {
-    private SqliteConnection _connection = null!;
-    private MigrationRunner _runner = null!;
+    private IDocumentStore _store = null!;
 
     public async Task InitializeAsync()
     {
-        _connection = new SqliteConnection("Data Source=:memory:");
-        await _connection.OpenAsync();
-        _runner = new MigrationRunner(_connection);
+        _store = await new DocumentStoreFactory().CreateAsync(DocumentStoreOptions.ForInMemory());
     }
 
     public async Task DisposeAsync()
     {
-        await _connection.DisposeAsync();
+        await _store.DisposeAsync();
+    }
+
+    private Task<bool> TableExistsAsync(string tableName) =>
+        _store.ExecuteRawAsync((connection, ct) =>
+            new SchemaIntrospector(connection).TableExistsAsync(tableName, ct));
+
+    private static Migration CreateTable(long version, string tableName) =>
+        new(version,
+            $"Create{tableName}",
+            $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
+            $"DROP TABLE {tableName}");
+
+    [Fact]
+    public async Task MigrateAsync_WithNewMigration_AppliesIt()
+    {
+        var applied = await _store.MigrateAsync([CreateTable(1, "Product")]);
+
+        Assert.Equal(1, applied);
+        Assert.Equal(1, await _store.GetCurrentMigrationVersionAsync());
+        Assert.True(await TableExistsAsync("Product"));
     }
 
     [Fact]
-    public async Task ApplyMigrationAsync_WithNewMigration_AppliesSuccessfully()
+    public async Task MigrateAsync_WithAlreadyAppliedMigration_AppliesNothing()
     {
-        // Arrange
-        var migration = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Product");
+        var migration = CreateTable(1, "Product");
+        await _store.MigrateAsync([migration]);
 
-        // Act
-        var applied = await _runner.ApplyMigrationAsync(migration);
+        var applied = await _store.MigrateAsync([migration]);
 
-        // Assert
-        Assert.True(applied);
-        var currentVersion = await _runner.GetCurrentVersionAsync();
-        Assert.Equal(1, currentVersion);
+        Assert.Equal(0, applied);
+        Assert.Single(await _store.GetAppliedMigrationsAsync());
     }
 
     [Fact]
-    public async Task ApplyMigrationAsync_WithAlreadyAppliedMigration_ReturnsFalse()
+    public async Task MigrateAsync_WithUnorderedInput_AppliesInAscendingVersionOrder()
     {
-        // Arrange
-        var migration = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Product");
+        // The second migration depends on the table the first creates, so an out-of-order run
+        // would fail rather than merely reorder history.
+        var first = CreateTable(1, "Product");
+        var second = new Migration(
+            2, "AddProductPrice", "ALTER TABLE Product ADD COLUMN price REAL", "SELECT 1");
 
-        await _runner.ApplyMigrationAsync(migration);
+        var applied = await _store.MigrateAsync([second, first]);
 
-        // Act
-        var applied = await _runner.ApplyMigrationAsync(migration);
-
-        // Assert
-        Assert.False(applied);
+        Assert.Equal(2, applied);
+        var versions = (await _store.GetAppliedMigrationsAsync()).Select(m => m.Version).ToList();
+        Assert.Equal([1L, 2L], versions);
     }
 
     [Fact]
-    public async Task ApplyMigrationsAsync_WithMultipleMigrations_AppliesInOrder()
+    public async Task MigrateAsync_WithBackFilledVersion_ThrowsAndAppliesNothing()
     {
-        // Arrange
-        var migration1 = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Product");
+        await _store.MigrateAsync([CreateTable(1, "T1"), CreateTable(3, "T3")]);
 
-        var migration2 = new Migration(
-            version: 2,
-            name: "CreateOrderTable",
-            upSql: "CREATE TABLE [Order] (id TEXT PRIMARY KEY, product_id TEXT NOT NULL)",
-            downSql: "DROP TABLE [Order]");
+        // v2 was never applied but sits below the current version: the old runner skipped it
+        // silently, reporting the same "false" as an already-applied migration.
+        var backFilled = CreateTable(2, "ShouldNotExist");
 
-        var migrations = new[] { migration2, migration1 }; // Out of order intentionally
+        var ex = await Assert.ThrowsAsync<MigrationOutOfOrderException>(
+            () => _store.MigrateAsync([backFilled]));
 
-        // Act
-        var appliedCount = await _runner.ApplyMigrationsAsync(migrations);
-
-        // Assert
-        Assert.Equal(2, appliedCount);
-        var currentVersion = await _runner.GetCurrentVersionAsync();
-        Assert.Equal(2, currentVersion);
-
-        var appliedMigrations = (await _runner.GetAppliedMigrationsAsync()).ToList();
-        Assert.Equal(2, appliedMigrations.Count);
-        Assert.Equal(1, appliedMigrations[0].Version);
-        Assert.Equal(2, appliedMigrations[1].Version);
+        Assert.Equal(2, ex.Version);
+        Assert.Equal("CreateShouldNotExist", ex.Name);
+        Assert.Equal(3, ex.CurrentVersion);
+        Assert.False(await TableExistsAsync("ShouldNotExist"));
+        Assert.Equal(
+            new long[] { 1, 3 },
+            (await _store.GetAppliedMigrationsAsync()).Select(m => m.Version).ToList());
     }
 
     [Fact]
-    public async Task GetAppliedMigrationsAsync_WithNoMigrations_ReturnsEmpty()
+    public async Task MigrateAsync_WithBackFilledVersion_AndAllowOutOfOrder_AppliesIt()
     {
-        // Act
-        var migrations = await _runner.GetAppliedMigrationsAsync();
+        await _store.MigrateAsync([CreateTable(1, "T1"), CreateTable(3, "T3")]);
 
-        // Assert
-        Assert.Empty(migrations);
+        var applied = await _store.MigrateAsync(
+            [CreateTable(2, "T2")],
+            new MigrationOptions { AllowOutOfOrder = true });
+
+        Assert.Equal(1, applied);
+        Assert.True(await TableExistsAsync("T2"));
+        Assert.Equal(
+            new long[] { 1, 2, 3 },
+            (await _store.GetAppliedMigrationsAsync()).Select(m => m.Version).ToList());
+        // The back-fill does not move the current version.
+        Assert.Equal(3, await _store.GetCurrentMigrationVersionAsync());
     }
 
     [Fact]
-    public async Task GetAppliedMigrationsAsync_WithAppliedMigrations_ReturnsAll()
+    public async Task MigrateAsync_WithEditedMigration_ThrowsChecksumMismatch()
     {
-        // Arrange
-        var migration1 = new Migration(1, "First", "SELECT 1", "SELECT 2");
-        var migration2 = new Migration(2, "Second", "SELECT 1", "SELECT 2");
+        var original = new Migration(1, "Seed", "CREATE TABLE Seeded (id TEXT PRIMARY KEY)", "DROP TABLE Seeded");
+        await _store.MigrateAsync([original]);
 
-        await _runner.ApplyMigrationAsync(migration1);
-        await _runner.ApplyMigrationAsync(migration2);
+        var edited = new Migration(1, "Seed", "CREATE TABLE Seeded (id TEXT PRIMARY KEY, extra TEXT)", "DROP TABLE Seeded");
 
-        // Act
-        var migrations = (await _runner.GetAppliedMigrationsAsync()).ToList();
+        var ex = await Assert.ThrowsAsync<MigrationChecksumMismatchException>(
+            () => _store.MigrateAsync([edited]));
 
-        // Assert
-        Assert.Equal(2, migrations.Count);
-        Assert.Equal(1, migrations[0].Version);
-        Assert.Equal("First", migrations[0].Name);
-        Assert.Equal(2, migrations[1].Version);
-        Assert.Equal("Second", migrations[1].Name);
+        Assert.Equal(1, ex.Version);
+        Assert.Equal(original.Checksum, ex.ExpectedChecksum);
+        Assert.Equal(edited.Checksum, ex.ActualChecksum);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithEditedDownSql_IsAccepted()
+    {
+        // Only the up SQL is checksummed: the down SQL is not part of what was applied.
+        await _store.MigrateAsync([new Migration(1, "Seed", "SELECT 1", "SELECT 1")]);
+
+        var applied = await _store.MigrateAsync([new Migration(1, "Seed", "SELECT 1", "SELECT 2")]);
+
+        Assert.Equal(0, applied);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithEditedMigration_AndVerifyChecksumsDisabled_IsAccepted()
+    {
+        await _store.MigrateAsync([new Migration(1, "Seed", "SELECT 1", "SELECT 1")]);
+
+        var applied = await _store.MigrateAsync(
+            [new Migration(1, "Seed", "SELECT 2", "SELECT 1")],
+            new MigrationOptions { VerifyChecksums = false });
+
+        Assert.Equal(0, applied);
+    }
+
+    [Fact]
+    public async Task GetAppliedMigrationsAsync_ExposesTheRecordedChecksum()
+    {
+        var migration = CreateTable(1, "Product");
+        var before = DateTimeOffset.UtcNow;
+
+        await _store.MigrateAsync([migration]);
+        var after = DateTimeOffset.UtcNow;
+
+        var record = Assert.Single(await _store.GetAppliedMigrationsAsync());
+        Assert.Equal(migration.Checksum, record.Checksum);
+        Assert.Equal("CreateProduct", record.Name);
+        Assert.InRange(record.AppliedAt, before, after);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_OverALegacyHistoryTable_AddsTheChecksumColumn()
+    {
+        // A history table written before checksums existed: three columns, one row.
+        await _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE [__store_migrations] (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                INSERT INTO [__store_migrations] (version, name, applied_at)
+                VALUES (1, 'Legacy', '2026-01-01T00:00:00.0000000+00:00');
+                """;
+            await command.ExecuteNonQueryAsync(ct);
+        });
+
+        var applied = await _store.MigrateAsync([CreateTable(2, "Product")]);
+
+        Assert.Equal(1, applied);
+        var records = (await _store.GetAppliedMigrationsAsync()).ToList();
+        Assert.Equal(2, records.Count);
+        Assert.Null(records[0].Checksum);
+        Assert.NotNull(records[1].Checksum);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_OverALegacyHistoryRow_SkipsChecksumVerification()
+    {
+        await _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE [__store_migrations] (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                INSERT INTO [__store_migrations] (version, name, applied_at)
+                VALUES (1, 'Legacy', '2026-01-01T00:00:00.0000000+00:00');
+                """;
+            await command.ExecuteNonQueryAsync(ct);
+        });
+
+        // The stored checksum is null, so there is nothing to compare against.
+        var applied = await _store.MigrateAsync([new Migration(1, "Legacy", "SELECT 1", "SELECT 1")]);
+
+        Assert.Equal(0, applied);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithDuplicateVersions_ThrowsBeforeApplyingAnything()
+    {
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => _store.MigrateAsync(
+            [CreateTable(1, "First"), CreateTable(1, "Second")]));
+
+        Assert.Equal("migrations", ex.ParamName);
+        Assert.Contains("Duplicate migration version 1", ex.Message);
+        Assert.False(await TableExistsAsync("First"));
+        Assert.Empty(await _store.GetAppliedMigrationsAsync());
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithANullElement_ThrowsBeforeApplyingAnything()
+    {
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => _store.MigrateAsync(
+            [CreateTable(1, "First"), null!]));
+
+        Assert.Equal("migrations", ex.ParamName);
+        Assert.False(await TableExistsAsync("First"));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithNullOptions_Throws()
+    {
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => _store.MigrateAsync([CreateTable(1, "Product")], null!));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithFailingMigration_KeepsEarlierMigrationsApplied()
+    {
+        var good = CreateTable(1, "Product");
+        var bad = new Migration(2, "Broken", "CREATE TABLE Invalid (,,,)", "SELECT 1");
+
+        await Assert.ThrowsAsync<SqliteException>(() => _store.MigrateAsync([good, bad]));
+
+        // Transactions are per migration: the first stays applied, the second recorded nothing.
+        Assert.Equal(1, await _store.GetCurrentMigrationVersionAsync());
+        Assert.True(await TableExistsAsync("Product"));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WithFailingMigration_RecordsNothingForIt()
+    {
+        var bad = new Migration(
+            1,
+            "Broken",
+            "CREATE TABLE Product (id TEXT PRIMARY KEY); CREATE TABLE Invalid (,,,);",
+            "DROP TABLE Product");
+
+        await Assert.ThrowsAsync<SqliteException>(() => _store.MigrateAsync([bad]));
+
+        Assert.Equal(0, await _store.GetCurrentMigrationVersionAsync());
+        Assert.False(await TableExistsAsync("Product"));
     }
 
     [Fact]
     public async Task GetCurrentMigrationVersionAsync_WithNoMigrations_ReturnsZero()
     {
-        // Act
-        var version = await _runner.GetCurrentVersionAsync();
-
-        // Assert
-        Assert.Equal(0, version);
+        Assert.Equal(0, await _store.GetCurrentMigrationVersionAsync());
+        Assert.Empty(await _store.GetAppliedMigrationsAsync());
     }
 
     [Fact]
-    public async Task GetCurrentMigrationVersionAsync_WithAppliedMigrations_ReturnsHighestVersion()
+    public async Task RollbackToVersionAsync_RollsBackNewestFirst()
     {
-        // Arrange
-        var migration1 = new Migration(1, "First", "SELECT 1", "SELECT 2");
-        var migration2 = new Migration(5, "Second", "SELECT 1", "SELECT 2");
-        var migration3 = new Migration(3, "Third", "SELECT 1", "SELECT 2");
+        IMigration[] migrations = [CreateTable(1, "T1"), CreateTable(2, "T2"), CreateTable(3, "T3")];
+        await _store.MigrateAsync(migrations);
 
-        await _runner.ApplyMigrationsAsync(new[] { migration1, migration2, migration3 });
+        var rolledBack = await _store.RollbackToVersionAsync(1, migrations);
 
-        // Act
-        var version = await _runner.GetCurrentVersionAsync();
-
-        // Assert
-        Assert.Equal(5, version);
+        Assert.Equal(2, rolledBack);
+        Assert.Equal(1, await _store.GetCurrentMigrationVersionAsync());
+        Assert.True(await TableExistsAsync("T1"));
+        Assert.False(await TableExistsAsync("T2"));
+        Assert.False(await TableExistsAsync("T3"));
     }
 
     [Fact]
-    public async Task RollbackMigrationAsync_WithAppliedMigration_RollsBackSuccessfully()
+    public async Task RollbackToVersionAsync_ToZero_RollsBackEverything()
     {
-        // Arrange
-        var migration = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Product");
+        IMigration[] migrations = [CreateTable(1, "T1"), CreateTable(2, "T2")];
+        await _store.MigrateAsync(migrations);
 
-        await _runner.ApplyMigrationAsync(migration);
+        var rolledBack = await _store.RollbackToVersionAsync(0, migrations);
 
-        // Verify table exists using introspector
-        var introspector = new SchemaIntrospector(_connection);
-        var tableExists = await introspector.TableExistsAsync("Product");
-        Assert.True(tableExists);
-
-        // Act
-        var rolledBack = await _runner.RollbackMigrationAsync(migration);
-
-        // Assert
-        Assert.True(rolledBack);
-        var currentVersion = await _runner.GetCurrentVersionAsync();
-        Assert.Equal(0, currentVersion);
-
-        // Verify table is dropped
-        tableExists = await introspector.TableExistsAsync("Product");
-        Assert.False(tableExists);
+        Assert.Equal(2, rolledBack);
+        Assert.Empty(await _store.GetAppliedMigrationsAsync());
     }
 
     [Fact]
-    public async Task RollbackMigrationAsync_WithUnappliedMigration_ReturnsFalse()
+    public async Task RollbackToVersionAsync_AboveCurrentVersion_RollsBackNothing()
     {
-        // Arrange
-        var migration = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Product");
+        IMigration[] migrations = [CreateTable(1, "T1")];
+        await _store.MigrateAsync(migrations);
 
-        // Act
-        var rolledBack = await _runner.RollbackMigrationAsync(migration);
-
-        // Assert
-        Assert.False(rolledBack);
+        Assert.Equal(0, await _store.RollbackToVersionAsync(5, migrations));
+        Assert.True(await TableExistsAsync("T1"));
     }
 
     [Fact]
-    public async Task RollbackToVersionAsync_WithMultipleMigrations_RollsBackCorrectly()
+    public async Task RollbackToVersionAsync_WithMissingDefinition_ThrowsAndRollsBackNothing()
     {
-        // Arrange
-        var migration1 = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Product");
+        var v1 = CreateTable(1, "T1");
+        var v2 = CreateTable(2, "T2");
+        await _store.MigrateAsync([v1, v2]);
 
-        var migration2 = new Migration(
-            version: 2,
-            name: "CreateOrderTable",
-            upSql: "CREATE TABLE [Order] (id TEXT PRIMARY KEY, product_id TEXT NOT NULL)",
-            downSql: "DROP TABLE [Order]");
+        await Assert.ThrowsAsync<LiteDocumentStoreException>(
+            () => _store.RollbackToVersionAsync(0, [v2]));
 
-        var migration3 = new Migration(
-            version: 3,
-            name: "CreateCustomerTable",
-            upSql: "CREATE TABLE Customer (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
-            downSql: "DROP TABLE Customer");
-
-        var migrations = new[] { migration1, migration2, migration3 };
-        await _runner.ApplyMigrationsAsync(migrations);
-
-        // Act - Rollback to version 1 (should rollback 2 and 3)
-        var rolledBackCount = await _runner.RollbackToVersionAsync(1, migrations);
-
-        // Assert
-        Assert.Equal(2, rolledBackCount);
-        var currentVersion = await _runner.GetCurrentVersionAsync();
-        Assert.Equal(1, currentVersion);
-
-        // Verify only migration 1 is still applied
-        var appliedMigrations = (await _runner.GetAppliedMigrationsAsync()).ToList();
-        Assert.Single(appliedMigrations);
-        Assert.Equal(1, appliedMigrations[0].Version);
+        Assert.True(await TableExistsAsync("T1"));
+        Assert.True(await TableExistsAsync("T2"));
+        Assert.Equal(2, await _store.GetCurrentMigrationVersionAsync());
     }
 
     [Fact]
-    public async Task RollbackToVersionAsync_ToVersionZero_RollsBackAllMigrations()
+    public async Task RollbackToVersionAsync_WithNegativeTarget_Throws()
     {
-        // Arrange
-        var migration1 = new Migration(1, "First", "SELECT 1", "SELECT 2");
-        var migration2 = new Migration(2, "Second", "SELECT 1", "SELECT 2");
-
-        var migrations = new[] { migration1, migration2 };
-        await _runner.ApplyMigrationsAsync(migrations);
-
-        // Act
-        var rolledBackCount = await _runner.RollbackToVersionAsync(0, migrations);
-
-        // Assert
-        Assert.Equal(2, rolledBackCount);
-        var currentVersion = await _runner.GetCurrentVersionAsync();
-        Assert.Equal(0, currentVersion);
-
-        var appliedMigrations = await _runner.GetAppliedMigrationsAsync();
-        Assert.Empty(appliedMigrations);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => _store.RollbackToVersionAsync(-1, [CreateTable(1, "T1")]));
     }
 
     [Fact]
-    public async Task Migration_WithTransactionRollback_DoesNotApply()
+    public async Task RollbackToVersionAsync_IgnoresChecksumDrift()
     {
-        // Arrange
-        var migration = new Migration(
-            version: 1,
-            name: "CreateProductTable",
-            upSql: "CREATE TABLE Product (id TEXT PRIMARY KEY); CREATE TABLE Invalid (,,,);", // Invalid SQL
-            downSql: "DROP TABLE Product");
+        await _store.MigrateAsync([CreateTable(1, "T1")]);
 
-        // Act & Assert
-        await Assert.ThrowsAsync<SqliteException>(() => _runner.ApplyMigrationAsync(migration));
+        // Rollback never verifies checksums, so an edited definition still reverts.
+        var edited = new Migration(
+            1, "CreateT1", "CREATE TABLE T1 (id TEXT PRIMARY KEY, extra TEXT)", "DROP TABLE T1");
 
-        // Migration should not be recorded
-        var currentVersion = await _runner.GetCurrentVersionAsync();
-        Assert.Equal(0, currentVersion);
-
-        // Table should not exist
-        var introspector = new SchemaIntrospector(_connection);
-        var tableExists = await introspector.TableExistsAsync("Product");
-        Assert.False(tableExists);
+        Assert.Equal(1, await _store.RollbackToVersionAsync(0, [edited]));
+        Assert.False(await TableExistsAsync("T1"));
     }
 
     [Fact]
-    public async Task MigrationHistoryRecord_ContainsAppliedAt_Timestamp()
+    public async Task MigrateAsync_FromTwoStoresAtOnce_AppliesTheMigrationExactlyOnce()
     {
-        // Arrange
-        var migration = new Migration(1, "Test", "SELECT 1", "SELECT 2");
-        var before = DateTimeOffset.UtcNow;
+        // A shared-cache in-memory database locks at table granularity, so only a file database
+        // exercises the write lock two processes actually contend for.
+        var path = Path.Combine(Path.GetTempPath(), $"lds-migrate-{Guid.NewGuid():N}.db");
+        var options = DocumentStoreOptions.ForFile(path);
+        options.BusyTimeoutMs = 30_000;
 
-        // Act
-        await _runner.ApplyMigrationAsync(migration);
-        var after = DateTimeOffset.UtcNow;
+        var storeA = await new DocumentStoreFactory().CreateAsync(options);
+        var storeB = await new DocumentStoreFactory().CreateAsync(options);
 
-        // Assert
-        var appliedMigrations = (await _runner.GetAppliedMigrationsAsync()).ToList();
-        Assert.Single(appliedMigrations);
+        try
+        {
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var record = appliedMigrations[0];
-        Assert.True(record.AppliedAt >= before);
-        Assert.True(record.AppliedAt <= after);
+            var gated = new GatedMigration(1, "CreateProduct",
+                "CREATE TABLE Product (id TEXT PRIMARY KEY)", entered, release.Task);
+            var plain = new Migration(1, "CreateProduct",
+                "CREATE TABLE Product (id TEXT PRIMARY KEY)", "DROP TABLE Product");
+
+            // A holds the write lock inside UpAsync; B then contends for it. A one-way gate, not
+            // a barrier: B cannot reach UpAsync until A commits, so waiting on B here would hang.
+            var first = storeA.MigrateAsync([gated]);
+
+            // `entered` only completes from inside UpAsync, so a failure before that point
+            // would park this await forever. Surface the fault instead of hanging the run.
+            if (await Task.WhenAny(entered.Task, first) == first)
+            {
+                await first;
+                Assert.Fail("The gated migration finished without entering UpAsync.");
+            }
+
+            var second = Task.Run(() => storeB.MigrateAsync([plain]));
+            await Task.Delay(250);
+
+            // B is parked on the write lock A holds, so it cannot have decided anything yet.
+            Assert.False(second.IsCompleted);
+            release.SetResult();
+
+            var counts = await Task.WhenAll(first, second);
+
+            Assert.Equal(1, counts[0]);
+            Assert.Equal(0, counts[1]);
+            Assert.Single(await storeA.GetAppliedMigrationsAsync());
+        }
+        finally
+        {
+            await storeA.DisposeAsync();
+            await storeB.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            TryDelete(path);
+        }
     }
 
-    [Fact]
-    public async Task ApplyMigrationAsync_VersionBelowCurrentMax_IsSkipped()
+    private static void TryDelete(string path)
     {
-        // Arrange - apply v1 and v3, leaving a gap at v2. The runner tracks the highest applied
-        // version, so a later-introduced v2 sits below the current max.
-        await _runner.ApplyMigrationAsync(new Migration(1, "V1", "SELECT 1", "SELECT 1"));
-        await _runner.ApplyMigrationAsync(new Migration(3, "V3", "SELECT 1", "SELECT 1"));
-
-        // Act - v2 (below current max version 3) is skipped by the linear version model
-        var v2 = new Migration(
-            version: 2,
-            name: "V2",
-            upSql: "CREATE TABLE ShouldNotExist (id TEXT PRIMARY KEY)",
-            downSql: "DROP TABLE ShouldNotExist");
-        var applied = await _runner.ApplyMigrationAsync(v2);
-
-        // Assert - not applied, its Up SQL never ran, and history is unchanged (only v1, v3)
-        Assert.False(applied);
-
-        var introspector = new SchemaIntrospector(_connection);
-        Assert.False(await introspector.TableExistsAsync("ShouldNotExist"));
-
-        var versions = (await _runner.GetAppliedMigrationsAsync()).Select(m => m.Version).ToList();
-        Assert.Equal(new long[] { 1, 3 }, versions);
+        foreach (var file in new[] { path, path + "-wal", path + "-shm" })
+        {
+            try
+            {
+                File.Delete(file);
+            }
+            catch (IOException)
+            {
+                // A file still held by the OS is a test-cleanup concern only.
+            }
+        }
     }
 
-    [Fact]
-    public async Task RollbackToVersionAsync_MissingDefinition_Throws_AndRollsBackNothing()
+    /// <summary>
+    /// A migration that parks inside <c>UpAsync</c> — with the write transaction open — until the
+    /// test releases it.
+    /// </summary>
+    private sealed class GatedMigration(
+        long version,
+        string name,
+        string upSql,
+        TaskCompletionSource entered,
+        Task release)
+        : Migration(version, name, upSql, "SELECT 1")
     {
-        // Arrange - apply v1 and v2
-        var v1 = new Migration(1, "V1", "CREATE TABLE T1 (id TEXT PRIMARY KEY)", "DROP TABLE T1");
-        var v2 = new Migration(2, "V2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE T2");
-        await _runner.ApplyMigrationAsync(v1);
-        await _runner.ApplyMigrationAsync(v2);
-
-        // Act & Assert - rolling back to 0 requires both definitions; only v2 is supplied, so the
-        // whole operation must fail before mutating anything (no partial rollback).
-        await Assert.ThrowsAsync<LiteDocumentStoreException>(async () =>
-            await _runner.RollbackToVersionAsync(0, new[] { v2 }));
-
-        // Nothing was rolled back: both tables remain and both versions stay recorded.
-        var introspector = new SchemaIntrospector(_connection);
-        Assert.True(await introspector.TableExistsAsync("T1"));
-        Assert.True(await introspector.TableExistsAsync("T2"));
-        Assert.Equal(2, await _runner.GetCurrentVersionAsync());
+        public override async Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default)
+        {
+            entered.TrySetResult();
+            await release;
+            await base.UpAsync(connection, cancellationToken);
+        }
     }
 }

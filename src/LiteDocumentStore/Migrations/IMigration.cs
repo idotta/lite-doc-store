@@ -17,6 +17,20 @@ public interface IMigration
     string Name { get; }
 
     /// <summary>
+    /// Gets a checksum of this migration's applied state, or null to opt out of drift
+    /// detection. It is recorded with the history row and compared on every later run, so an
+    /// edit to an already-applied migration is reported rather than silently ignored.
+    /// </summary>
+    /// <remarks>
+    /// Only the <em>up</em> definition should be covered: the down definition is not part of
+    /// what was applied, so editing it must not fail a startup migration. <see cref="Migration"/>
+    /// returns an uppercase SHA-256 hex digest of its UTF-8 up SQL. An implementation that
+    /// returns null is never verified, which is what keeps history written before checksums
+    /// existed usable.
+    /// </remarks>
+    string? Checksum => null;
+
+    /// <summary>
     /// Applies the migration (upgrade operation).
     /// </summary>
     /// <param name="connection">The SQLite connection to execute the migration on</param>

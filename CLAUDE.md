@@ -47,12 +47,14 @@ src/
     Indexing/        IndexOptions, IndexFilter (+ IndexFilterTerm) — index DDL options
     Factories/       IDocumentStoreFactory, IConnectionFactory (+ Default impls)
     Extensions/      ServiceCollectionExtensions (AddLiteDocumentStore, keyed variant)
-    Migrations/      MigrationRunner, IMigration/Migration, SchemaIntrospector
+    Migrations/      MigrationRunner (internal), IMigration/Migration, MigrationOptions,
+                     MigrationHistoryRecord, SchemaIntrospector
     Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>)
     Exceptions/      LiteDocumentStoreException + Concurrency/Serialization/TableNotFound/
                      UnsupportedSqliteVersion (ConcurrencyException + ConcurrencyConflictKind
                      come from Upsert/DeleteWithVersionAsync on CAS conflicts;
-                     UnsupportedSqliteVersionException from the 3.45+ guard on connection open)
+                     UnsupportedSqliteVersionException from the 3.45+ guard on connection open;
+                     MigrationOutOfOrder/MigrationChecksumMismatch from MigrateAsync)
 tests/
   LiteDocumentStore.UnitTests/               xUnit, mocked/isolated
   LiteDocumentStore.IntegrationTests/        xUnit, real SQLite (mostly :memory:)
@@ -183,7 +185,15 @@ Three synchronous members on `IDocumentOperations` make that hatch actually usab
 
 The same reasoning keeps teardown on `IDocumentOperations` rather than behind the hatch: `DeleteAllAsync<T>` (`DELETE FROM [t]`, returns the rows deleted, table survives), `DropTableAsync<T>` and the two `DropIndexAsync` overloads mean a test fixture or an admin path never hand-writes a `DROP`. Both drops are `IF EXISTS`, so they are idempotent and re-creating afterwards works. `DropIndexAsync<T>(x => x.Email)` derives its name through the same `ExtractJsonPath` + `GenerateIndexName` pair `CreateIndexAsync` uses, so it drops exactly the index that call created; an index created under an explicit name has to go through the string overload.
 
-**Migrations.** `MigrationRunner` tracks applied versions in a `__store_migrations` table; `IMigration` implementations provide `UpAsync`/`DownAsync`. Each apply/rollback is transactional.
+**Migrations.** `IMigration` implementations provide `UpAsync`/`DownAsync`; applied versions are tracked in `__store_migrations (version, name, applied_at, checksum)`. They are reached through **`IDocumentStore`** — `MigrateAsync(migrations[, MigrationOptions])`, `GetAppliedMigrationsAsync`, `GetCurrentMigrationVersionAsync`, `RollbackToVersionAsync` — and **not** through `IDocumentOperations`, so a migration can never run on a caller's `IDocumentTransaction`: it owns its own transaction. `MigrationRunner` is `internal`; each store method rents one pooled connection and builds a runner over it. There is no DI registration and no migrate-on-startup hosted service — the consumer calls `store.MigrateAsync(...)`, which needs no new package reference.
+
+"Already applied" is **membership in the history table**, not `Version <= MAX(applied)`. The old comparison silently skipped a back-filled migration (branch merge, two devs picking versions) and returned the same `false` as an already-applied one, so the caller could not tell. A version that is absent from history but below the current maximum now throws `MigrationOutOfOrderException` (carrying `Version`, `Name`, `CurrentVersion`) unless `MigrationOptions.AllowOutOfOrder` is set, which applies it and logs a warning.
+
+Each apply and each rollback runs in its own explicit `BEGIN IMMEDIATE`, with the membership check **inside** it. Microsoft.Data.Sqlite's default `BeginTransaction()` was already immediate (verified against 10.0.11: a second connection's write hits `SQLITE_BUSY` while the transaction is open), so the fix is the ordering, not the mode — the old code read the version *before* taking any lock, so two processes starting together both ran `UpAsync` and the loser failed on the primary key. Now the loser blocks on the write lock (bounded by `BusyTimeoutMs`), re-reads history and reports `false`. Transactions are per migration, not per run: if 1 and 2 commit and 3 throws, 1 and 2 stay applied.
+
+`IMigration.Checksum` is a default interface member returning null (so existing implementations still compile); `Migration` returns the uppercase SHA-256 hex of its **up** SQL only — the down SQL is not part of what was applied, so editing it must not fail a startup migration, and rollback never verifies checksums at all. The checksum is stored with the history row and compared on later runs, throwing `MigrationChecksumMismatchException` (`ExpectedChecksum` = stored, `ActualChecksum` = supplied) unless `MigrationOptions.VerifyChecksums` is false. Either side null skips the check, which is what keeps pre-checksum history usable: a legacy three-column table is `ALTER TABLE … ADD COLUMN`-ed on first use, re-checking `pragma_table_info` under an immediate transaction so two starting processes cannot both issue the ALTER.
+
+Input is validated before anything runs: a null element or a duplicate version throws `ArgumentException` naming the version and both indices (`UpsertManyAsync`'s precedent), a negative rollback target throws `ArgumentOutOfRangeException`, and `RollbackToVersionAsync` still refuses the whole range when any migration in it has no definition. Two source breaks were accepted: `MigrationRunner` is no longer public, and the five new members on `IDocumentStore` break an external implementation of that interface. `MigrateAsync(migrations, default)` is now ambiguous — the `MigrationOptions` overload was added rather than a parameter inserted, same reasoning as `IndexOptions`.
 
 ## AOT compatibility
 
@@ -216,6 +226,7 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - `src/LiteDocumentStore/Query/DocumentQuery.cs` — the composable filter builder; validation and bound-value normalization live here.
 - `src/LiteDocumentStore/Query/DocumentPatch.cs` — the field-level update builder; the JSON-text carve-outs for `bool`/`decimal`/wide `ulong` live here.
 - `src/LiteDocumentStore/Indexing/IndexOptions.cs` + `IndexFilter.cs` — the index DDL options and the value-free partial-index filter.
+- `src/LiteDocumentStore/Migrations/MigrationRunner.cs` — the history table, the membership check under `BEGIN IMMEDIATE`, and the checksum comparison.
 - `src/LiteDocumentStore/Core/SqliteCommandExtensions.cs` — the raw ADO.NET helpers that replaced Dapper.
 - `src/LiteDocumentStore/Serialization/JsonHelper.cs` — the AOT-safe serialization funnel (`JsonTypeInfo<T>` + reflection fallback).
 - `src/LiteDocumentStore/Extensions/ServiceCollectionExtensions.cs` — how consumers wire it up (DI + lifetimes).

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace LiteDocumentStore;
@@ -33,6 +35,7 @@ public class Migration : IMigration
         Name = name;
         _upSql = upSql;
         _downSql = downSql;
+        Checksum = ComputeChecksum(upSql);
     }
 
     /// <inheritdoc />
@@ -40,6 +43,13 @@ public class Migration : IMigration
 
     /// <inheritdoc />
     public string Name { get; }
+
+    /// <summary>
+    /// Gets the uppercase SHA-256 hex digest of this migration's UTF-8 up SQL. The down SQL is
+    /// deliberately excluded: it is not part of what was applied, so editing it does not fail a
+    /// later run.
+    /// </summary>
+    public string Checksum { get; }
 
     /// <inheritdoc />
     public virtual async Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default)
@@ -54,4 +64,7 @@ public class Migration : IMigration
         ArgumentNullException.ThrowIfNull(connection);
         await connection.ExecuteAsync(_downSql, cancellationToken).ConfigureAwait(false);
     }
+
+    private static string ComputeChecksum(string upSql) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(upSql)));
 }

@@ -4,7 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace LiteDocumentStore.Examples;
 
 /// <summary>
-/// MigrationRunner with up/down SQL, applied-history, rollback-to-version, and SchemaIntrospector.
+/// Store migrations with up/down SQL, applied history with checksums, rollback-to-version, and
+/// SchemaIntrospector.
 /// </summary>
 internal static class MigrationsExample
 {
@@ -20,16 +21,6 @@ internal static class MigrationsExample
         await using var provider = services.BuildServiceProvider();
         var store = provider.GetRequiredService<IDocumentStore>();
 
-        // There is no DI registration for MigrationRunner - get a connection through
-        // ExecuteRawAsync and construct it there. Everything below shares that one connection
-        // so migration state stays visible across the whole callback.
-        await store.ExecuteRawAsync((connection, ct) => RunMigrationsAsync(store, connection, ct));
-    }
-
-    private static async Task RunMigrationsAsync(IDocumentStore store, SqliteConnection connection, CancellationToken ct)
-    {
-        var runner = new MigrationRunner(connection);
-
         // Hand-written migrations must name the tables the store will look for.
         var customerTable = store.GetTableName<Customer>();
         var orderTable = store.GetTableName<Order>();
@@ -40,8 +31,8 @@ internal static class MigrationsExample
             // A hand-written document table must match the schema the store expects, `version`
             // included - without it every Upsert fails with "no such column: version".
             upSql: $"""
-                CREATE TABLE [{customerTable}] (id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 0);
-                CREATE TABLE [{orderTable}] (id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE [{customerTable}] (id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE [{orderTable}] (id TEXT PRIMARY KEY, data BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 1);
                 """,
             downSql: $"""
                 DROP TABLE IF EXISTS [{orderTable}];
@@ -71,17 +62,42 @@ internal static class MigrationsExample
 
         var allMigrations = new[] { createTables, emailIndex, orderIndexes, cityVirtualColumn };
 
-        var appliedCount = await runner.ApplyMigrationsAsync(allMigrations, ct);
+        // Migrations run through the store: one pooled connection for the run, one BEGIN
+        // IMMEDIATE transaction per migration. Safe to call on every startup, and safe when two
+        // processes start at once.
+        var appliedCount = await store.MigrateAsync(allMigrations);
         Console.WriteLine($"Applied migrations       => {appliedCount}");
-        Console.WriteLine($"Current version          => {await runner.GetCurrentVersionAsync(ct)}");
+        Console.WriteLine($"Re-running applies       => {await store.MigrateAsync(allMigrations)}");
+        Console.WriteLine($"Current version          => {await store.GetCurrentMigrationVersionAsync()}");
 
-        var history = (await runner.GetAppliedMigrationsAsync(ct)).OrderBy(m => m.Version).ToList();
+        var history = await store.GetAppliedMigrationsAsync();
         Console.WriteLine("Applied history:");
         foreach (var record in history)
         {
-            Console.WriteLine($"  {record.Version} {record.Name,-24} at {record.AppliedAt:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine(
+                $"  {record.Version} {record.Name,-24} at {record.AppliedAt:yyyy-MM-dd HH:mm:ss} checksum {record.Checksum?[..8]}");
         }
 
+        await store.ExecuteRawAsync((connection, ct) =>
+            SeedAndIntrospectAsync(store, connection, customerTable, orderTable, ct));
+
+        // Roll back to just after the email index - drops the order index and the city column's index.
+        var rolledBack = await store.RollbackToVersionAsync(emailIndex.Version, allMigrations);
+        Console.WriteLine($"\nRolled back               => {rolledBack} migration(s)");
+        Console.WriteLine($"Current version           => {await store.GetCurrentMigrationVersionAsync()}");
+
+        var remainingIndexes = await store.ExecuteRawAsync(async (connection, ct) =>
+            (await new SchemaIntrospector(connection).GetIndexesAsync(customerTable, ct)).ToList());
+        Console.WriteLine($"Customer indexes now      => {string.Join(", ", remainingIndexes.Select(i => i.Name))}");
+    }
+
+    private static async Task SeedAndIntrospectAsync(
+        IDocumentStore store,
+        SqliteConnection connection,
+        string customerTable,
+        string orderTable,
+        CancellationToken ct)
+    {
         // Seed through raw SQL using the same jsonb(@Data) SQL shape as the store, and the store's
         // own serializer so @Data is bound as the same UTF-8 JSON bytes.
         await InsertDocumentAsync(store, connection, customerTable, "c1", new Customer("c1", "Alice Smith", "alice@example.com", "New York"), ct);
@@ -106,14 +122,6 @@ internal static class MigrationsExample
 
         var stats = await introspector.GetDatabaseStatisticsAsync(ct);
         Console.WriteLine($"Database size             => {stats.DatabaseSizeBytes / 1024.0:F2} KB ({stats.PageCount} pages x {stats.PageSize} bytes)");
-
-        // Roll back to just after the email index - drops the order index and the city column's index.
-        var rolledBack = await runner.RollbackToVersionAsync(emailIndex.Version, allMigrations, ct);
-        Console.WriteLine($"\nRolled back               => {rolledBack} migration(s)");
-        Console.WriteLine($"Current version           => {await runner.GetCurrentVersionAsync(ct)}");
-
-        var remainingIndexes = (await introspector.GetIndexesAsync(customerTable, ct)).ToList();
-        Console.WriteLine($"Customer indexes now      => {string.Join(", ", remainingIndexes.Select(i => i.Name))}");
     }
 
     private static async Task InsertDocumentAsync<T>(

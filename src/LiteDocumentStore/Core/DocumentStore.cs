@@ -405,6 +405,66 @@ internal sealed class DocumentStore : IDocumentStore
         }
     }
 
+    /// <inheritdoc />
+    public Task<int> MigrateAsync(
+        IEnumerable<IMigration> migrations,
+        CancellationToken cancellationToken = default) =>
+        MigrateAsync(migrations, MigrationOptions.Default, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<int> MigrateAsync(
+        IEnumerable<IMigration> migrations,
+        MigrationOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        // Before the rent, not after: a bad argument should not first wait for a free
+        // connection, and on a cancelled token that wait throws OperationCanceledException
+        // instead of the argument exception.
+        ArgumentNullException.ThrowIfNull(migrations);
+        ArgumentNullException.ThrowIfNull(options);
+
+        // One lease for the whole run; each migration still commits in its own transaction.
+        return RunMigrationAsync(
+            runner => runner.ApplyMigrationsAsync(migrations, options, cancellationToken),
+            cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<MigrationHistoryRecord>> GetAppliedMigrationsAsync(
+        CancellationToken cancellationToken = default) =>
+        RunMigrationAsync(runner => runner.GetAppliedMigrationsAsync(cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> GetCurrentMigrationVersionAsync(CancellationToken cancellationToken = default) =>
+        RunMigrationAsync(runner => runner.GetCurrentVersionAsync(cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<int> RollbackToVersionAsync(
+        long targetVersion,
+        IEnumerable<IMigration> migrations,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(targetVersion);
+        ArgumentNullException.ThrowIfNull(migrations);
+
+        return RunMigrationAsync(
+            runner => runner.RollbackToVersionAsync(targetVersion, migrations, cancellationToken),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Rents a connection and runs one migration operation on a runner built over it.
+    /// </summary>
+    private async Task<TResult> RunMigrationAsync<TResult>(
+        Func<MigrationRunner, Task<TResult>> operation,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+
+        await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
+        return await operation(new MigrationRunner(lease.Connection, _logger)).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Rents a connection and runs one document operation on it.
     /// </summary>
