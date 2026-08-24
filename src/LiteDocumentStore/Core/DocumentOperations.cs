@@ -34,17 +34,20 @@ internal readonly struct DocumentOperations
     private readonly ITableNamingConvention _tableNamingConvention;
     private readonly JsonSerializerOptions _serializerOptions;
     private readonly ILogger _logger;
+    private readonly bool _inAmbientTransaction;
 
     internal DocumentOperations(
         SqliteConnection connection,
         ITableNamingConvention tableNamingConvention,
         JsonSerializerOptions serializerOptions,
-        ILogger logger)
+        ILogger logger,
+        bool inAmbientTransaction)
     {
         _connection = connection;
         _tableNamingConvention = tableNamingConvention;
         _serializerOptions = serializerOptions;
         _logger = logger;
+        _inAmbientTransaction = inAmbientTransaction;
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateTableAsync{T}" />
@@ -89,28 +92,49 @@ internal readonly struct DocumentOperations
         }
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var sql = SqlGenerator.GenerateBulkUpsertSql(tableName, itemsList.Count);
 
-        var parameters = new (string, object?)[itemsList.Count * 2];
+        // Validate and serialize every item up front, so a bad item anywhere in the batch
+        // throws before the first chunk is written.
+        var seen = new Dictionary<string, int>(itemsList.Count, StringComparer.Ordinal);
+        var payloads = new (string Id, byte[] Data)[itemsList.Count];
         for (int i = 0; i < itemsList.Count; i++)
         {
-            // Validate all items
-            if (string.IsNullOrWhiteSpace(itemsList[i].id))
+            var (id, data) = itemsList[i];
+            if (string.IsNullOrWhiteSpace(id))
             {
                 throw new ArgumentException($"ID at index {i} cannot be null or empty.", nameof(items));
             }
-            if (itemsList[i].data == null)
+            if (data == null)
             {
                 throw new ArgumentException($"Data at index {i} cannot be null.", nameof(items));
             }
+            if (!seen.TryAdd(id, i))
+            {
+                throw new ArgumentException(
+                    $"Duplicate ID '{id}' at indexes {seen[id]} and {i}. A single batch cannot " +
+                    "write the same document twice; de-duplicate the input first.",
+                    nameof(items));
+            }
 
-            var (id, data) = itemsList[i];
-            var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
-            parameters[i * 2] = ($"Id{i}", id);
-            parameters[(i * 2) + 1] = ($"Data{i}", jsonBytes);
+            payloads[i] = (id, JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions));
         }
 
-        return await _connection.ExecuteAsync(sql, cancellationToken, parameters).ConfigureAwait(false);
+        return await RunBatchAsync(
+            payloads.Length,
+            (offset, count) =>
+            {
+                var sql = SqlGenerator.GenerateBulkUpsertSql(tableName, count);
+                var parameters = new (string, object?)[count * 2];
+                for (int i = 0; i < count; i++)
+                {
+                    var (id, data) = payloads[offset + i];
+                    parameters[i * 2] = ($"Id{i}", id);
+                    parameters[(i * 2) + 1] = ($"Data{i}", data);
+                }
+
+                return (sql, parameters);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.UpsertWithVersionAsync{T}" />
@@ -253,25 +277,84 @@ internal readonly struct DocumentOperations
             return 0;
         }
 
-        // Validate all IDs
+        // Validate every ID up front. Repeats are dropped rather than rejected: an
+        // 'id IN (...)' list is unambiguous, and the deleted-row count is unaffected.
+        var distinctIds = new List<string>(idsList.Count);
+        var seen = new HashSet<string>(idsList.Count, StringComparer.Ordinal);
         for (int i = 0; i < idsList.Count; i++)
         {
             if (string.IsNullOrWhiteSpace(idsList[i]))
             {
                 throw new ArgumentException($"ID at index {i} cannot be null or empty.", nameof(ids));
             }
+            if (seen.Add(idsList[i]))
+            {
+                distinctIds.Add(idsList[i]);
+            }
         }
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var sql = SqlGenerator.GenerateBulkDeleteSql(tableName, idsList.Count);
 
-        var parameters = new (string, object?)[idsList.Count];
-        for (int i = 0; i < idsList.Count; i++)
+        return await RunBatchAsync(
+            distinctIds.Count,
+            (offset, count) =>
+            {
+                var sql = SqlGenerator.GenerateBulkDeleteSql(tableName, count);
+                var parameters = new (string, object?)[count];
+                for (int i = 0; i < count; i++)
+                {
+                    parameters[i] = ($"Id{i}", distinctIds[offset + i]);
+                }
+
+                return (sql, parameters);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Executes a batch as chunks of at most
+    /// <see cref="SqlGenerator.MaxBatchItemsPerStatement"/> items and returns the total
+    /// affected rows.
+    /// </summary>
+    /// <remarks>
+    /// A multi-chunk batch is wrapped in a transaction so it stays all-or-nothing. Inside an
+    /// ambient transaction nothing is started — the chunks enlist in it and are committed or
+    /// rolled back with it. A single-chunk batch is one statement, already atomic.
+    /// </remarks>
+    private async Task<int> RunBatchAsync(
+        int totalItems,
+        Func<int, int, (string Sql, (string, object?)[] Parameters)> chunkFactory,
+        CancellationToken cancellationToken)
+    {
+        const int chunkSize = SqlGenerator.MaxBatchItemsPerStatement;
+
+        // Copied to a local: this is a struct, so the local function below cannot capture 'this'.
+        var connection = _connection;
+
+        if (totalItems <= chunkSize || _inAmbientTransaction)
         {
-            parameters[i] = ($"Id{i}", idsList[i]);
+            return await ExecuteChunksAsync().ConfigureAwait(false);
         }
 
-        return await _connection.ExecuteAsync(sql, cancellationToken, parameters).ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        var affected = await ExecuteChunksAsync().ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return affected;
+
+        async Task<int> ExecuteChunksAsync()
+        {
+            var affectedRows = 0;
+            for (int offset = 0; offset < totalItems; offset += chunkSize)
+            {
+                var (sql, parameters) = chunkFactory(offset, Math.Min(chunkSize, totalItems - offset));
+                affectedRows += await connection
+                    .ExecuteAsync(sql, cancellationToken, parameters).ConfigureAwait(false);
+            }
+
+            return affectedRows;
+        }
     }
 
     /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}" />
