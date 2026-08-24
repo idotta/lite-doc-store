@@ -535,7 +535,7 @@ internal readonly struct DocumentOperations
         return await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}(string, CancellationToken)" />
     public async Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
@@ -615,6 +615,19 @@ internal readonly struct DocumentOperations
 
         return await _connection
             .ExecuteScalarAsync<long>(generated.Sql, cancellationToken, BindPositionally(generated))
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}(DocumentQuery{T}, CancellationToken)" />
+    public async Task<bool> ExistsAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var generated = SqlGenerator.GenerateFilteredExistsSql(tableName, query.Predicates);
+
+        return await _connection
+            .ExecuteScalarAsync<bool>(generated.Sql, cancellationToken, BindPositionally(generated))
             .ConfigureAwait(false);
     }
 

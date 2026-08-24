@@ -514,6 +514,32 @@ internal static class SqlGenerator
         return new GeneratedQuery(sb.ToString(), values);
     }
 
+    /// <summary>
+    /// Generates the existence test for a structured <see cref="DocumentQuery{T}"/>'s predicates.
+    /// </summary>
+    /// <remarks>
+    /// Same contract as <see cref="GenerateFilteredCountSql"/> — structured input only, values
+    /// bound as <c>@p0..@pN</c> and returned with the SQL — but the statement stops at the first
+    /// match, so a large matching set costs no more than a small one.
+    /// </remarks>
+    /// <param name="tableName">The table name</param>
+    /// <param name="predicates">The filters to combine with <c>AND</c></param>
+    public static GeneratedQuery GenerateFilteredExistsSql(
+        string tableName,
+        IReadOnlyList<QueryPredicate> predicates)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+        ArgumentNullException.ThrowIfNull(predicates);
+
+        var sb = new StringBuilder(80);
+        sb.Append("SELECT EXISTS(SELECT 1 FROM [").Append(tableName).Append(']');
+
+        var values = AppendWhere(sb, predicates);
+        sb.Append(" LIMIT 1)");
+
+        return new GeneratedQuery(sb.ToString(), values);
+    }
+
     private static List<object?> AppendWhere(StringBuilder sb, IReadOnlyList<QueryPredicate> predicates)
     {
         var values = new List<object?>();

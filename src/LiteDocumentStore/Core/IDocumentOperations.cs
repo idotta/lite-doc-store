@@ -239,6 +239,23 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Determines whether any document matches a structured <see cref="DocumentQuery{T}"/>.
+    /// Ordering and paging on the query are ignored — only its predicates apply.
+    /// </summary>
+    /// <remarks>
+    /// Cheaper than <see cref="CountAsync{T}(DocumentQuery{T}, CancellationToken)"/> when the
+    /// match is large: the statement stops at the first matching row instead of counting them all.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="query">The query specification, built from <see cref="DocumentQuery{T}"/></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>True when at least one document matches</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    Task<bool> ExistsAsync<T>(
+        DocumentQuery<T> query,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates an index over a JSON path, if it does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>

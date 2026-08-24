@@ -394,6 +394,119 @@ public sealed class DocumentQueryIntegrationTests : IAsyncLifetime
         Assert.Equal("w3", await SortedIdsAsync(
             DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Cog")));
     }
+
+    [Fact]
+    public async Task ExistsAsync_WithAFilter_AgreesWithTheQueryItFilters()
+    {
+        DocumentQuery<Widget>[] queries =
+        [
+            DocumentQuery<Widget>.All(),
+            DocumentQuery<Widget>.Where("$.Quantity", QueryOperator.GreaterThan, 20),
+            DocumentQuery<Widget>.WhereIsNull("$.Nickname"),
+            DocumentQuery<Widget>.WhereArrayContains("$.Tags", "metal"),
+            DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Nothing at all"),
+            DocumentQuery<Widget>.Where("$.Quantity", QueryOperator.GreaterThan, 20)
+                                 .AndIsNull("$.Nickname")
+        ];
+
+        foreach (var query in queries)
+        {
+            var expected = await _store.CountAsync(query) > 0;
+            Assert.Equal(expected, await _store.ExistsAsync(query));
+        }
+    }
+
+    [Fact]
+    public async Task ExistsAsync_OnAnEmptiedTable_IsFalse()
+    {
+        Assert.True(await _store.ExistsAsync(DocumentQuery<Widget>.All()));
+
+        await _store.DeleteAllAsync<Widget>();
+
+        Assert.False(await _store.ExistsAsync(DocumentQuery<Widget>.All()));
+    }
+
+    [Fact]
+    public async Task ExistsAsync_IgnoresOrderingAndPaging()
+    {
+        // Same contract as CountAsync: only the predicates apply, so a page past the end of the
+        // match still reports the match as present.
+        var pastTheEnd = DocumentQuery<Widget>
+            .Where("$.Name", QueryOperator.Equal, "Anvil")
+            .OrderBy("$.Quantity", descending: true)
+            .Skip(10)
+            .Take(1);
+
+        Assert.Empty(await _store.QueryAsync(pastTheEnd));
+        Assert.True(await _store.ExistsAsync(pastTheEnd));
+    }
+
+    [Fact]
+    public async Task ExistsAsync_InsideATransaction_SeesUncommittedWritesUntilRollback()
+    {
+        var query = DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Zeta");
+        var pending = new Widget(
+            "w9", "Zeta", 90, "Zed", new DateTime(2024, 9, 1), ["new"], new WidgetAddress("Zurich"));
+
+        await using (var transaction = await _store.BeginTransactionAsync())
+        {
+            await transaction.UpsertAsync(pending.Id, pending);
+
+            Assert.True(await transaction.ExistsAsync(query));
+
+            await transaction.RollbackAsync();
+        }
+
+        Assert.False(await _store.ExistsAsync(query));
+    }
+
+    [Fact]
+    public async Task ExistsAsync_WithANullQuery_Throws()
+    {
+        await Assert.ThrowsAsync<ArgumentNullException>(() => _store.ExistsAsync((DocumentQuery<Widget>)null!));
+    }
+
+    [Fact]
+    public async Task ExistsAsync_WithAnAlreadyCancelledToken_Throws()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _store.ExistsAsync(DocumentQuery<Widget>.All(), cts.Token));
+    }
+
+    [Fact]
+    public async Task ExistsAsync_WithAnIndexedPath_StillMatchesOnTheIndexedExpression()
+    {
+        await _store.CreateIndexAsync<Widget>(w => w.Name);
+
+        var query = DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Anvil");
+        var generated = SqlGenerator.GenerateFilteredExistsSql(
+            _store.GetTableName<Widget>(), query.Predicates);
+
+        var plan = await _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "EXPLAIN QUERY PLAN " + generated.Sql;
+            for (var i = 0; i < generated.ParameterValues.Count; i++)
+            {
+                command.Parameters.AddWithValue("@p" + i, generated.ParameterValues[i]);
+            }
+
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            var rows = new List<string>();
+            while (await reader.ReadAsync(ct))
+            {
+                rows.Add(reader.GetString(3));
+            }
+
+            return string.Join(" | ", rows);
+        });
+
+        Assert.Contains("idx_", plan, StringComparison.Ordinal);
+        Assert.True(await _store.ExistsAsync(query));
+    }
 }
 
 /// <summary>
