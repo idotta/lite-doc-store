@@ -40,6 +40,14 @@ var many = await store.GetManyAsync<Person>(["p1", "p2", "missing"]);
 Console.WriteLine($"GetMany 3 ids      => {many.Count} found ({string.Join(", ", many.Keys)})");
 
 await store.CreateIndexAsync<Person>(p => p.Email);
+
+// The options overload carries plain data and walks the same expression for member names only.
+await store.CreateIndexAsync<Person>(
+    p => p.Email,
+    "idx_person_email_unique",
+    new IndexOptions { Unique = true, Collation = "NOCASE", Filter = IndexFilter.IsNotNull("$.Email") });
+Console.WriteLine("Unique NOCASE index => created");
+
 var byEmail = (await store.QueryAsync<Person, string>("$.Email", "grace@example.com")).ToList();
 Console.WriteLine($"Query $.Email      => {byEmail.Count} ({byEmail.FirstOrDefault()?.Name})");
 

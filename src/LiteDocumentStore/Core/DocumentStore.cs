@@ -196,14 +196,38 @@ internal sealed class DocumentStore : IDocumentStore
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,
         CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, cancellationToken), cancellationToken);
+        RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, null, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task CreateIndexAsync<T>(
+        Expression<Func<T, object>> jsonPath,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, options, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
         CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, cancellationToken), cancellationToken);
+        RunAsync(ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, null, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task CreateCompositeIndexAsync<T>(
+        Expression<Func<T, object>>[] jsonPaths,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(
+            ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, options, cancellationToken),
+            cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(

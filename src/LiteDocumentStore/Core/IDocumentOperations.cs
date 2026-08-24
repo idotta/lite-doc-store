@@ -321,6 +321,32 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates an index over a JSON path with explicit DDL options (unique, collation,
+    /// direction, partial filter), if an index of that name does not already exist.
+    /// </summary>
+    /// <remarks>
+    /// An overload rather than an extra parameter on
+    /// <see cref="CreateIndexAsync{T}(Expression{Func{T, object}}, string, CancellationToken)"/>:
+    /// inserting one before the trailing token would break every caller passing the token
+    /// positionally. Creation is skipped when the name exists, options and all, so changing an
+    /// existing index's options means dropping it first.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="jsonPath">A property-access expression, e.g. <c>x => x.Email</c></param>
+    /// <param name="indexName">An explicit index name, or null to derive one</param>
+    /// <param name="options">The index DDL options</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
+    /// </exception>
+    Task CreateIndexAsync<T>(
+        Expression<Func<T, object>> jsonPath,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates a composite index over several JSON paths, if it does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>
@@ -330,6 +356,33 @@ public interface IDocumentOperations
     Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a composite index over several JSON paths with explicit DDL options, if an index
+    /// of that name does not already exist.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IndexOptions.Collation"/> and <see cref="IndexOptions.Descending"/> apply to
+    /// <b>every</b> indexed column; a mixed per-column direction stays an
+    /// <c>ExecuteRawAsync</c> job. An overload for the reason
+    /// <see cref="CreateIndexAsync{T}(Expression{Func{T, object}}, string, IndexOptions, CancellationToken)"/>
+    /// is one.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="jsonPaths">Property-access expressions, in index column order</param>
+    /// <param name="indexName">An explicit index name, or null to derive one</param>
+    /// <param name="options">The index DDL options</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPaths"/> is empty, or when
+    /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
+    /// </exception>
+    Task CreateCompositeIndexAsync<T>(
+        Expression<Func<T, object>>[] jsonPaths,
+        string? indexName,
+        IndexOptions options,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -370,11 +423,11 @@ public interface IDocumentOperations
     Task DropIndexAsync(string indexName, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Drops the index <see cref="CreateIndexAsync{T}"/> derives for the same JSON path, if it
+    /// Drops the index <see cref="CreateIndexAsync{T}(Expression{Func{T, object}}, string, CancellationToken)"/> derives for the same JSON path, if it
     /// exists.
     /// </summary>
     /// <remarks>
-    /// The name is derived exactly as <see cref="CreateIndexAsync{T}"/> derives it, so this drops
+    /// The name is derived exactly as <see cref="CreateIndexAsync{T}(Expression{Func{T, object}}, string, CancellationToken)"/> derives it, so this drops
     /// the index that call created. An index created under an explicit name must be dropped
     /// through <see cref="DropIndexAsync(string, CancellationToken)"/>.
     /// </remarks>

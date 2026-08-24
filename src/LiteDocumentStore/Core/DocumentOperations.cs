@@ -718,10 +718,11 @@ internal readonly struct DocumentOperations
         return parameters;
     }
 
-    /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}(Expression{Func{T, object}}, string, IndexOptions, CancellationToken)" />
     public async Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName,
+        IndexOptions? options,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPath);
@@ -729,6 +730,10 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var pathString = ExtractJsonPath(jsonPath);
         var finalIndexName = indexName ?? GenerateIndexName(tableName, pathString);
+
+        // Generated before the pre-check so an invalid identifier, path or collation throws
+        // whether or not the index happens to exist already: a bad argument is a bad argument.
+        var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString, options);
 
         // Check if index already exists
         var indexExists = await _connection.ExecuteScalarAsync<int>(
@@ -742,14 +747,14 @@ internal readonly struct DocumentOperations
             return;
         }
 
-        var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}(Expression{Func{T, object}}[], string, IndexOptions, CancellationToken)" />
     public async Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName,
+        IndexOptions? options,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(jsonPaths);
@@ -761,6 +766,9 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var pathStrings = jsonPaths.Select(ExtractJsonPath).ToList();
         var finalIndexName = indexName ?? GenerateCompositeIndexName(tableName, pathStrings);
+
+        // Generated before the pre-check, for the reason in CreateIndexAsync.
+        var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
 
         // Check if index already exists
         var indexExists = await _connection.ExecuteScalarAsync<int>(
@@ -774,7 +782,6 @@ internal readonly struct DocumentOperations
             return;
         }
 
-        var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 

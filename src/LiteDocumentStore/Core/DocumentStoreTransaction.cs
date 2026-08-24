@@ -241,7 +241,19 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
-        return _operations.CreateIndexAsync(jsonPath, indexName, cancellationToken);
+        return _operations.CreateIndexAsync(jsonPath, indexName, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task CreateIndexAsync<T>(
+        Expression<Func<T, object>> jsonPath,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.CreateIndexAsync(jsonPath, indexName, options, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -251,7 +263,19 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
-        return _operations.CreateCompositeIndexAsync(jsonPaths, indexName, cancellationToken);
+        return _operations.CreateCompositeIndexAsync(jsonPaths, indexName, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task CreateCompositeIndexAsync<T>(
+        Expression<Func<T, object>>[] jsonPaths,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.CreateCompositeIndexAsync(jsonPaths, indexName, options, cancellationToken);
     }
 
     /// <inheritdoc />

@@ -43,6 +43,8 @@ src/
                      IDocumentOperations / IDocumentTransaction, SqlGenerator,
                      SqliteCommandExtensions (raw ADO helpers), DocumentStoreOptions(+Builder)
     Conventions/     ITableNamingConvention — maps type -> table name
+    Query/           DocumentQuery, DocumentPatch + the predicate/ordering/patch records
+    Indexing/        IndexOptions, IndexFilter (+ IndexFilterTerm) — index DDL options
     Factories/       IDocumentStoreFactory, IConnectionFactory (+ Default impls)
     Extensions/      ServiceCollectionExtensions (AddLiteDocumentStore, keyed variant)
     Migrations/      MigrationRunner, IMigration/Migration, SchemaIntrospector
@@ -155,6 +157,14 @@ A patch carries no full document, so it **cannot insert**: a missing id is a `Co
 
 **Null documents are never dropped.** A row whose stored JSON deserializes to null (only reachable through raw SQL — every store write rejects a null document) used to be skipped, so `GetAllAsync`/`QueryAsync` returned fewer documents than the table held, and `GetWithVersionAsync`/`GetAsync` returned null, indistinguishable from not-found. All of them now throw `SerializationException` naming the id and table. That is why `GenerateGetAllSql`, `GenerateQueryByJsonPathSql` and `GenerateQuerySql` select `id, json(data)` and read through `QueryStringPairsAsync`: the id has to travel with the document to be named. A genuinely absent id is still absent, not an error — `GetAsync` returns `default`, `GetManyAsync` omits the key.
 
+**Index options.** `IndexOptions` (`Indexing/IndexOptions.cs`) carries `Unique`, `Collation`, `Descending` and `Filter`, and arrives through an **overload** of `CreateIndexAsync<T>`/`CreateCompositeIndexAsync<T>` — not an inserted parameter, which would break every caller passing the trailing `CancellationToken` positionally. `Unique` is the load-bearing one: a unique constraint over a JSON field (unique email) was otherwise impossible. Adding the overloads made `<see cref="CreateIndexAsync{T}"/>` ambiguous (CS0419), so those doc references now carry full signatures.
+
+`IndexFilter` (`Indexing/IndexFilter.cs`) is the partial-index `WHERE`, and is **value-free on purpose**: `IsNull(path)` / `IsNotNull(path)` plus `AndIsNull`/`AndIsNotNull`. SQLite forbids bound parameters in a partial index, so a value-comparing filter would have to inline a SQL literal — a new injection surface with its own escaping rules — and `IS [NOT] NULL` already covers what partial indexes are wanted for (unique-among-the-rows-that-have-one, unique-among-not-deleted). Richer filters stay an `ExecuteRawAsync` job.
+
+`SqlGenerator.BuildCreateIndexSql` is the one place the DDL is assembled, and it validates the two new interpolated pieces — the collation name (`ValidateIdentifier`, so custom collations work but `]` and quotes do not) and the filter paths (`ValidateJsonPath`, re-checked even though `IndexFilter` validates at build time). Default options emit exactly the statement the generators emitted before options existed: no `UNIQUE`, no `COLLATE`, no direction (ascending is SQLite's own default, so no `ASC` is written) and no `WHERE`. On a composite index the collation and direction apply to **every** column; mixed per-column direction stays raw SQL.
+
+The existing `sqlite_master` name pre-check still short-circuits creation, so an index whose name already exists is skipped *options and all* — changing an index's options means `DropIndexAsync` first (pinned by `IndexOptionsIntegrationTests`). The statement is generated **before** that pre-check runs, so a bad collation or path throws whether or not the index happens to exist; skipping creation must not also skip validation.
+
 **Blobs.** Raw binary payloads live in a reserved `__store_blobs (id TEXT PK, data BLOB NOT NULL)` table (`SqlGenerator.BlobTableName`), created via `CreateBlobTableAsync()`. `PutBlobAsync`/`GetBlobAsync`/`DeleteBlobAsync`/`BlobExistsAsync` — no JSONB conversion, bytes stored verbatim. Blob operations exist on `IDocumentOperations`, so calling them on an `IDocumentTransaction` commits a document and its blob atomically.
 
 **Transactions.** `BeginTransactionAsync()` returns an `IDocumentTransaction` (`Core/DocumentStoreTransaction.cs`) that holds **one rented connection** for its lifetime; `CommitAsync`/`RollbackAsync` finish it, and disposing without committing rolls back. `ExecuteInTransactionAsync(Func<IDocumentTransaction, Task>)` is the ergonomic wrapper (commit on return, rollback on throw). Every operation on the transaction object goes through `ActiveTransaction()` first, so a call made after commit/rollback/disposal throws (`InvalidOperationException`, or `ObjectDisposedException` once disposed) instead of running on a connection the pool has already handed to another renter.
@@ -205,6 +215,7 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - `src/LiteDocumentStore/Core/SqlGenerator.cs` — the JSONB SQL contract; change SQL here, nowhere else.
 - `src/LiteDocumentStore/Query/DocumentQuery.cs` — the composable filter builder; validation and bound-value normalization live here.
 - `src/LiteDocumentStore/Query/DocumentPatch.cs` — the field-level update builder; the JSON-text carve-outs for `bool`/`decimal`/wide `ulong` live here.
+- `src/LiteDocumentStore/Indexing/IndexOptions.cs` + `IndexFilter.cs` — the index DDL options and the value-free partial-index filter.
 - `src/LiteDocumentStore/Core/SqliteCommandExtensions.cs` — the raw ADO.NET helpers that replaced Dapper.
 - `src/LiteDocumentStore/Serialization/JsonHelper.cs` — the AOT-safe serialization funnel (`JsonTypeInfo<T>` + reflection fallback).
 - `src/LiteDocumentStore/Extensions/ServiceCollectionExtensions.cs` — how consumers wire it up (DI + lifetimes).

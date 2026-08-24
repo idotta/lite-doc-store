@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LiteDocumentStore.Examples;
@@ -104,5 +105,36 @@ internal static class IndexManagementExample
         await store.CreateIndexAsync<Customer>(c => c.Email, "idx_customer_email");
         await store.CreateIndexAsync<Customer>(c => c.Email, "idx_customer_email");
         Console.WriteLine("Re-created idx_customer_email twice => no error (safe)");
+
+        // UNIQUE, a collation and a partial filter arrive through the options overload. The filter
+        // is value-free (IS [NOT] NULL) because SQLite forbids bound parameters in a partial index.
+        await store.CreateIndexAsync<Customer>(
+            c => c.Email,
+            "idx_customer_email_unique",
+            new IndexOptions
+            {
+                Unique = true,
+                Collation = "NOCASE",
+                Filter = IndexFilter.IsNotNull("$.Email")
+            });
+
+        var existing = (await store.GetAsync<Customer>("c1000"))!;
+        try
+        {
+            // Same address, different case - NOCASE makes it a duplicate.
+            await store.UpsertAsync(
+                "c-duplicate",
+                existing with { Id = "c-duplicate", Email = existing.Email.ToUpperInvariant() });
+            Console.WriteLine("Duplicate email          => accepted (unexpected)");
+        }
+        catch (SqliteException ex)
+        {
+            Console.WriteLine($"Duplicate email          => rejected ({ex.SqliteErrorCode}: unique index)");
+        }
+
+        // Changing an existing index's options means dropping it first: creation skips a name
+        // that already exists, options and all.
+        await store.DropIndexAsync("idx_customer_email_unique");
+        Console.WriteLine("Dropped unique index     => a duplicate email would be accepted again");
     }
 }
