@@ -125,6 +125,15 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.GetManyAsync<T>(ids, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
@@ -138,6 +147,13 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         ActiveTransaction();
         return _operations.DeleteManyAsync<T>(ids, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteAllAsync<T>(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -210,6 +226,29 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         ActiveTransaction();
         return _operations.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task DropTableAsync<T>(CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DropTableAsync<T>(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task DropIndexAsync(string indexName, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DropIndexAsync(indexName, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task DropIndexAsync<T>(
+        Expression<Func<T, object>> expression,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DropIndexAsync(expression, cancellationToken);
     }
 
     /// <inheritdoc />

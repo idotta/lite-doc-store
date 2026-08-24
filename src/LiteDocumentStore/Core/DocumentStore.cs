@@ -121,6 +121,12 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.GetAllAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
+    public Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.GetManyAsync<T>(ids, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
     public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.DeleteAsync<T>(id, cancellationToken), cancellationToken);
 
@@ -129,6 +135,10 @@ internal sealed class DocumentStore : IDocumentStore
         IEnumerable<string> ids,
         CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.DeleteManyAsync<T>(ids, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DeleteAllAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
     public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default) =>
@@ -179,6 +189,20 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(
             ops => ops.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken),
             cancellationToken);
+
+    /// <inheritdoc />
+    public Task DropTableAsync<T>(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DropTableAsync<T>(cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task DropIndexAsync(string indexName, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DropIndexAsync(indexName, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task DropIndexAsync<T>(
+        Expression<Func<T, object>> expression,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.DropIndexAsync(expression, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
     public Task CreateBlobTableAsync(CancellationToken cancellationToken = default) =>

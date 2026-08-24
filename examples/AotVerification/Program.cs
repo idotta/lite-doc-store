@@ -36,6 +36,9 @@ Console.WriteLine($"Get p1             => {ada?.Name}");
 var all = (await store.GetAllAsync<Person>()).ToList();
 Console.WriteLine($"GetAll             => {all.Count} people");
 
+var many = await store.GetManyAsync<Person>(["p1", "p2", "missing"]);
+Console.WriteLine($"GetMany 3 ids      => {many.Count} found ({string.Join(", ", many.Keys)})");
+
 await store.CreateIndexAsync<Person>(p => p.Email);
 var byEmail = (await store.QueryAsync<Person, string>("$.Email", "grace@example.com")).ToList();
 Console.WriteLine($"Query $.Email      => {byEmail.Count} ({byEmail.FirstOrDefault()?.Name})");
@@ -47,6 +50,12 @@ Console.WriteLine($"Delete p3          => {await store.DeleteAsync<Person>("p3")
 Console.WriteLine($"Count after delete => {await store.CountAsync<Person>()}");
 
 Console.WriteLine($"Healthy            => {await store.IsHealthyAsync()}");
+
+// The expression overload is walked for member names only, never compiled - this gate proves it.
+await store.DropIndexAsync<Person>(p => p.Email);
+Console.WriteLine($"DeleteAll          => {await store.DeleteAllAsync<Person>()} rows");
+await store.DropTableAsync<Person>();
+Console.WriteLine("DropTable          => done");
 
 Console.WriteLine("\nAOT verification completed - all operations ran with source-generated JSON (no reflection).");
 

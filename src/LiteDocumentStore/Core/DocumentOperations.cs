@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.InteropServices;
@@ -242,6 +243,81 @@ internal readonly struct DocumentOperations
         return DeserializeResults<T>(jsonResults);
     }
 
+    /// <inheritdoc cref="IDocumentOperations.GetManyAsync{T}" />
+    public async Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
+        IEnumerable<string> ids,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+
+        var idsList = ids.ToList();
+        if (idsList.Count == 0)
+        {
+            _logger.LogDebug("GetManyAsync called with empty collection, skipping");
+            return ReadOnlyDictionary<string, T>.Empty;
+        }
+
+        // Validated like DeleteManyAsync, and repeats dropped for the same reason: an
+        // 'id IN (...)' list is unambiguous, and the result is keyed by id anyway.
+        var distinctIds = new List<string>(idsList.Count);
+        var seen = new HashSet<string>(idsList.Count, StringComparer.Ordinal);
+        for (int i = 0; i < idsList.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(idsList[i]))
+            {
+                throw new ArgumentException($"ID at index {i} cannot be null or empty.", nameof(ids));
+            }
+            if (seen.Add(idsList[i]))
+            {
+                distinctIds.Add(idsList[i]);
+            }
+        }
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var documents = new Dictionary<string, T>(distinctIds.Count, StringComparer.Ordinal);
+
+        // Chunked like a batch write, but not through RunBatchAsync: that sums affected-row
+        // counts, which a read does not produce, and a read needs no enclosing transaction.
+        const int chunkSize = SqlGenerator.MaxBatchItemsPerStatement;
+        for (int offset = 0; offset < distinctIds.Count; offset += chunkSize)
+        {
+            var count = Math.Min(chunkSize, distinctIds.Count - offset);
+            var sql = SqlGenerator.GenerateBulkGetSql(tableName, count);
+            var parameters = new (string, object?)[count];
+            for (int i = 0; i < count; i++)
+            {
+                parameters[i] = ($"Id{i}", distinctIds[offset + i]);
+            }
+
+            var rows = await _connection.QueryStringPairsAsync(sql, cancellationToken, parameters)
+                .ConfigureAwait(false);
+
+            foreach (var (id, json) in rows)
+            {
+                // A row with no id or no document has nothing to key or deserialize; skipping it
+                // keeps the dictionary free of null values.
+                if (id is null || string.IsNullOrEmpty(json))
+                {
+                    continue;
+                }
+
+                if (JsonHelper.Deserialize<T>(json, _serializerOptions) is { } document)
+                {
+                    documents[id] = document;
+                }
+            }
+        }
+
+        if (documents.Count < distinctIds.Count)
+        {
+            _logger.LogDebug(
+                "GetManyAsync found {FoundCount} of {RequestedCount} documents in table {TableName}",
+                documents.Count, distinctIds.Count, tableName);
+        }
+
+        return documents;
+    }
+
     /// <inheritdoc cref="IDocumentOperations.DeleteAsync{T}" />
     public async Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken)
     {
@@ -355,6 +431,15 @@ internal readonly struct DocumentOperations
 
             return affectedRows;
         }
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DeleteAllAsync{T}" />
+    public async Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken)
+    {
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var sql = SqlGenerator.GenerateDeleteAllSql(tableName);
+
+        return await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}" />
@@ -572,6 +657,43 @@ internal readonly struct DocumentOperations
                 await _connection.ExecuteAsync(createIndexSql, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DropTableAsync{T}" />
+    public async Task DropTableAsync<T>(CancellationToken cancellationToken)
+    {
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var sql = SqlGenerator.GenerateDropTableSql(tableName);
+
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DropIndexAsync(string, CancellationToken)" />
+    public async Task DropIndexAsync(string indexName, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(indexName))
+        {
+            throw new ArgumentException("Index name cannot be null or empty.", nameof(indexName));
+        }
+
+        var sql = SqlGenerator.GenerateDropIndexSql(indexName);
+        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DropIndexAsync{T}" />
+    public Task DropIndexAsync<T>(
+        Expression<Func<T, object>> expression,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+
+        // Derived through the same two steps as CreateIndexAsync, so this drops exactly the
+        // index that call creates for the same path. An explicitly named index has to go
+        // through the string overload.
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var indexName = GenerateIndexName(tableName, ExtractJsonPath(expression));
+
+        return DropIndexAsync(indexName, cancellationToken);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateBlobTableAsync" />
