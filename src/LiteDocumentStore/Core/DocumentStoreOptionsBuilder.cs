@@ -105,15 +105,18 @@ public sealed class DocumentStoreOptionsBuilder
 
     /// <summary>
     /// Sets the page size in bytes.
-    /// Valid values are powers of 2 between 512 and 65536.
+    /// Valid values are powers of 2 between 512 and 65536, or 0 to keep the page size the
+    /// database already has.
     /// </summary>
-    /// <param name="pageSize">The page size in bytes</param>
+    /// <param name="pageSize">The page size in bytes, or 0</param>
     /// <returns>This builder for method chaining</returns>
     public DocumentStoreOptionsBuilder WithPageSize(int pageSize)
     {
-        if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) != 0)
+        if (pageSize != 0 && (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1)) != 0))
         {
-            throw new ArgumentException("Page size must be a power of 2 between 512 and 65536.", nameof(pageSize));
+            throw new ArgumentException(
+                "Page size must be a power of 2 between 512 and 65536, or 0 to keep the database's own page size.",
+                nameof(pageSize));
         }
         _options.PageSize = pageSize;
         return this;
@@ -147,10 +150,15 @@ public sealed class DocumentStoreOptionsBuilder
     /// <summary>
     /// Sets the busy timeout in milliseconds.
     /// </summary>
-    /// <param name="timeoutMs">Timeout in milliseconds</param>
+    /// <param name="timeoutMs">Timeout in milliseconds (must not be negative)</param>
     /// <returns>This builder for method chaining</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="timeoutMs"/> is negative.
+    /// </exception>
     public DocumentStoreOptionsBuilder WithBusyTimeout(int timeoutMs)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
+
         _options.BusyTimeoutMs = timeoutMs;
         return this;
     }
@@ -273,6 +281,11 @@ public sealed class DocumentStoreOptionsBuilder
         {
             throw new InvalidOperationException("Max pool size must be at least 1.");
         }
+
+        // The same check the factory runs, so a builder cannot produce options a store then
+        // refuses.
+        _options.Validate();
+
         return _options.Clone();
     }
 }

@@ -74,6 +74,15 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
             connection.Open();
         }
 
+        // Page size first: SQLite refuses to change it once the database is in WAL mode, so
+        // applying journal_mode before this would make PageSize a no-op even on a new database
+        // (measured: an 8192 request read back as 4096). A PageSize of 0 means "keep whatever
+        // the database has", so no statement is sent at all.
+        if (options.PageSize != 0)
+        {
+            connection.Execute($"PRAGMA page_size = {options.PageSize};");
+        }
+
         // Configure WAL mode
         if (options.EnableWalMode)
         {
@@ -84,20 +93,16 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         var syncMode = GetSynchronousModeString(options.SynchronousMode);
         connection.Execute($"PRAGMA synchronous = {syncMode};");
 
-        // Configure page size (must be set before any tables are created)
-        connection.Execute($"PRAGMA page_size = {options.PageSize};");
-
         // Configure cache size
         connection.Execute($"PRAGMA cache_size = {options.CacheSize};");
 
         // Configure busy timeout
         connection.Execute($"PRAGMA busy_timeout = {options.BusyTimeoutMs};");
 
-        // Configure foreign keys
-        if (options.EnableForeignKeys)
-        {
-            connection.Execute("PRAGMA foreign_keys = ON;");
-        }
+        // Always stated, never skipped: Microsoft.Data.Sqlite opens connections with
+        // foreign_keys already ON, so omitting the OFF left EnableForeignKeys = false doing
+        // nothing at all.
+        connection.Execute($"PRAGMA foreign_keys = {(options.EnableForeignKeys ? "ON" : "OFF")};");
 
         // Execute additional pragmas
         foreach (var pragma in options.AdditionalPragmas)
@@ -120,6 +125,14 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // See ConfigureConnection: page size must precede journal_mode, and 0 means "keep the
+        // database's own page size".
+        if (options.PageSize != 0)
+        {
+            await connection.ExecuteAsync($"PRAGMA page_size = {options.PageSize};", cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         // Configure WAL mode
         if (options.EnableWalMode)
         {
@@ -131,10 +144,6 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         await connection.ExecuteAsync($"PRAGMA synchronous = {syncMode};", cancellationToken)
             .ConfigureAwait(false);
 
-        // Configure page size (must be set before any tables are created)
-        await connection.ExecuteAsync($"PRAGMA page_size = {options.PageSize};", cancellationToken)
-            .ConfigureAwait(false);
-
         // Configure cache size
         await connection.ExecuteAsync($"PRAGMA cache_size = {options.CacheSize};", cancellationToken)
             .ConfigureAwait(false);
@@ -143,11 +152,10 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         await connection.ExecuteAsync($"PRAGMA busy_timeout = {options.BusyTimeoutMs};", cancellationToken)
             .ConfigureAwait(false);
 
-        // Configure foreign keys
-        if (options.EnableForeignKeys)
-        {
-            await connection.ExecuteAsync("PRAGMA foreign_keys = ON;", cancellationToken).ConfigureAwait(false);
-        }
+        // See ConfigureConnection: the OFF has to be stated, not skipped.
+        await connection
+            .ExecuteAsync($"PRAGMA foreign_keys = {(options.EnableForeignKeys ? "ON" : "OFF")};", cancellationToken)
+            .ConfigureAwait(false);
 
         // Execute additional pragmas
         foreach (var pragma in options.AdditionalPragmas)

@@ -33,10 +33,16 @@ public sealed class DocumentStoreOptions
     public SynchronousMode SynchronousMode { get; set; } = SynchronousMode.Normal;
 
     /// <summary>
-    /// Gets or sets the page size in bytes.
-    /// Valid values are powers of 2 between 512 and 65536.
+    /// Gets or sets the page size in bytes. Valid values are powers of 2 between 512 and 65536,
+    /// or 0 to keep whatever page size the database already has.
     /// Default is 4096. Larger values may improve performance for large datasets.
     /// </summary>
+    /// <remarks>
+    /// SQLite ignores <c>PRAGMA page_size</c> on a database that already has pages, so opening an
+    /// existing database whose page size differs throws
+    /// <see cref="Exceptions.IncompatiblePageSizeException"/> instead of running as if the option
+    /// had been applied. Set this to 0 when the store has to open databases created elsewhere.
+    /// </remarks>
     public int PageSize { get; set; } = 4096;
 
     /// <summary>
@@ -191,6 +197,65 @@ public sealed class DocumentStoreOptions
             EnableWalMode = false, // WAL not supported for in-memory
             SynchronousMode = SynchronousMode.Off
         };
+    }
+
+    /// <summary>
+    /// Throws when these options cannot be used to open a store.
+    /// </summary>
+    /// <remarks>
+    /// Called by <see cref="DocumentStoreFactory"/>, the path every store goes through including
+    /// the DI registration. Options built by hand rather than through
+    /// <see cref="DocumentStoreOptionsBuilder"/> are otherwise never checked, and a negative
+    /// <see cref="BusyTimeoutMs"/> or a non-power-of-2 <see cref="PageSize"/> reaches SQLite as a
+    /// PRAGMA that quietly does nothing.
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// An option is outside its valid range, or the connection string names a database the store
+    /// cannot use as configured (a private in-memory database, or an in-memory database with
+    /// <see cref="EnableWalMode"/> set). The exception names the offending option.
+    /// </exception>
+    public void Validate()
+    {
+        // Runs the connection-string checks the pool would make later too, so a misconfigured
+        // store fails at creation rather than when the first connection opens.
+        SqliteConnectionStringGuard.EnsureUsable(this, nameof(ConnectionString));
+
+        if (PageSize != 0 && (PageSize < 512 || PageSize > 65536 || (PageSize & (PageSize - 1)) != 0))
+        {
+            throw new ArgumentException(
+                "Page size must be a power of 2 between 512 and 65536, or 0 to keep the database's " +
+                $"own page size, but was {PageSize}.",
+                nameof(PageSize));
+        }
+
+        if (BusyTimeoutMs < 0)
+        {
+            throw new ArgumentException(
+                $"Busy timeout must not be negative, but was {BusyTimeoutMs}.",
+                nameof(BusyTimeoutMs));
+        }
+
+        if (MaxPoolSize < 1)
+        {
+            throw new ArgumentException(
+                $"Max pool size must be at least 1, but was {MaxPoolSize}.",
+                nameof(MaxPoolSize));
+        }
+
+        if (AdditionalPragmas is null)
+        {
+            throw new ArgumentException("Additional pragmas must not be null.", nameof(AdditionalPragmas));
+        }
+
+        for (var i = 0; i < AdditionalPragmas.Count; i++)
+        {
+            if (string.IsNullOrWhiteSpace(AdditionalPragmas[i]))
+            {
+                throw new ArgumentException(
+                    $"Additional pragma at index {i} is null or blank.",
+                    nameof(AdditionalPragmas));
+            }
+        }
     }
 
     /// <summary>
