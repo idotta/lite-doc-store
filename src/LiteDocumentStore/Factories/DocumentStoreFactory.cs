@@ -85,6 +85,7 @@ public sealed class DocumentStoreFactory : IDocumentStoreFactory
     private DocumentStore CreateStore(DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
 
         // Use options-level overrides if provided, otherwise use factory defaults
         var namingConvention = options.TableNamingConvention ?? _tableNamingConvention;

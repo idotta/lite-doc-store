@@ -22,7 +22,9 @@ namespace LiteDocumentStore;
 /// <para>
 /// Every physical connection is checked against <see cref="SqliteVersionGuard"/> as it is
 /// opened, so a SQLite library without <c>jsonb()</c> fails at store creation with an
-/// actionable exception instead of at the first write with <c>no such function: jsonb</c>.
+/// actionable exception instead of at the first write with <c>no such function: jsonb</c>,
+/// and against <see cref="SqlitePageSizeGuard"/>, so a <see cref="DocumentStoreOptions.PageSize"/>
+/// the database silently ignored fails there too.
 /// </para>
 /// <para>
 /// Connections are never closed while the pool is alive, only returned to the idle bag. That
@@ -296,6 +298,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         try
         {
             SqliteVersionGuard.EnsureSupported(connection);
+            SqlitePageSizeGuard.EnsureApplied(connection, _options.PageSize);
         }
         catch
         {
@@ -317,6 +320,8 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         try
         {
             await SqliteVersionGuard.EnsureSupportedAsync(connection, cancellationToken).ConfigureAwait(false);
+            await SqlitePageSizeGuard.EnsureAppliedAsync(connection, _options.PageSize, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -345,58 +350,19 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Opts the connection string out of Microsoft.Data.Sqlite's own pool, so that this pool
-    /// owns the physical connections and their one-time PRAGMA configuration.
+    /// Rejects a connection string the store cannot honour (see
+    /// <see cref="SqliteConnectionStringGuard"/>) and opts the rest out of
+    /// Microsoft.Data.Sqlite's own pool, so that this pool owns the physical connections and
+    /// their one-time PRAGMA configuration.
     /// </summary>
     private static DocumentStoreOptions Normalize(DocumentStoreOptions options)
     {
-        if (string.IsNullOrWhiteSpace(options.ConnectionString))
-        {
-            throw new ArgumentException(
-                "Connection string must be set before creating a document store.",
-                nameof(options));
-        }
-
-        var builder = new SqliteConnectionStringBuilder(options.ConnectionString) { Pooling = false };
-
-        // A private in-memory database belongs to a single connection, so a pool of them would
-        // give every operation its own empty database. Refuse it rather than silently losing
-        // writes; a uniquely named shared-cache database has the same "private" semantics and
-        // works across connections.
-        if (IsPrivateInMemory(builder))
-        {
-            throw new ArgumentException(
-                "A private in-memory database (\"Data Source=:memory:\" or Mode=Memory without " +
-                "Cache=Shared) cannot be used by a document store, because the store pools " +
-                "connections and each connection would get its own empty database. Use " +
-                $"{nameof(DocumentStoreOptions)}.{nameof(DocumentStoreOptions.ForInMemory)}() for a " +
-                $"private in-memory store, or {nameof(DocumentStoreOptions.ForSharedInMemory)}(name) " +
-                "to share one by name.",
-                nameof(options));
-        }
+        var builder = SqliteConnectionStringGuard.EnsureUsable(options, nameof(options));
+        builder.Pooling = false;
 
         var normalized = options.Clone();
         normalized.ConnectionString = builder.ToString();
         return normalized;
-    }
-
-    private static bool IsPrivateInMemory(SqliteConnectionStringBuilder builder)
-    {
-        if (builder.Cache == SqliteCacheMode.Shared)
-        {
-            return false;
-        }
-
-        if (builder.Mode == SqliteOpenMode.Memory)
-        {
-            return true;
-        }
-
-        var dataSource = builder.DataSource;
-        return dataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase)
-            || (dataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
-                && dataSource.Contains("mode=memory", StringComparison.OrdinalIgnoreCase)
-                && !dataSource.Contains("cache=shared", StringComparison.OrdinalIgnoreCase));
     }
 
     private void ThrowIfDisposed() =>
