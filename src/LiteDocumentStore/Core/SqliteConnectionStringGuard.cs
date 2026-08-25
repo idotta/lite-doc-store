@@ -33,12 +33,13 @@ internal static class SqliteConnectionStringGuard
         // give every operation its own empty database. Refuse it rather than silently losing
         // writes; a uniquely named shared-cache database has the same "private" semantics and
         // works across connections.
-        if (IsInMemory(builder) && !IsSharedCache(builder))
+        if (IsPrivateInMemory(builder))
         {
             throw new ArgumentException(
-                "A private in-memory database (\"Data Source=:memory:\" or Mode=Memory without " +
-                "Cache=Shared) cannot be used by a document store, because the store pools " +
-                "connections and each connection would get its own empty database. Use " +
+                "A private in-memory database (\"Data Source=:memory:\", with or without " +
+                "Cache=Shared, or Mode=Memory without Cache=Shared) cannot be used by a document " +
+                "store, because the store pools connections and each connection would get its own " +
+                "empty database. Use " +
                 $"{nameof(DocumentStoreOptions)}.{nameof(DocumentStoreOptions.ForInMemory)}() for a " +
                 $"private in-memory store, or {nameof(DocumentStoreOptions.ForSharedInMemory)}(name) " +
                 "to share one by name.",
@@ -60,6 +61,26 @@ internal static class SqliteConnectionStringGuard
         }
 
         return builder;
+    }
+
+    private static bool IsPrivateInMemory(SqliteConnectionStringBuilder builder)
+    {
+        if (!IsInMemory(builder))
+        {
+            return false;
+        }
+
+        // An unadorned ":memory:" is private to its connection whatever the cache setting: SQLite
+        // shares an in-memory database only through a URI filename. Measured against
+        // Microsoft.Data.Sqlite — "Data Source=:memory:;Cache=Shared" gives a second connection an
+        // empty database, while "Mode=Memory;Cache=Shared" and "file:name?mode=memory&cache=shared"
+        // (which the provider turns into URI filenames) share one.
+        if (builder.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return !IsSharedCache(builder);
     }
 
     private static bool IsInMemory(SqliteConnectionStringBuilder builder)

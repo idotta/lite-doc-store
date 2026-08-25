@@ -154,6 +154,56 @@ public sealed class OptionsPragmaIntegrationTests : IAsyncLifetime
         Assert.False(File.Exists(options.ConnectionString.Replace("Data Source=", string.Empty, StringComparison.Ordinal)));
     }
 
+    [Fact]
+    public async Task PrivateInMemoryWithSharedCache_IsRejected()
+    {
+        // "Data Source=:memory:;Cache=Shared" reads as shared and is not: measured against
+        // Microsoft.Data.Sqlite, a second connection opens an empty database, so a pooled store
+        // would lose every write made through another connection.
+        var options = new DocumentStoreOptions("Data Source=:memory:;Cache=Shared")
+        {
+            EnableWalMode = false,
+        };
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => _factory.CreateAsync(options));
+        Assert.Contains("private in-memory database", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SharedInMemoryStore_IsVisibleAcrossSeveralPooledConnections()
+    {
+        // The counterpart to the rejection above: the forms the store does accept really are one
+        // database. Each open transaction holds its own physical connection, so reading the
+        // document through three at once proves it crosses connections, not just the pool's first.
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 4;
+
+        var store = await CreateStoreAsync(options);
+        await store.CreateTableAsync<Doc>();
+        await store.UpsertAsync("a", new Doc("first", 1));
+
+        var transactions = new List<IDocumentTransaction>();
+        try
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                transactions.Add(await store.BeginTransactionAsync());
+            }
+
+            foreach (var transaction in transactions)
+            {
+                Assert.Equal("first", (await transaction.GetAsync<Doc>("a"))!.Name);
+            }
+        }
+        finally
+        {
+            foreach (var transaction in transactions)
+            {
+                await transaction.DisposeAsync();
+            }
+        }
+    }
+
     public Task InitializeAsync() => Task.CompletedTask;
 
     public async Task DisposeAsync()

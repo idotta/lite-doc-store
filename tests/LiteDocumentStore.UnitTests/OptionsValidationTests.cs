@@ -86,6 +86,10 @@ public sealed class OptionsValidationTests
     [InlineData("Data Source=:memory:")]
     [InlineData("Data Source=lds-private;Mode=Memory")]
     [InlineData("Data Source=file:lds-private?mode=memory")]
+    // Measured: Microsoft.Data.Sqlite gives a second connection an empty database here, because
+    // SQLite shares an in-memory database only through a URI filename. Cache=Shared does not make
+    // an unadorned ":memory:" shared.
+    [InlineData("Data Source=:memory:;Cache=Shared")]
     public void Validate_WithAPrivateInMemoryDatabase_Throws(string connectionString)
     {
         var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
