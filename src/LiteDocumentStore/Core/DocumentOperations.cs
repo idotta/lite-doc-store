@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Data;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
@@ -188,7 +189,7 @@ internal readonly struct DocumentOperations
         if (newVersion is null)
         {
             throw await BuildConflictAsync(
-                "writing", id, tableName, expectedVersion,
+                "writing", "document", id, tableName, expectedVersion,
                 insertAttempt: expectedVersion == 0, cancellationToken).ConfigureAwait(false);
         }
 
@@ -218,7 +219,7 @@ internal readonly struct DocumentOperations
         if (affectedRows == 0)
         {
             throw await BuildConflictAsync(
-                "deleting", id, tableName, expectedVersion,
+                "deleting", "document", id, tableName, expectedVersion,
                 insertAttempt: false, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -275,7 +276,7 @@ internal readonly struct DocumentOperations
         if (newVersion is null)
         {
             throw await BuildConflictAsync(
-                "patching", id, tableName, expectedVersion,
+                "patching", "document", id, tableName, expectedVersion,
                 insertAttempt: false, cancellationToken).ConfigureAwait(false);
         }
 
@@ -304,6 +305,7 @@ internal readonly struct DocumentOperations
     /// </remarks>
     private async Task<ConcurrencyException> BuildConflictAsync(
         string verb,
+        string entity,
         string id,
         string tableName,
         long? expectedVersion,
@@ -327,14 +329,14 @@ internal readonly struct DocumentOperations
 
         var reason = kind switch
         {
-            ConcurrencyConflictKind.DocumentNotFound => "the document does not exist",
+            ConcurrencyConflictKind.DocumentNotFound => $"the {entity} does not exist",
             ConcurrencyConflictKind.AlreadyExists =>
-                $"the document already exists at version {actualVersion}",
+                $"the {entity} already exists at version {actualVersion}",
             _ => $"the stored version {actualVersion} does not match the expected version {expectedVersion}",
         };
 
         return new ConcurrencyException(
-            $"Concurrency conflict {verb} document '{id}' in table '{tableName}': {reason}.",
+            $"Concurrency conflict {verb} {entity} '{id}' in table '{tableName}': {reason}.",
             id, tableName, expectedVersion, actualVersion, kind);
     }
 
@@ -889,10 +891,235 @@ internal readonly struct DocumentOperations
     {
         var sql = SqlGenerator.GenerateCreateBlobTableSql();
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
+        await EnsureBlobMetadataColumnsAsync(cancellationToken).ConfigureAwait(false);
+
+        // ALTER TABLE only appends, so an upgraded table keeps its payload column ahead of the
+        // metadata — which is the slow layout, and only a rebuild can change it.
+        if (await BlobTableNeedsRebuildAsync(cancellationToken).ConfigureAwait(false))
+        {
+            _logger.LogWarning(
+                "The {Table} table stores its payload column ahead of its metadata columns, so " +
+                "reading blob metadata has to walk each payload's overflow pages. Call " +
+                "RebuildBlobTableAsync to copy the table into the current layout.",
+                SqlGenerator.BlobTableName);
+        }
+    }
+
+    /// <summary>
+    /// Adds the metadata columns to a blob table created before they existed.
+    /// </summary>
+    /// <remarks>
+    /// The blob table is reserved and store-owned, so it is upgraded in place rather than through
+    /// an <see cref="IMigration"/> a consumer would have to notice and register: the call that
+    /// already creates the table is the natural place for it, and it is idempotent. Outside a
+    /// caller's transaction the columns are added under <c>BEGIN IMMEDIATE</c> with the check
+    /// repeated inside it, so two processes starting together cannot both issue the ALTER —
+    /// the same shape the migration runner uses for its own legacy history
+    /// table. Inside one, the caller's transaction already serializes it.
+    /// </remarks>
+    private async Task EnsureBlobMetadataColumnsAsync(CancellationToken cancellationToken)
+    {
+        var missing = await MissingBlobColumnsAsync(cancellationToken).ConfigureAwait(false);
+        if (missing.Count > 0)
+        {
+            if (_inAmbientTransaction)
+            {
+                await AddBlobColumnsAsync(missing, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                using var transaction = _connection.BeginTransaction(
+                    IsolationLevel.Serializable, deferred: false);
+                try
+                {
+                    missing = await MissingBlobColumnsAsync(cancellationToken).ConfigureAwait(false);
+                    await AddBlobColumnsAsync(missing, cancellationToken).ConfigureAwait(false);
+                    transaction.Commit();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            }
+        }
+    }
+
+    private async Task<List<string>> MissingBlobColumnsAsync(CancellationToken cancellationToken)
+    {
+        var sql = SqlGenerator.GenerateBlobColumnExistsSql();
+        var missing = new List<string>();
+
+        foreach (var (name, _) in SqlGenerator.BlobMetadataColumns)
+        {
+            var count = await _connection.ExecuteScalarAsync<long>(sql, cancellationToken, ("Name", name))
+                .ConfigureAwait(false);
+            if (count == 0)
+            {
+                missing.Add(name);
+            }
+        }
+
+        return missing;
+    }
+
+    private async Task AddBlobColumnsAsync(List<string> columns, CancellationToken cancellationToken)
+    {
+        foreach (var column in columns)
+        {
+            _logger.LogInformation(
+                "Upgrading the {Table} table: adding the {Column} column",
+                SqlGenerator.BlobTableName, column);
+
+            await _connection.ExecuteAsync(
+                SqlGenerator.GenerateAddBlobColumnSql(column), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Reports whether the blob table carries its payload column ahead of the metadata.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful once the metadata columns exist: a table that still has none of them ends
+    /// in <c>data</c> too, and would read as current. Callers run
+    /// <see cref="EnsureBlobMetadataColumnsAsync"/> first.
+    /// </remarks>
+    public async Task<bool> BlobTableNeedsRebuildAsync(CancellationToken cancellationToken)
+    {
+        var lastColumn = await LastBlobColumnAsync(cancellationToken).ConfigureAwait(false);
+
+        // No columns at all means no table: nothing to rebuild.
+        return lastColumn is not null && !string.Equals(lastColumn, "data", StringComparison.Ordinal);
+    }
+
+    private Task<string?> LastBlobColumnAsync(CancellationToken cancellationToken) =>
+        _connection.QueryFirstStringAsync(
+            SqlGenerator.GenerateBlobLastColumnSql(), cancellationToken);
+
+    /// <summary>
+    /// Copies the blob table into the layout <see cref="SqlGenerator.GenerateCreateBlobTableSql"/>
+    /// produces, so metadata reads stop walking payload pages.
+    /// </summary>
+    /// <returns>False when the table already has that layout and nothing was copied</returns>
+    public async Task<bool> RebuildBlobTableAsync(CancellationToken cancellationToken)
+    {
+        // No table at all: nothing to rebuild, and nothing to add columns to either.
+        if (await LastBlobColumnAsync(cancellationToken).ConfigureAwait(false) is null)
+        {
+            return false;
+        }
+
+        // A table that predates the metadata columns also ends in 'data', so the layout check
+        // alone would call it current and this would return false while every metadata read
+        // still failed with "no such column". Adding the columns first is idempotent and makes
+        // the returned value mean what it says.
+        await EnsureBlobMetadataColumnsAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await BlobTableNeedsRebuildAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        _logger.LogInformation("Rebuilding the {Table} table into the current layout",
+            SqlGenerator.BlobTableName);
+
+        var steps = SqlGenerator.GenerateBlobTableRebuildSteps();
+
+        if (_inAmbientTransaction)
+        {
+            foreach (var step in steps)
+            {
+                await _connection.ExecuteAsync(step, cancellationToken).ConfigureAwait(false);
+            }
+
+            return true;
+        }
+
+        using var transaction = _connection.BeginTransaction(IsolationLevel.Serializable, deferred: false);
+        try
+        {
+            foreach (var step in steps)
+            {
+                await _connection.ExecuteAsync(step, cancellationToken).ConfigureAwait(false);
+            }
+
+            transaction.Commit();
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
+
+        return true;
     }
 
     /// <inheritdoc cref="IDocumentOperations.PutBlobAsync(string, ReadOnlyMemory{byte}, CancellationToken)" />
-    public async Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
+    public async Task PutBlobAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        BlobWriteOptions? options,
+        CancellationToken cancellationToken)
+    {
+        var payload = ValidateBlobWrite(id, data, options);
+
+        await _connection.ExecuteAsync(
+            SqlGenerator.GeneratePutBlobSql(), cancellationToken,
+            ("Id", id), ("ContentType", options?.ContentType), ("Data", payload))
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.PutBlobWithVersionAsync(string, ReadOnlyMemory{byte}, long, CancellationToken)" />
+    public async Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        BlobWriteOptions? options,
+        CancellationToken cancellationToken)
+    {
+        var payload = ValidateBlobWrite(id, data, options);
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+
+        var contentType = options?.ContentType;
+        long? newVersion;
+
+        if (expectedVersion == 0)
+        {
+            newVersion = await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateInsertBlobIfAbsentSql(), cancellationToken,
+                ("Id", id), ("ContentType", contentType), ("Data", payload))
+                .ConfigureAwait(false);
+
+            // Same lift as a document: a row left at version 0 by raw SQL is matched by the
+            // 0-guarded update and raised to 1 rather than being stuck outside the model.
+            newVersion ??= await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateVersionedPutBlobSql(), cancellationToken,
+                ("Id", id), ("ContentType", contentType), ("Data", payload), ("ExpectedVersion", 0L))
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            newVersion = await _connection.QueryFirstInt64Async(
+                SqlGenerator.GenerateVersionedPutBlobSql(), cancellationToken,
+                ("Id", id), ("ContentType", contentType), ("Data", payload),
+                ("ExpectedVersion", expectedVersion))
+                .ConfigureAwait(false);
+        }
+
+        if (newVersion is null)
+        {
+            throw await BuildConflictAsync(
+                "writing", "blob", id, SqlGenerator.BlobTableName, expectedVersion,
+                insertAttempt: expectedVersion == 0, cancellationToken).ConfigureAwait(false);
+        }
+
+        return newVersion.Value;
+    }
+
+    /// <summary>
+    /// Validates a byte-array blob write and returns the array to bind.
+    /// </summary>
+    private static byte[] ValidateBlobWrite(string id, ReadOnlyMemory<byte> data, BlobWriteOptions? options)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -900,19 +1127,16 @@ internal readonly struct DocumentOperations
         }
 
         ArgumentOutOfRangeException.ThrowIfGreaterThan((long)data.Length, BlobLimits.MaxBlobLength, nameof(data));
+        options?.Validate();
 
         // Bind the underlying array directly when the memory spans a whole array
         // to avoid copying potentially large payloads.
-        var payload = MemoryMarshal.TryGetArray(data, out var segment)
+        return MemoryMarshal.TryGetArray(data, out var segment)
             && segment.Offset == 0
             && segment.Array is { } array
             && segment.Count == array.Length
                 ? array
                 : data.ToArray();
-
-        var sql = SqlGenerator.GeneratePutBlobSql();
-        await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id), ("Data", payload))
-            .ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.GetBlobAsync" />
@@ -936,7 +1160,13 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.PutBlobAsync(string, Stream, long, CancellationToken)" />
-    public async Task PutBlobAsync(string id, Stream source, long length, CancellationToken cancellationToken)
+    public async Task<long> PutBlobAsync(
+        string id,
+        Stream source,
+        long length,
+        BlobWriteOptions? options,
+        long? expectedVersion,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -946,6 +1176,12 @@ internal readonly struct DocumentOperations
         ArgumentNullException.ThrowIfNull(source);
         ArgumentOutOfRangeException.ThrowIfNegative(length);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(length, BlobLimits.MaxBlobLength);
+        options?.Validate();
+
+        if (expectedVersion is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedVersion));
+        }
 
         if (!source.CanRead)
         {
@@ -971,15 +1207,17 @@ internal readonly struct DocumentOperations
         // the id holding zero bytes, destroying whatever it held before.
         if (_inAmbientTransaction)
         {
-            await PutBlobInSavepointAsync(id, source, length, cancellationToken).ConfigureAwait(false);
-            return;
+            return await PutBlobInSavepointAsync(id, source, length, options, expectedVersion, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         await using var transaction = await _connection
             .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+        var version = await PutBlobCoreAsync(id, source, length, options, expectedVersion, cancellationToken)
+            .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return version;
     }
 
     /// <summary>
@@ -994,10 +1232,12 @@ internal readonly struct DocumentOperations
     /// that undoes just this write. Cleanup runs on <see cref="CancellationToken.None"/>, since
     /// the usual reason to be here is that the caller's token was cancelled.
     /// </remarks>
-    private async Task PutBlobInSavepointAsync(
+    private async Task<long> PutBlobInSavepointAsync(
         string id,
         Stream source,
         long length,
+        BlobWriteOptions? options,
+        long? expectedVersion,
         CancellationToken cancellationToken)
     {
         // Generated, never caller-supplied, and validated by SqlGenerator like any identifier.
@@ -1007,9 +1247,11 @@ internal readonly struct DocumentOperations
         await _connection.ExecuteAsync(SqlGenerator.GenerateSavepointSql(savepoint), cancellationToken)
             .ConfigureAwait(false);
 
+        long version;
         try
         {
-            await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+            version = await PutBlobCoreAsync(id, source, length, options, expectedVersion, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -1037,19 +1279,84 @@ internal readonly struct DocumentOperations
 
         await _connection.ExecuteAsync(SqlGenerator.GenerateReleaseSavepointSql(savepoint), cancellationToken)
             .ConfigureAwait(false);
+
+        return version;
     }
 
-    private async Task PutBlobCoreAsync(string id, Stream source, long length, CancellationToken cancellationToken)
+    private async Task<long> PutBlobCoreAsync(
+        string id,
+        Stream source,
+        long length,
+        BlobWriteOptions? options,
+        long? expectedVersion,
+        CancellationToken cancellationToken)
     {
-        var rowId = await _connection.QueryFirstInt64Async(
-            SqlGenerator.GenerateReserveBlobSql(), cancellationToken, ("Id", id), ("Len", length))
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Failed to reserve {length} bytes for blob '{id}'.");
+        var contentType = options?.ContentType;
+        (long RowId, long Version)? reserved;
+
+        if (expectedVersion is null)
+        {
+            reserved = await _connection.QueryFirstInt64PairAsync(
+                SqlGenerator.GenerateReserveBlobSql(), cancellationToken,
+                ("Id", id), ("ContentType", contentType), ("Len", length))
+                .ConfigureAwait(false);
+
+            if (reserved is null)
+            {
+                throw new InvalidOperationException($"Failed to reserve {length} bytes for blob '{id}'.");
+            }
+        }
+        else
+        {
+            reserved = await ReserveVersionedBlobAsync(
+                id, length, contentType, expectedVersion.Value, cancellationToken).ConfigureAwait(false);
+
+            if (reserved is null)
+            {
+                throw await BuildConflictAsync(
+                    "writing", "blob", id, SqlGenerator.BlobTableName, expectedVersion,
+                    insertAttempt: expectedVersion == 0, cancellationToken).ConfigureAwait(false);
+            }
+        }
 
         await using var destination = new SqliteBlob(
-            _connection, SqlGenerator.BlobTableName, "data", rowId, readOnly: false);
+            _connection, SqlGenerator.BlobTableName, "data", reserved.Value.RowId, readOnly: false);
 
         await CopyExactlyAsync(source, destination, length, cancellationToken).ConfigureAwait(false);
+
+        return reserved.Value.Version;
+    }
+
+    /// <summary>
+    /// Reserves the row for a version-guarded streamed write, mirroring the byte-array path:
+    /// expected version 0 inserts only when the id is free, then falls back to the 0-guarded
+    /// update that lifts a legacy row.
+    /// </summary>
+    private async Task<(long RowId, long Version)?> ReserveVersionedBlobAsync(
+        string id,
+        long length,
+        string? contentType,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        if (expectedVersion != 0)
+        {
+            return await _connection.QueryFirstInt64PairAsync(
+                SqlGenerator.GenerateVersionedReserveBlobSql(), cancellationToken,
+                ("Id", id), ("ContentType", contentType), ("Len", length),
+                ("ExpectedVersion", expectedVersion))
+                .ConfigureAwait(false);
+        }
+
+        var inserted = await _connection.QueryFirstInt64PairAsync(
+            SqlGenerator.GenerateReserveBlobIfAbsentSql(), cancellationToken,
+            ("Id", id), ("ContentType", contentType), ("Len", length))
+            .ConfigureAwait(false);
+
+        return inserted ?? await _connection.QueryFirstInt64PairAsync(
+            SqlGenerator.GenerateVersionedReserveBlobSql(), cancellationToken,
+            ("Id", id), ("ContentType", contentType), ("Len", length), ("ExpectedVersion", 0L))
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1130,6 +1437,127 @@ internal readonly struct DocumentOperations
         var affectedRows = await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id))
             .ConfigureAwait(false);
         return affectedRows > 0;
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.DeleteBlobWithVersionAsync" />
+    public async Task DeleteBlobWithVersionAsync(
+        string id,
+        long expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+
+        var affectedRows = await _connection.ExecuteAsync(
+            SqlGenerator.GenerateVersionedDeleteBlobSql(), cancellationToken,
+            ("Id", id), ("ExpectedVersion", expectedVersion))
+            .ConfigureAwait(false);
+
+        if (affectedRows == 0)
+        {
+            // insertAttempt is false even at expected version 0: on a delete that means "the row
+            // still sitting at 0", never "insert".
+            throw await BuildConflictAsync(
+                "deleting", "blob", id, SqlGenerator.BlobTableName, expectedVersion,
+                insertAttempt: false, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.GetBlobInfoAsync" />
+    public async Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        var results = await ReadBlobInfosAsync(
+            SqlGenerator.GenerateBlobInfoSql(), cancellationToken, ("Id", id)).ConfigureAwait(false);
+
+        if (results.Count == 0)
+        {
+            _logger.LogDebug("Blob {Id} not found", id);
+            return null;
+        }
+
+        return results[0];
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.ListBlobsAsync" />
+    public async Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+        string? idPrefix,
+        int skip,
+        int? take,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(skip);
+        if (take is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(take));
+        }
+
+        var parameters = new List<(string, object?)>();
+        var hasPrefix = !string.IsNullOrEmpty(idPrefix);
+        var hasUpperBound = false;
+
+        if (hasPrefix)
+        {
+            parameters.Add(("Prefix", idPrefix));
+            if (BlobIdPrefix.TryGetUpperBound(idPrefix!, out var upperBound))
+            {
+                hasUpperBound = true;
+                parameters.Add(("PrefixEnd", upperBound));
+            }
+        }
+
+        if (take is not null)
+        {
+            parameters.Add(("Take", (long)take.Value));
+        }
+
+        if (skip > 0)
+        {
+            parameters.Add(("Skip", (long)skip));
+        }
+
+        var sql = SqlGenerator.GenerateListBlobsSql(hasPrefix, hasUpperBound, skip > 0, take is not null);
+        return await ReadBlobInfosAsync(sql, cancellationToken, [.. parameters]).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads <c>id, length(data), content_type, created_at, updated_at, version</c> rows.
+    /// </summary>
+    private async Task<List<BlobInfo>> ReadBlobInfosAsync(
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        foreach (var (name, value) in parameters)
+        {
+            command.Parameters.AddWithValue("@" + name, value ?? DBNull.Value);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        var results = new List<BlobInfo>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            results.Add(new BlobInfo(
+                reader.GetString(0),
+                reader.GetInt64(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                reader.IsDBNull(4) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+                reader.GetInt64(5)));
+        }
+
+        return results;
     }
 
     /// <inheritdoc cref="IDocumentOperations.BlobExistsAsync" />

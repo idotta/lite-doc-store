@@ -327,7 +327,19 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
-        return _operations.PutBlobAsync(id, data, cancellationToken);
+        return _operations.PutBlobAsync(id, data, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task PutBlobAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.PutBlobAsync(id, data, options, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -338,7 +350,70 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
-        return _operations.PutBlobAsync(id, source, length, cancellationToken);
+        return _operations.PutBlobAsync(id, source, length, null, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task PutBlobAsync(
+        string id,
+        Stream source,
+        long length,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.PutBlobAsync(id, source, length, options, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.PutBlobWithVersionAsync(id, data, expectedVersion, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.PutBlobWithVersionAsync(id, data, expectedVersion, options, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        Stream source,
+        long length,
+        long expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.PutBlobAsync(id, source, length, null, expectedVersion, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        Stream source,
+        long length,
+        long expectedVersion,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.PutBlobAsync(id, source, length, options, expectedVersion, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -360,6 +435,34 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         ActiveTransaction();
         return _operations.DeleteBlobAsync(id, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task DeleteBlobWithVersionAsync(
+        string id,
+        long expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteBlobWithVersionAsync(id, expectedVersion, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.GetBlobInfoAsync(id, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+        string? idPrefix = null,
+        int skip = 0,
+        int? take = null,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.ListBlobsAsync(idPrefix, skip, take, cancellationToken);
     }
 
     /// <inheritdoc />
