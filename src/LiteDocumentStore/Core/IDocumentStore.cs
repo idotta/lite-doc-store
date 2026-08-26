@@ -22,6 +22,45 @@ namespace LiteDocumentStore;
 public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDisposable
 {
     /// <summary>
+    /// Opens a read-only <see cref="Stream"/> over a stored blob, so a large payload can be
+    /// consumed without materializing it in memory.
+    /// </summary>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>A seekable, read-only stream over the blob, or null when it does not exist</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Dispose the returned stream.</b> It owns a SQLite connection and an open read
+    /// transaction, and holds both until disposed — <c>await using</c>, or handing it to
+    /// something that disposes it (an <c>ActionResult</c> file result, for example), is the
+    /// intended usage.
+    /// </para>
+    /// <para>
+    /// That connection is opened outside the store's pool on purpose, so a caller who forgets
+    /// costs one handle rather than a pooled slot that every other operation would then queue
+    /// behind. It is also why the stream is independent of the store's own lifetime and of any
+    /// transaction: it sees the database as of the moment it was opened.
+    /// </para>
+    /// <para>
+    /// The number of streams open at once is still bounded, separately from
+    /// <see cref="DocumentStoreOptions.MaxPoolSize"/> but by the same value; past that this
+    /// throws <see cref="TimeoutException"/> rather than opening connections without limit.
+    /// </para>
+    /// <para>
+    /// The open read snapshot has a cost while the stream lives: in WAL mode it pins the log
+    /// against truncation, and outside WAL its read lock blocks writers. Streaming a large blob
+    /// to a slow consumer therefore holds one for that whole time, which is inherent to reading
+    /// a row incrementally rather than a property of where the connection came from.
+    /// </para>
+    /// <para>
+    /// This is deliberately absent from <see cref="IDocumentTransaction"/>: a stream that
+    /// outlived its transaction would read through a connection already returned to the pool.
+    /// Inside a transaction, read blobs with
+    /// <see cref="IDocumentOperations.GetBlobAsync"/>.
+    /// </para>
+    /// </remarks>
+    Task<Stream?> OpenBlobReadAsync(string id, CancellationToken cancellationToken = default);
+    /// <summary>
     /// Starts a unit of work on a dedicated connection. Operations invoked on the returned
     /// transaction are committed or rolled back together.
     /// </summary>

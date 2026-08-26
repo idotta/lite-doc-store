@@ -195,6 +195,76 @@ internal static class SqlGenerator
     }
 
     /// <summary>
+    /// Generates SQL for retrieving the rowid of a blob by ID, which SQLite's incremental
+    /// blob I/O addresses rows by.
+    /// </summary>
+    public static string GenerateBlobRowIdSql()
+    {
+        return $"SELECT rowid FROM [{BlobTableName}] WHERE id = @Id";
+    }
+
+    /// <summary>
+    /// Generates SQL for retrieving the byte length of a blob by ID, without reading it.
+    /// </summary>
+    public static string GenerateBlobLengthSql()
+    {
+        return $"SELECT length(data) FROM [{BlobTableName}] WHERE id = @Id";
+    }
+
+    /// <summary>
+    /// Generates SQL that reserves a blob of exactly <c>@Len</c> zero bytes and returns its
+    /// rowid, for a streamed write to fill through incremental blob I/O.
+    /// </summary>
+    /// <remarks>
+    /// Incremental blob I/O cannot resize a blob, so the row has to be pre-sized with
+    /// <c>zeroblob()</c> before the first byte is written. <c>RETURNING rowid</c> fires on the
+    /// <c>DO UPDATE</c> branch as well as the insert, so an overwrite needs no second lookup
+    /// (verified against SQLite 3.53.3).
+    /// </remarks>
+    public static string GenerateReserveBlobSql()
+    {
+        return $@"
+            INSERT INTO [{BlobTableName}] (id, data)
+            VALUES (@Id, zeroblob(@Len))
+            ON CONFLICT(id) DO UPDATE SET
+                data = zeroblob(@Len)
+            RETURNING rowid";
+    }
+
+    /// <summary>
+    /// Generates a <c>SAVEPOINT</c> statement, the nestable transaction the streamed blob write
+    /// uses to undo itself inside a caller's transaction.
+    /// </summary>
+    public static string GenerateSavepointSql(string savepointName)
+    {
+        ValidateIdentifier(savepointName, nameof(savepointName));
+
+        return $"SAVEPOINT [{savepointName}]";
+    }
+
+    /// <summary>
+    /// Generates a <c>ROLLBACK TO</c> statement, undoing everything done since the savepoint
+    /// without touching the enclosing transaction.
+    /// </summary>
+    public static string GenerateRollbackToSavepointSql(string savepointName)
+    {
+        ValidateIdentifier(savepointName, nameof(savepointName));
+
+        return $"ROLLBACK TO [{savepointName}]";
+    }
+
+    /// <summary>
+    /// Generates a <c>RELEASE</c> statement, discarding a savepoint. Needed after a
+    /// <c>ROLLBACK TO</c> as well, which rewinds to the savepoint but does not pop it.
+    /// </summary>
+    public static string GenerateReleaseSavepointSql(string savepointName)
+    {
+        ValidateIdentifier(savepointName, nameof(savepointName));
+
+        return $"RELEASE [{savepointName}]";
+    }
+
+    /// <summary>
     /// Generates SQL for deleting a raw binary blob by ID.
     /// </summary>
     public static string GenerateDeleteBlobSql()

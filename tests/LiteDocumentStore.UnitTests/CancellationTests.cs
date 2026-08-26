@@ -92,7 +92,7 @@ public sealed class CancellationTests
     public async Task Operation_WaitingOnASaturatedPool_IsCancellable()
     {
         // One connection, held by an open transaction, so the next rent has to queue. Without a
-        // token on the operation this wait was unabortable — the point of P0-3.
+        // token on the operation this wait was unabortable — the point of taking a token at all.
         await using var store = await CreateStoreAsync(maxPoolSize: 1);
         await using var holdingTransaction = await store.BeginTransactionAsync();
 

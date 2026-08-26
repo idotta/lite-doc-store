@@ -453,6 +453,58 @@ public interface IDocumentOperations
     Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Stores a raw binary payload read from a stream, without materializing it in memory.
+    /// </summary>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="source">
+    /// The bytes to store. Read from its current position and left open; the store never
+    /// disposes it.
+    /// </param>
+    /// <param name="length">
+    /// Exactly how many bytes to consume from <paramref name="source"/>. SQLite's incremental
+    /// blob I/O cannot resize a blob, so the row is reserved at this size before the first byte is
+    /// written.
+    /// </param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <remarks>
+    /// <para>
+    /// Nothing is handed back to the caller, so there is no lifetime to manage: the copy happens
+    /// inside the call. Called on the store it runs in its own transaction, and called on an
+    /// <see cref="IDocumentTransaction"/> it runs in a savepoint within the caller's, so either
+    /// way a failure part-way leaves any previous blob under <paramref name="id"/> intact — even
+    /// if the caller catches the exception and commits.
+    /// </para>
+    /// <para>
+    /// A seekable <paramref name="source"/> is measured before anything is written, so a
+    /// <paramref name="length"/> that disagrees with it in either direction fails the call. A
+    /// non-seekable one cannot be measured, so exactly <paramref name="length"/> bytes are
+    /// consumed and no more: a source with further bytes is not an error and they are left
+    /// unread, which is what keeps a live network stream or a framed protocol usable here.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="EndOfStreamException">
+    /// A non-seekable <paramref name="source"/> ended before <paramref name="length"/> bytes were
+    /// read.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// A seekable <paramref name="source"/> does not hold exactly <paramref name="length"/> bytes
+    /// from its current position, <paramref name="source"/> is not readable, or
+    /// <paramref name="id"/> is blank.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="length"/> is negative or above <see cref="BlobLimits.MaxBlobLength"/>.
+    /// </exception>
+    Task PutBlobAsync(string id, Stream source, long length, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads the byte length of a raw binary payload without reading the payload itself.
+    /// </summary>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The stored length in bytes, or null when the blob does not exist</returns>
+    Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Reads a raw binary payload.
     /// </summary>
     /// <param name="id">The blob identifier</param>

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
@@ -36,6 +37,10 @@ internal readonly struct DocumentOperations
     private readonly JsonSerializerOptions _serializerOptions;
     private readonly ILogger _logger;
     private readonly bool _inAmbientTransaction;
+
+    // The buffer a streamed blob write copies through. 80 KB is Stream.CopyTo's own default and
+    // is rented, so a large payload never sizes an allocation to itself.
+    private const int BlobCopyBufferSize = 81920;
 
     internal DocumentOperations(
         SqliteConnection connection,
@@ -886,13 +891,15 @@ internal readonly struct DocumentOperations
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.PutBlobAsync" />
+    /// <inheritdoc cref="IDocumentOperations.PutBlobAsync(string, ReadOnlyMemory{byte}, CancellationToken)" />
     public async Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
             throw new ArgumentException("ID cannot be null or empty.", nameof(id));
         }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((long)data.Length, BlobLimits.MaxBlobLength, nameof(data));
 
         // Bind the underlying array directly when the memory spans a whole array
         // to avoid copying potentially large payloads.
@@ -926,6 +933,189 @@ internal readonly struct DocumentOperations
         }
 
         return payload;
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.PutBlobAsync(string, Stream, long, CancellationToken)" />
+    public async Task PutBlobAsync(string id, Stream source, long length, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(length, BlobLimits.MaxBlobLength);
+
+        if (!source.CanRead)
+        {
+            throw new ArgumentException("The source stream is not readable.", nameof(source));
+        }
+
+        // A seekable source can be measured before anything is written, so a wrong length fails
+        // the call rather than the copy. A non-seekable one cannot: see CopyExactlyAsync, which
+        // reads exactly 'length' bytes and never probes past them.
+        if (source.CanSeek)
+        {
+            var available = source.Length - source.Position;
+            if (available != length)
+            {
+                throw new ArgumentException(
+                    $"The source stream holds {available} bytes from its current position, " +
+                    $"but {length} were declared.",
+                    nameof(length));
+            }
+        }
+
+        // Reserve and fill are two statements, and a failure between them would otherwise leave
+        // the id holding zero bytes, destroying whatever it held before.
+        if (_inAmbientTransaction)
+        {
+            await PutBlobInSavepointAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await using var transaction = await _connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the write inside a savepoint, so a failure undoes it without touching the caller's
+    /// transaction.
+    /// </summary>
+    /// <remarks>
+    /// Rolling the whole transaction back is not this method's call to make — the caller may have
+    /// other work in it — but leaving the failure in place is not an option either: the reserve
+    /// statement has already replaced the payload with zero bytes, so a caller who catches the
+    /// exception and commits would persist a corrupt blob. The savepoint is the only construct
+    /// that undoes just this write. Cleanup runs on <see cref="CancellationToken.None"/>, since
+    /// the usual reason to be here is that the caller's token was cancelled.
+    /// </remarks>
+    private async Task PutBlobInSavepointAsync(
+        string id,
+        Stream source,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        // Generated, never caller-supplied, and validated by SqlGenerator like any identifier.
+        // The prefix matters: a savepoint name may not start with a digit.
+        var savepoint = $"blob_{Guid.NewGuid():N}";
+
+        await _connection.ExecuteAsync(SqlGenerator.GenerateSavepointSql(savepoint), cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                await _connection.ExecuteAsync(
+                    SqlGenerator.GenerateRollbackToSavepointSql(savepoint), CancellationToken.None)
+                    .ConfigureAwait(false);
+                await _connection.ExecuteAsync(
+                    SqlGenerator.GenerateReleaseSavepointSql(savepoint), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception cleanupFailure)
+            {
+                // The original failure is the one the caller needs; this one only explains why the
+                // partial write may still be sitting in their transaction.
+                _logger.LogWarning(
+                    cleanupFailure,
+                    "Failed to roll back the savepoint for blob {Id} after a failed streamed write",
+                    id);
+            }
+
+            throw;
+        }
+
+        await _connection.ExecuteAsync(SqlGenerator.GenerateReleaseSavepointSql(savepoint), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task PutBlobCoreAsync(string id, Stream source, long length, CancellationToken cancellationToken)
+    {
+        var rowId = await _connection.QueryFirstInt64Async(
+            SqlGenerator.GenerateReserveBlobSql(), cancellationToken, ("Id", id), ("Len", length))
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Failed to reserve {length} bytes for blob '{id}'.");
+
+        await using var destination = new SqliteBlob(
+            _connection, SqlGenerator.BlobTableName, "data", rowId, readOnly: false);
+
+        await CopyExactlyAsync(source, destination, length, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Consumes exactly <paramref name="length"/> bytes from <paramref name="source"/>, failing
+    /// if it ends first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A plain <see cref="Stream.CopyToAsync(Stream)"/> would keep reading until the source ended
+    /// and run off the end of a blob that cannot grow, surfacing the provider's "size of a blob
+    /// may not be changed" error rather than the caller's mistake. Bounding the copy also leaves
+    /// a short source detectable, which a copy that stopped at EOF would not be.
+    /// </para>
+    /// <para>
+    /// It deliberately does <em>not</em> read past <paramref name="length"/> to check for a
+    /// longer source. On a live network stream or pipe that read blocks until the peer sends more
+    /// or closes — indefinitely, and even for a zero-length blob — and it would swallow a byte
+    /// belonging to whatever follows in a framed or concatenated stream. A source that can be
+    /// measured is measured up front instead, by the caller.
+    /// </para>
+    /// </remarks>
+    private static async Task CopyExactlyAsync(
+        Stream source,
+        Stream destination,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(BlobCopyBufferSize, Math.Max(1, length)));
+
+        try
+        {
+            long copied = 0;
+            while (copied < length)
+            {
+                var wanted = (int)Math.Min(buffer.Length, length - copied);
+                var read = await source.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+                    throw new EndOfStreamException(
+                        $"The source stream ended after {copied} bytes, but {length} were declared.");
+                }
+
+                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
+                    .ConfigureAwait(false);
+                copied += read;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.BlobLengthAsync" />
+    public async Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        return await _connection.QueryFirstInt64Async(
+            SqlGenerator.GenerateBlobLengthSql(), cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteBlobAsync" />

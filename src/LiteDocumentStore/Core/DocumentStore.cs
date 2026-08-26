@@ -266,6 +266,48 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.PutBlobAsync(id, data, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
+    public Task PutBlobAsync(
+        string id,
+        Stream source,
+        long length,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.PutBlobAsync(id, source, length, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.BlobLengthAsync(id, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<Stream?> OpenBlobReadAsync(string id, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ThrowIfDisposed();
+
+        // Its own connection, not a rented one: the stream lives until the caller disposes it,
+        // and a pooled slot held for that long by a caller who forgets would starve the store.
+        // Bounded all the same, by a separate count of concurrently open streams — otherwise
+        // nothing would stop a caller opening connections without limit.
+        var slot = await _pool.RentBlobStreamSlotAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var connection = await _pool.CreateUnpooledConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return await BlobReadStream.OpenAsync(connection, id, slot, _logger, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Idempotent, so this is safe even though OpenAsync releases on its own failure paths.
+            slot.Release();
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.GetBlobAsync(id, cancellationToken), cancellationToken);
 
