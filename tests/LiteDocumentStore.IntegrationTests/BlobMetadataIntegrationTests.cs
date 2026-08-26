@@ -342,6 +342,34 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RebuildBlobTableAsync_UpgradesATableThatNeverHadTheMetadataColumns()
+    {
+        await using var store = await CreateStoreOverLegacyBlobTableAsync();
+
+        // A table that predates the metadata columns ends in 'data' as well, so a layout check
+        // alone reports it current — and then every metadata read fails with "no such column".
+        Assert.True(await store.RebuildBlobTableAsync());
+
+        Assert.Equal(
+            ["id", "content_type", "created_at", "updated_at", "version", "data"],
+            await ColumnNamesAsync(store));
+
+        var info = await store.GetBlobInfoAsync("legacy");
+        Assert.NotNull(info);
+        Assert.Equal(4, info.Length);
+        Assert.Equal(1, info.Version);
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, await store.GetBlobAsync("legacy"));
+    }
+
+    [Fact]
+    public async Task RebuildBlobTableAsync_ReportsNothingToDoWhenThereIsNoBlobTable()
+    {
+        await using var store = await CreateFileStoreAsync(createBlobTable: false);
+
+        Assert.False(await store.RebuildBlobTableAsync());
+    }
+
+    [Fact]
     public async Task RebuildBlobTableAsync_IsANoOpOnATableThatAlreadyHasTheCurrentLayout()
     {
         await using var store = await CreateFileStoreAsync();

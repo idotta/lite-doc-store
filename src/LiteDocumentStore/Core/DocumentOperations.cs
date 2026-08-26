@@ -892,6 +892,17 @@ internal readonly struct DocumentOperations
         var sql = SqlGenerator.GenerateCreateBlobTableSql();
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
         await EnsureBlobMetadataColumnsAsync(cancellationToken).ConfigureAwait(false);
+
+        // ALTER TABLE only appends, so an upgraded table keeps its payload column ahead of the
+        // metadata — which is the slow layout, and only a rebuild can change it.
+        if (await BlobTableNeedsRebuildAsync(cancellationToken).ConfigureAwait(false))
+        {
+            _logger.LogWarning(
+                "The {Table} table stores its payload column ahead of its metadata columns, so " +
+                "reading blob metadata has to walk each payload's overflow pages. Call " +
+                "RebuildBlobTableAsync to copy the table into the current layout.",
+                SqlGenerator.BlobTableName);
+        }
     }
 
     /// <summary>
@@ -932,17 +943,6 @@ internal readonly struct DocumentOperations
                 }
             }
         }
-
-        // ALTER TABLE only appends, so an upgraded table keeps its payload column ahead of the
-        // metadata — which is the slow layout, and only a rebuild can change it.
-        if (await BlobTableNeedsRebuildAsync(cancellationToken).ConfigureAwait(false))
-        {
-            _logger.LogWarning(
-                "The {Table} table stores its payload column ahead of its metadata columns, so " +
-                "reading blob metadata has to walk each payload's overflow pages. Call " +
-                "RebuildBlobTableAsync to copy the table into the current layout.",
-                SqlGenerator.BlobTableName);
-        }
     }
 
     private async Task<List<string>> MissingBlobColumnsAsync(CancellationToken cancellationToken)
@@ -977,17 +977,25 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// Reports whether the blob table still carries its payload column ahead of the metadata.
+    /// Reports whether the blob table carries its payload column ahead of the metadata.
     /// </summary>
+    /// <remarks>
+    /// Only meaningful once the metadata columns exist: a table that still has none of them ends
+    /// in <c>data</c> too, and would read as current. Callers run
+    /// <see cref="EnsureBlobMetadataColumnsAsync"/> first.
+    /// </remarks>
     public async Task<bool> BlobTableNeedsRebuildAsync(CancellationToken cancellationToken)
     {
-        var lastColumn = await _connection.QueryFirstStringAsync(
-            $"SELECT name FROM pragma_table_info('{SqlGenerator.BlobTableName}') ORDER BY cid DESC LIMIT 1",
-            cancellationToken).ConfigureAwait(false);
+        var lastColumn = await LastBlobColumnAsync(cancellationToken).ConfigureAwait(false);
 
         // No columns at all means no table: nothing to rebuild.
         return lastColumn is not null && !string.Equals(lastColumn, "data", StringComparison.Ordinal);
     }
+
+    private Task<string?> LastBlobColumnAsync(CancellationToken cancellationToken) =>
+        _connection.QueryFirstStringAsync(
+            $"SELECT name FROM pragma_table_info('{SqlGenerator.BlobTableName}') ORDER BY cid DESC LIMIT 1",
+            cancellationToken);
 
     /// <summary>
     /// Copies the blob table into the layout <see cref="SqlGenerator.GenerateCreateBlobTableSql"/>
@@ -996,6 +1004,18 @@ internal readonly struct DocumentOperations
     /// <returns>False when the table already has that layout and nothing was copied</returns>
     public async Task<bool> RebuildBlobTableAsync(CancellationToken cancellationToken)
     {
+        // No table at all: nothing to rebuild, and nothing to add columns to either.
+        if (await LastBlobColumnAsync(cancellationToken).ConfigureAwait(false) is null)
+        {
+            return false;
+        }
+
+        // A table that predates the metadata columns also ends in 'data', so the layout check
+        // alone would call it current and this would return false while every metadata read
+        // still failed with "no such column". Adding the columns first is idempotent and makes
+        // the returned value mean what it says.
+        await EnsureBlobMetadataColumnsAsync(cancellationToken).ConfigureAwait(false);
+
         if (!await BlobTableNeedsRebuildAsync(cancellationToken).ConfigureAwait(false))
         {
             return false;

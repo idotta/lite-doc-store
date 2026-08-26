@@ -79,7 +79,10 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// It is never run implicitly, because it copies every stored byte (200 MB took 823 ms) and
     /// needs room for both copies of the table at once. It runs in one transaction, so an
     /// interrupted rebuild leaves the original table in place, and it is safe to call at any
-    /// time: it returns false without copying when the table already has the current layout.
+    /// time: it returns false without copying when the table already has the current layout, or
+    /// when there is no blob table at all. A table that predates the metadata columns has them
+    /// added first — it ends in <c>data</c> like a current one, so the layout check alone would
+    /// call it current and leave every metadata read failing with "no such column".
     /// While it runs it holds the write lock, and an open <see cref="OpenBlobReadAsync"/> stream
     /// holds a read snapshot that will block it.
     /// </para>
