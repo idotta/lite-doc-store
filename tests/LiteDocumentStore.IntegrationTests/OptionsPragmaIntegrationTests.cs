@@ -204,6 +204,95 @@ public sealed class OptionsPragmaIntegrationTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task OptimizeForPerformance_AppliesEveryPragmaItSets()
+    {
+        // The builder preset only writes fields; this is the half that proves SQLite accepted
+        // them — the page size in particular, which it silently ignores in the wrong order.
+        var options = DocumentStoreOptions.Builder()
+            .UseFile(NewDatabasePath())
+            .OptimizeForPerformance()
+            .Build();
+
+        var store = await CreateStoreAsync(options);
+        await store.CreateTableAsync<Doc>();
+
+        Assert.Equal("wal", await ReadPragmaAsync(store, "PRAGMA journal_mode;"));
+        Assert.Equal("1", await ReadPragmaAsync(store, "PRAGMA synchronous;"));
+        Assert.Equal("8192", await ReadPragmaAsync(store, "PRAGMA page_size;"));
+        Assert.Equal("-4000", await ReadPragmaAsync(store, "PRAGMA cache_size;"));
+    }
+
+    [Fact]
+    public async Task OptimizeForSafety_AppliesFullSynchronousAndForeignKeys()
+    {
+        var options = DocumentStoreOptions.Builder()
+            .UseFile(NewDatabasePath())
+            .WithForeignKeys(false)
+            .OptimizeForSafety()
+            .Build();
+
+        var store = await CreateStoreAsync(options);
+        await store.CreateTableAsync<Doc>();
+
+        Assert.Equal("wal", await ReadPragmaAsync(store, "PRAGMA journal_mode;"));
+        Assert.Equal("2", await ReadPragmaAsync(store, "PRAGMA synchronous;"));
+        Assert.Equal("1", await ReadPragmaAsync(store, "PRAGMA foreign_keys;"));
+    }
+
+    [Fact]
+    public async Task OptimizeForTesting_ProducesAUsableInMemoryStore()
+    {
+        var store = await CreateStoreAsync(DocumentStoreOptions.Builder().OptimizeForTesting().Build());
+        await store.CreateTableAsync<Doc>();
+        await store.UpsertAsync("a", new Doc("first", 1));
+
+        // "memory", not "wal": the preset turns WAL off because SQLite would answer this way
+        // regardless, and the store now refuses that combination up front.
+        Assert.Equal("memory", await ReadPragmaAsync(store, "PRAGMA journal_mode;"));
+        Assert.Equal("0", await ReadPragmaAsync(store, "PRAGMA synchronous;"));
+        Assert.Equal(1, await store.CountAsync<Doc>());
+    }
+
+    [Fact]
+    public async Task AdditionalPragmas_AreAppliedToEveryPooledConnection()
+    {
+        var options = DocumentStoreOptions.Builder()
+            .UseFile(NewDatabasePath())
+            .WithMaxPoolSize(3)
+            .AddPragma("PRAGMA temp_store = MEMORY")
+            .Build();
+
+        var store = await CreateStoreAsync(options);
+        await store.CreateTableAsync<Doc>();
+
+        // Each open transaction pins its own physical connection, so reading through three at
+        // once proves the pragma was applied per connection and not just to the pool's first.
+        var transactions = new List<IDocumentTransaction>();
+        try
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                transactions.Add(await store.BeginTransactionAsync());
+                Assert.Equal(
+                    "2",
+                    await transactions[i].ExecuteRawAsync(async (connection, ct) =>
+                    {
+                        await using var command = connection.CreateCommand();
+                        command.CommandText = "PRAGMA temp_store;";
+                        return (await command.ExecuteScalarAsync(ct))?.ToString();
+                    }));
+            }
+        }
+        finally
+        {
+            foreach (var transaction in transactions)
+            {
+                await transaction.DisposeAsync();
+            }
+        }
+    }
+
     public Task InitializeAsync() => Task.CompletedTask;
 
     public async Task DisposeAsync()

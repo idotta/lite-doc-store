@@ -176,6 +176,94 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         Assert.Equal(stats.PageCount * stats.PageSize, stats.DatabaseSizeBytes);
     }
 
+    [Fact]
+    public async Task ColumnExistsAsync_WithAnExistingColumn_ReturnsTrue()
+    {
+        await _store.CreateTableAsync<Customer>();
+
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "id")));
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "data")));
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "version")));
+    }
+
+    [Fact]
+    public async Task ColumnExistsAsync_IsCaseInsensitive()
+    {
+        // SQLite column names are case-insensitive, and the migration code that calls this asks
+        // with whatever casing its DDL used.
+        await _store.CreateTableAsync<Customer>();
+
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "DATA")));
+    }
+
+    [Fact]
+    public async Task ColumnExistsAsync_WithAMissingColumn_ReturnsFalse()
+    {
+        await _store.CreateTableAsync<Customer>();
+
+        Assert.False(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "content_type")));
+    }
+
+    [Fact]
+    public async Task ColumnExistsAsync_WithAMissingTable_ReturnsFalseRatherThanThrowing()
+    {
+        // PRAGMA table_xinfo on an absent table yields no rows rather than an error, and the
+        // "add this column if it is not there yet" callers depend on that staying a plain false.
+        Assert.False(await IntrospectAsync(i => i.ColumnExistsAsync("NoSuchTable", "id")));
+    }
+
+    [Fact]
+    public async Task ColumnExistsAsync_WithATableNameContainingAClosingBracket_IsEscaped()
+    {
+        // ColumnExistsAsync answers off GetColumnsAsync, so it inherits the double-quote
+        // identifier quoting that a ']' would otherwise break out of.
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "CREATE TABLE \"odd]name\" (id TEXT PRIMARY KEY, data BLOB NOT NULL)",
+            ct));
+
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("odd]name", "data")));
+        Assert.False(await IntrospectAsync(i => i.ColumnExistsAsync("odd]name", "version")));
+    }
+
+    [Fact]
+    public async Task ColumnExistsAsync_WithNullArguments_Throws()
+    {
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            IntrospectAsync(i => i.ColumnExistsAsync(null!, "id")));
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            IntrospectAsync(i => i.ColumnExistsAsync("Customer", null!)));
+    }
+
+    [Fact]
+    public async Task IndexExistsAsync_WithAMissingIndex_ReturnsFalse()
+    {
+        await _store.CreateTableAsync<Customer>();
+
+        Assert.False(await IntrospectAsync(i => i.IndexExistsAsync("idx_customer_email")));
+    }
+
+    [Fact]
+    public async Task IndexExistsAsync_AfterTheIndexIsDropped_ReturnsFalseAgain()
+    {
+        await _store.CreateTableAsync<Customer>();
+        await _store.CreateIndexAsync<Customer>(c => c.Email, "idx_customer_email");
+        Assert.True(await IntrospectAsync(i => i.IndexExistsAsync("idx_customer_email")));
+
+        await _store.DropIndexAsync("idx_customer_email");
+
+        Assert.False(await IntrospectAsync(i => i.IndexExistsAsync("idx_customer_email")));
+    }
+
+    [Fact]
+    public async Task IndexExistsAsync_WithANullName_Throws() =>
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            IntrospectAsync(i => i.IndexExistsAsync(null!)));
+
+    [Fact]
+    public async Task TableExistsAsync_WithANullName_Throws() =>
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            IntrospectAsync(i => i.TableExistsAsync(null!)));
+
     // Test models
     private sealed class Customer
     {

@@ -1,4 +1,5 @@
 using LiteDocumentStore.Exceptions;
+using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using Xunit;
 
@@ -52,13 +53,13 @@ public class ExceptionIntegrationTests : IDisposable
             ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}")));
 
         // Act & Assert - Deserialization should fail because "not-a-number" cannot be parsed as int
-        var exception = await Assert.ThrowsAnyAsync<Exception>(
+        var exception = await Assert.ThrowsAsync<SerializationException>(
             async () => await _store.GetAsync<StrictModel>("test-1"));
 
-        // System.Text.Json may throw JsonException or SerializationException depending on the scenario
-        Assert.True(
-            exception is SerializationException || exception is JsonException,
-            $"Expected SerializationException or JsonException, but got {exception.GetType().Name}");
+        // Pinned, not "either type": JsonHelper wraps every JsonException on the way out, so a
+        // caller catching SerializationException catches the whole family.
+        Assert.IsType<JsonException>(exception.InnerException);
+        Assert.Equal(typeof(StrictModel), exception.TargetType);
     }
 
     [Fact]
@@ -99,6 +100,67 @@ public class ExceptionIntegrationTests : IDisposable
         Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(TableNotFoundException)));
         Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(SerializationException)));
         Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(ConcurrencyException)));
+    }
+
+    /// <summary>
+    /// A document table without the store's <c>NOT NULL</c> on <c>data</c>, so a SQL NULL row can
+    /// be created at all — the store's own DDL forbids it, and only raw SQL can produce one.
+    /// </summary>
+    private async Task CreateNullableTableAsync<T>()
+    {
+        var table = _store.GetTableName<T>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            $"CREATE TABLE [{table}] (id TEXT PRIMARY KEY, data BLOB, version INTEGER NOT NULL DEFAULT 1)",
+            ct));
+    }
+
+    [Fact]
+    public async Task GetAllAsync_WithASqlNullDataColumn_ThrowsSerializationNamingTheId()
+    {
+        await CreateNullableTableAsync<StrictModel>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            ct));
+
+        var exception = await Assert.ThrowsAsync<SerializationException>(() => _store.GetAllAsync<StrictModel>());
+
+        // The JSON literal null case is pinned in DeserializationIntegrationTests; this is the
+        // other way a row can read back as nothing, and it must not be silently dropped either.
+        Assert.Contains("null-row", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("StrictModel", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task QueryAsync_WithASqlNullDataColumn_Throws()
+    {
+        await CreateNullableTableAsync<StrictModel>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            ct));
+
+        // Both query shapes read through the same id-carrying reader, so both have to report it.
+        await Assert.ThrowsAsync<SerializationException>(() =>
+            _store.QueryAsync(DocumentQuery<StrictModel>.All()));
+        await Assert.ThrowsAsync<SerializationException>(() =>
+            _store.GetManyAsync<StrictModel>(["null-row"]));
+    }
+
+    [Fact]
+    public async Task GetAsync_WithACorruptJsonbPayload_SurfacesTheSqliteError()
+    {
+        await _store.CreateTableAsync<StrictModel>();
+
+        // Bytes that are not JSONB at all. SQLite fails inside the json(data) projection, before
+        // any of them reach the serializer, so this is a SqliteException and not a
+        // SerializationException. Translating it would mean classifying SQLite error text, which
+        // this library deliberately does not do — pinned here as the honest current contract.
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictModel] (id, data) VALUES ('corrupt', X'FFFFFF')",
+            ct));
+
+        var exception = await Assert.ThrowsAsync<SqliteException>(() => _store.GetAsync<StrictModel>("corrupt"));
+
+        Assert.Contains("malformed JSON", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class CircularReference

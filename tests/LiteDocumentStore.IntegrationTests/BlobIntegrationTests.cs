@@ -135,5 +135,97 @@ public class BlobIntegrationTests
         Assert.False(await store.BlobExistsAsync("m1"));
     }
 
+    [Fact]
+    public async Task PutBlobAsync_EmptyPayload_StoresAPresentZeroLengthBlob()
+    {
+        var store = await CreateStoreWithBlobTableAsync();
+
+        await store.PutBlobAsync("empty", ReadOnlyMemory<byte>.Empty);
+
+        // Present but empty, not absent: the distinction a caller branches on, and the one a
+        // NOT NULL data column plus a zero-length payload has to preserve.
+        Assert.True(await store.BlobExistsAsync("empty"));
+        Assert.Equal(Array.Empty<byte>(), await store.GetBlobAsync("empty"));
+        Assert.Equal(0, await store.BlobLengthAsync("empty"));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_SingleByte_RoundTrips()
+    {
+        var store = await CreateStoreWithBlobTableAsync();
+
+        await store.PutBlobAsync("one", new byte[] { 42 });
+
+        Assert.Equal(new byte[] { 42 }, await store.GetBlobAsync("one"));
+        Assert.Equal(1, await store.BlobLengthAsync("one"));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_OverwritingWithAnEmptyPayload_LeavesThePayloadEmptyNotStale()
+    {
+        var store = await CreateStoreWithBlobTableAsync();
+        await store.PutBlobAsync("shrinking", new byte[] { 1, 2, 3, 4 });
+
+        await store.PutBlobAsync("shrinking", ReadOnlyMemory<byte>.Empty);
+
+        Assert.Equal(Array.Empty<byte>(), await store.GetBlobAsync("shrinking"));
+        Assert.Equal(0, await store.BlobLengthAsync("shrinking"));
+    }
+
+    [Fact]
+    public async Task PutAndGetBlob_MultiMegabytePayload_RoundTripsThroughTheByteArrayPath()
+    {
+        // The streaming path already covers a payload past the copy buffer; this is the
+        // materializing overload, over enough data to span SQLite's overflow pages.
+        var store = await CreateStoreWithBlobTableAsync();
+        var payload = new byte[4 * 1024 * 1024];
+        for (var i = 0; i < payload.Length; i++)
+        {
+            payload[i] = (byte)(i % 251);
+        }
+
+        await store.PutBlobAsync("large", payload);
+
+        Assert.Equal(payload.Length, await store.BlobLengthAsync("large"));
+        Assert.Equal(payload, await store.GetBlobAsync("large"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task BlobOperations_WithABlankId_ThrowNamingTheId(string? id)
+    {
+        var store = await CreateStoreWithBlobTableAsync();
+
+        foreach (var operation in BlankIdOperations(store, id!))
+        {
+            var exception = await Assert.ThrowsAnyAsync<ArgumentException>(() => operation());
+            Assert.Equal("id", exception.ParamName);
+        }
+    }
+
+    private static IEnumerable<Func<Task>> BlankIdOperations(IDocumentStore store, string id) =>
+    [
+        () => store.PutBlobAsync(id, new byte[] { 1 }),
+        () => store.GetBlobAsync(id),
+        () => store.DeleteBlobAsync(id),
+        () => store.BlobExistsAsync(id),
+        () => store.BlobLengthAsync(id),
+        () => store.GetBlobInfoAsync(id),
+    ];
+
+    [Fact]
+    public async Task BlobOperations_OnAMissingId_ReportAbsenceRatherThanThrowing()
+    {
+        var store = await CreateStoreWithBlobTableAsync();
+
+        Assert.Null(await store.GetBlobAsync("absent"));
+        Assert.Null(await store.BlobLengthAsync("absent"));
+        Assert.Null(await store.GetBlobInfoAsync("absent"));
+        Assert.False(await store.BlobExistsAsync("absent"));
+        Assert.False(await store.DeleteBlobAsync("absent"));
+    }
+
     private sealed record BlobMeta(string Kind, int SampleCount);
 }
