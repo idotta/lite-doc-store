@@ -291,6 +291,22 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
     }
 
+
+    /// <summary>
+    /// Opens a connection that this pool configures and guards but does not own, count or
+    /// hand out a slot for. The caller disposes it.
+    /// </summary>
+    /// <remarks>
+    /// Used by the streamed blob read, which returns a <see cref="Stream"/> that stays open for
+    /// as long as the caller holds it. Taking a pooled slot for that would let one caller who
+    /// forgets to dispose starve every other operation for the store's lifetime; on its own
+    /// connection the same mistake costs a single handle.
+    /// </remarks>
+    public async Task<SqliteConnection> CreateUnpooledConnectionAsync(CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        return await OpenGuardedConnectionAsync(cancellationToken).ConfigureAwait(false);
+    }
     private SqliteConnection CreateConnection()
     {
         var connection = _connectionFactory.CreateConnection(_options);
@@ -311,7 +327,8 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         return connection;
     }
 
-    private async Task<SqliteConnection> CreateConnectionAsync(CancellationToken cancellationToken)
+
+    private async Task<SqliteConnection> OpenGuardedConnectionAsync(CancellationToken cancellationToken)
     {
         var connection = await _connectionFactory
             .CreateConnectionAsync(_options, cancellationToken)
@@ -328,6 +345,13 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+
+        return connection;
+    }
+
+    private async Task<SqliteConnection> CreateConnectionAsync(CancellationToken cancellationToken)
+    {
+        var connection = await OpenGuardedConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         var count = Interlocked.Increment(ref _created);
         _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);

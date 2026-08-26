@@ -13,6 +13,7 @@ var examples = new (string Name, string Description, Func<Task> Run)[]
     ("indexes", "Expression indexes, composite indexes, before/after timings", IndexManagementExample.RunAsync),
     ("virtual-columns", "Generated columns for indexed range queries", VirtualColumnExample.RunAsync),
     ("transactions", "Transaction batching, rollback, raw SQL inside a transaction", TransactionBatchingExample.RunAsync),
+    ("blobs", "Raw binary payloads: whole-array, streamed, and atomic with a document", BlobStreamingExample.RunAsync),
     ("migrations", "store migrations, up/down SQL, schema introspection", MigrationsExample.RunAsync),
     ("multi-database", "Several databases through IDocumentStoreFactory", MultiDatabaseExample.RunAsync),
     ("multi-database-keyed", "Several databases through keyed DI", MultiDatabaseKeyedExample.RunAsync),

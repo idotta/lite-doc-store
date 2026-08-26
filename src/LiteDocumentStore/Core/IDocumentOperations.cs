@@ -453,6 +453,46 @@ public interface IDocumentOperations
     Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Stores a raw binary payload read from a stream, without materializing it in memory.
+    /// </summary>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="source">
+    /// The bytes to store. Read from its current position and left open; the store never
+    /// disposes it.
+    /// </param>
+    /// <param name="length">
+    /// The exact number of bytes to read from <paramref name="source"/>. SQLite's incremental
+    /// blob I/O cannot resize a blob, so the row is reserved at this size before the first byte
+    /// is written and the source must hold exactly this many bytes.
+    /// </param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <remarks>
+    /// Nothing is handed back to the caller, so there is no lifetime to manage: the copy happens
+    /// inside the call. Called on the store it runs in its own transaction, so a failure part-way
+    /// leaves any previous blob under <paramref name="id"/> intact; called on an
+    /// <see cref="IDocumentTransaction"/> it commits with the caller's other writes.
+    /// </remarks>
+    /// <exception cref="EndOfStreamException">
+    /// <paramref name="source"/> ended before <paramref name="length"/> bytes were read.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="source"/> holds more than <paramref name="length"/> bytes, is not
+    /// readable, or <paramref name="id"/> is blank.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="length"/> is negative or above <see cref="BlobLimits.MaxBlobLength"/>.
+    /// </exception>
+    Task PutBlobAsync(string id, Stream source, long length, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads the byte length of a raw binary payload without reading the payload itself.
+    /// </summary>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The stored length in bytes, or null when the blob does not exist</returns>
+    Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Reads a raw binary payload.
     /// </summary>
     /// <param name="id">The blob identifier</param>

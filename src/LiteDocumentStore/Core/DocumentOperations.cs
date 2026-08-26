@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
@@ -36,6 +37,10 @@ internal readonly struct DocumentOperations
     private readonly JsonSerializerOptions _serializerOptions;
     private readonly ILogger _logger;
     private readonly bool _inAmbientTransaction;
+
+    // The buffer a streamed blob write copies through. 80 KB is Stream.CopyTo's own default and
+    // is rented, so a large payload never sizes an allocation to itself.
+    private const int BlobCopyBufferSize = 81920;
 
     internal DocumentOperations(
         SqliteConnection connection,
@@ -886,13 +891,15 @@ internal readonly struct DocumentOperations
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.PutBlobAsync" />
+    /// <inheritdoc cref="IDocumentOperations.PutBlobAsync(string, ReadOnlyMemory{byte}, CancellationToken)" />
     public async Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(id))
         {
             throw new ArgumentException("ID cannot be null or empty.", nameof(id));
         }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((long)data.Length, BlobLimits.MaxBlobLength, nameof(data));
 
         // Bind the underlying array directly when the memory spans a whole array
         // to avoid copying potentially large payloads.
@@ -926,6 +933,117 @@ internal readonly struct DocumentOperations
         }
 
         return payload;
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.PutBlobAsync(string, Stream, long, CancellationToken)" />
+    public async Task PutBlobAsync(string id, Stream source, long length, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(length, BlobLimits.MaxBlobLength);
+
+        if (!source.CanRead)
+        {
+            throw new ArgumentException("The source stream is not readable.", nameof(source));
+        }
+
+        // Reserve and fill are two statements, and a failure between them would otherwise leave
+        // the id holding zero bytes, destroying whatever it held before. Outside an ambient
+        // transaction the pair gets its own, so a mid-copy failure restores the previous blob.
+        if (_inAmbientTransaction)
+        {
+            await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await using var transaction = await _connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PutBlobCoreAsync(string id, Stream source, long length, CancellationToken cancellationToken)
+    {
+        var rowId = await _connection.QueryFirstInt64Async(
+            SqlGenerator.GenerateReserveBlobSql(), cancellationToken, ("Id", id), ("Len", length))
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Failed to reserve {length} bytes for blob '{id}'.");
+
+        await using var destination = new SqliteBlob(
+            _connection, SqlGenerator.BlobTableName, "data", rowId, readOnly: false);
+
+        await CopyExactlyAsync(source, destination, length, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Copies exactly <paramref name="length"/> bytes, rejecting a source that holds fewer or
+    /// more.
+    /// </summary>
+    /// <remarks>
+    /// A plain <see cref="Stream.CopyToAsync(Stream)"/> gets both mismatches wrong: a short
+    /// source silently leaves the reserved zero bytes as the tail of the stored blob, and a long
+    /// one runs off the end of a blob that cannot grow, which surfaces as the provider's
+    /// "size of a blob may not be changed" error rather than as the caller's mistake.
+    /// </remarks>
+    private static async Task CopyExactlyAsync(
+        Stream source,
+        Stream destination,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(BlobCopyBufferSize, Math.Max(1, length)));
+
+        try
+        {
+            long copied = 0;
+            while (copied < length)
+            {
+                var wanted = (int)Math.Min(buffer.Length, length - copied);
+                var read = await source.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+                    throw new EndOfStreamException(
+                        $"The source stream ended after {copied} bytes, but {length} were declared.");
+                }
+
+                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
+                    .ConfigureAwait(false);
+                copied += read;
+            }
+
+            // One byte past the declared length: a source with more to give means the length is
+            // wrong, and silently truncating would store a payload the caller never asked for.
+            if (await source.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false) != 0)
+            {
+                throw new ArgumentException(
+                    $"The source stream holds more than the declared {length} bytes.", nameof(length));
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.BlobLengthAsync" />
+    public async Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+
+        return await _connection.QueryFirstInt64Async(
+            SqlGenerator.GenerateBlobLengthSql(), cancellationToken, ("Id", id))
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteBlobAsync" />

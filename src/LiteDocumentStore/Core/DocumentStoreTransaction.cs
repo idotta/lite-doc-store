@@ -331,6 +331,24 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task PutBlobAsync(
+        string id,
+        Stream source,
+        long length,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.PutBlobAsync(id, source, length, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.BlobLengthAsync(id, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
