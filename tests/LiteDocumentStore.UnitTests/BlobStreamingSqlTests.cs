@@ -34,7 +34,7 @@ public class BlobStreamingSqlTests
 
         // Incremental blob I/O cannot resize a blob, so both the insert and the overwrite have
         // to reserve exactly @Len bytes before the first byte is written.
-        Assert.Contains("VALUES (@Id, zeroblob(@Len))", sql);
+        Assert.Contains("zeroblob(@Len))", sql);
         Assert.Contains("data = zeroblob(@Len)", sql);
     }
 

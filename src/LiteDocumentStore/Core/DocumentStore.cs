@@ -259,11 +259,23 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.CreateBlobTableAsync(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
+    public Task<bool> RebuildBlobTableAsync(CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.RebuildBlobTableAsync(cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
     public Task PutBlobAsync(
         string id,
         ReadOnlyMemory<byte> data,
         CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.PutBlobAsync(id, data, cancellationToken), cancellationToken);
+        RunAsync(ops => ops.PutBlobAsync(id, data, null, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task PutBlobAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.PutBlobAsync(id, data, options, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
     public Task PutBlobAsync(
@@ -271,7 +283,64 @@ internal sealed class DocumentStore : IDocumentStore
         Stream source,
         long length,
         CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.PutBlobAsync(id, source, length, cancellationToken), cancellationToken);
+        RunAsync(
+            ops => ops.PutBlobAsync(id, source, length, null, null, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task PutBlobAsync(
+        string id,
+        Stream source,
+        long length,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.PutBlobAsync(id, source, length, options, null, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.PutBlobWithVersionAsync(id, data, expectedVersion, null, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.PutBlobWithVersionAsync(id, data, expectedVersion, options, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        Stream source,
+        long length,
+        long expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.PutBlobAsync(id, source, length, null, expectedVersion, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<long> PutBlobWithVersionAsync(
+        string id,
+        Stream source,
+        long length,
+        long expectedVersion,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.PutBlobAsync(id, source, length, options, expectedVersion, cancellationToken),
+            cancellationToken);
 
     /// <inheritdoc />
     public Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default) =>
@@ -314,6 +383,27 @@ internal sealed class DocumentStore : IDocumentStore
     /// <inheritdoc />
     public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.DeleteBlobAsync(id, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task DeleteBlobWithVersionAsync(
+        string id,
+        long expectedVersion,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.DeleteBlobWithVersionAsync(id, expectedVersion, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.GetBlobInfoAsync(id, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+        string? idPrefix = null,
+        int skip = 0,
+        int? take = null,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.ListBlobsAsync(idPrefix, skip, take, cancellationToken), cancellationToken);
 
     /// <inheritdoc />
     public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default) =>

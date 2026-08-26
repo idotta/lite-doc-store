@@ -439,8 +439,18 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Creates the reserved raw-blob table (<c>__store_blobs</c>) if it does not exist.
+    /// Creates the reserved raw-blob table (<c>__store_blobs</c>) if it does not exist, and adds
+    /// the metadata columns to one created before they existed.
     /// </summary>
+    /// <remarks>
+    /// The upgrade is idempotent and runs under its own <c>BEGIN IMMEDIATE</c> outside a caller's
+    /// transaction, so two processes starting together cannot both issue it. It only adds
+    /// columns; it never rewrites rows. A table upgraded this way keeps its payload column ahead
+    /// of the metadata, which makes <see cref="GetBlobInfoAsync"/> and <see cref="ListBlobsAsync"/>
+    /// walk each payload's pages — a warning is logged, and
+    /// <see cref="IDocumentStore.RebuildBlobTableAsync"/> converts the table when the cost of
+    /// copying it is acceptable.
+    /// </remarks>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     Task CreateBlobTableAsync(CancellationToken cancellationToken = default);
 
@@ -451,6 +461,25 @@ public interface IDocumentOperations
     /// <param name="data">The bytes to store</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     Task PutBlobAsync(string id, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores a raw binary payload verbatim, recording the metadata in
+    /// <paramref name="options"/>.
+    /// </summary>
+    /// <remarks>
+    /// An overwrite replaces the recorded content type with the one supplied here — the stored
+    /// type described the payload being replaced — and leaves <see cref="BlobInfo.CreatedAt"/>
+    /// naming the first write.
+    /// </remarks>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="data">The bytes to store</param>
+    /// <param name="options">The metadata to record</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    Task PutBlobAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stores a raw binary payload read from a stream, without materializing it in memory.
@@ -497,6 +526,102 @@ public interface IDocumentOperations
     Task PutBlobAsync(string id, Stream source, long length, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Stores a raw binary payload read from a stream, recording the metadata in
+    /// <paramref name="options"/>.
+    /// </summary>
+    /// <inheritdoc cref="PutBlobAsync(string, Stream, long, CancellationToken)" path="/remarks|/exception"/>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="source">The bytes to store</param>
+    /// <param name="length">Exactly how many bytes to consume from <paramref name="source"/></param>
+    /// <param name="options">The metadata to record</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    Task PutBlobAsync(
+        string id,
+        Stream source,
+        long length,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores a raw binary payload only when the stored version matches
+    /// <paramref name="expectedVersion"/> — the compare-and-swap blob write.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors <see cref="UpsertWithVersionAsync{T}"/>: a non-zero
+    /// <paramref name="expectedVersion"/> means "only if the stored version still matches", and 0
+    /// means "insert, the id must be free" — retried as a <c>version = 0</c>-guarded update, so a
+    /// row left at 0 by raw SQL is lifted to 1 rather than being stuck outside the model. The
+    /// returned version is the one SQLite stored, not <paramref name="expectedVersion"/> + 1.
+    /// </remarks>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="data">The bytes to store</param>
+    /// <param name="expectedVersion">The version the caller expects to overwrite, or 0 to insert</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The version the blob is now stored at</returns>
+    /// <exception cref="Exceptions.ConcurrencyException">
+    /// The guard matched no row. <see cref="Exceptions.ConcurrencyException.Kind"/> distinguishes
+    /// a taken id from a version mismatch and from a missing blob;
+    /// <see cref="Exceptions.ConcurrencyConflictKind.DocumentNotFound"/> names a missing blob
+    /// here.
+    /// </exception>
+    Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="PutBlobWithVersionAsync(string, ReadOnlyMemory{byte}, long, CancellationToken)"/>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="data">The bytes to store</param>
+    /// <param name="expectedVersion">The version the caller expects to overwrite, or 0 to insert</param>
+    /// <param name="options">The metadata to record</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    Task<long> PutBlobWithVersionAsync(
+        string id,
+        ReadOnlyMemory<byte> data,
+        long expectedVersion,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Streams a raw binary payload only when the stored version matches
+    /// <paramref name="expectedVersion"/>.
+    /// </summary>
+    /// <remarks>
+    /// The version guard is checked by the statement that reserves the row, before a byte is
+    /// written, and the reserve and the copy share one transaction or savepoint — so a rejected
+    /// guard leaves the stored payload untouched.
+    /// </remarks>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="source">The bytes to store</param>
+    /// <param name="length">Exactly how many bytes to consume from <paramref name="source"/></param>
+    /// <param name="expectedVersion">The version the caller expects to overwrite, or 0 to insert</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The version the blob is now stored at</returns>
+    /// <exception cref="Exceptions.ConcurrencyException">The guard matched no row</exception>
+    Task<long> PutBlobWithVersionAsync(
+        string id,
+        Stream source,
+        long length,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="PutBlobWithVersionAsync(string, Stream, long, long, CancellationToken)"/>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="source">The bytes to store</param>
+    /// <param name="length">Exactly how many bytes to consume from <paramref name="source"/></param>
+    /// <param name="expectedVersion">The version the caller expects to overwrite, or 0 to insert</param>
+    /// <param name="options">The metadata to record</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    Task<long> PutBlobWithVersionAsync(
+        string id,
+        Stream source,
+        long length,
+        long expectedVersion,
+        BlobWriteOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Reads the byte length of a raw binary payload without reading the payload itself.
     /// </summary>
     /// <param name="id">The blob identifier</param>
@@ -519,6 +644,55 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True when a row was deleted</returns>
     Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes a raw binary payload only when its stored version matches
+    /// <paramref name="expectedVersion"/>.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="DeleteBlobAsync"/>, a missing blob is a conflict rather than a
+    /// <c>false</c>: the caller asked to delete a specific version. Expected version 0 carries no
+    /// insert sense here — it matches a row still sitting at 0.
+    /// </remarks>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="expectedVersion">The version the caller expects to delete</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="Exceptions.ConcurrencyException">The guard matched no row</exception>
+    Task DeleteBlobWithVersionAsync(
+        string id,
+        long expectedVersion,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads a blob's metadata — length, content type, timestamps and version — without reading
+    /// the payload.
+    /// </summary>
+    /// <param name="id">The blob identifier</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The metadata, or null when the blob does not exist</returns>
+    Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists blob metadata in id order, without reading any payload.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="idPrefix"/> is matched as a half-open range on the primary key, not as a
+    /// pattern: it is case-sensitive, <c>%</c>, <c>_</c>, <c>*</c> and <c>[</c> are literal, and
+    /// the scan seeks the index rather than reading every row. Called on the store a large
+    /// listing is one statement and so a point-in-time view; ordering is by id, which is the
+    /// index order, so paging with <paramref name="skip"/> is stable as long as no id in the
+    /// earlier pages is inserted or deleted between calls.
+    /// </remarks>
+    /// <param name="idPrefix">Restricts the listing to ids starting with this, or null for all</param>
+    /// <param name="skip">How many matching blobs to skip</param>
+    /// <param name="take">How many to return, or null for all that remain</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The matching metadata, in id order</returns>
+    Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+        string? idPrefix = null,
+        int skip = 0,
+        int? take = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Determines whether a raw binary payload exists.

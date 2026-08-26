@@ -161,6 +161,28 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
+    /// Executes a statement whose first row has two integer columns, returning null when it
+    /// produced no row. Used by the streamed blob write, whose reserve statement hands back the
+    /// rowid to fill and the version it stored.
+    /// </summary>
+    public static async Task<(long First, long Second)?> QueryFirstInt64PairAsync(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return (reader.GetInt64(0), reader.GetInt64(1));
+    }
+
+    /// <summary>
     /// Executes a query and returns the first column of the first row as a string,
     /// or null when there is no row or the value is NULL.
     /// </summary>

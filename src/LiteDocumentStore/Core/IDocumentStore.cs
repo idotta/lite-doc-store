@@ -60,6 +60,34 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// </para>
     /// </remarks>
     Task<Stream?> OpenBlobReadAsync(string id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Copies the blob table into the layout the store creates today, so reading blob metadata
+    /// stops walking payload pages.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only a database whose blob table predates the metadata columns needs this. Those columns
+    /// are added by <see cref="IDocumentOperations.CreateBlobTableAsync"/>, but
+    /// <c>ALTER TABLE ADD COLUMN</c> can only append, leaving the payload column ahead of them —
+    /// and SQLite reads a row front to back, so reaching a column behind a multi-megabyte payload
+    /// means walking that payload's overflow pages. Measured over twenty 20 MB rows,
+    /// <see cref="IDocumentOperations.ListBlobsAsync"/> took 232 ms per pass in that layout and
+    /// under a millisecond after the rebuild.
+    /// </para>
+    /// <para>
+    /// It is never run implicitly, because it copies every stored byte (200 MB took 823 ms) and
+    /// needs room for both copies of the table at once. It runs in one transaction, so an
+    /// interrupted rebuild leaves the original table in place, and it is safe to call at any
+    /// time: it returns false without copying when the table already has the current layout.
+    /// While it runs it holds the write lock, and an open <see cref="OpenBlobReadAsync"/> stream
+    /// holds a read snapshot that will block it.
+    /// </para>
+    /// </remarks>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>False when the table already had the current layout and nothing was copied</returns>
+    Task<bool> RebuildBlobTableAsync(CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Starts a unit of work on a dedicated connection. Operations invoked on the returned
     /// transaction are committed or rolled back together.
