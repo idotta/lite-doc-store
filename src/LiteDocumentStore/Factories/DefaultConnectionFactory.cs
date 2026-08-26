@@ -74,6 +74,11 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
             connection.Open();
         }
 
+        // Before the PRAGMAs, not after them: every statement below runs under the command
+        // timeout, so applying it last left a contended `PRAGMA journal_mode = WAL` waiting the
+        // provider's 30 s whatever BusyTimeoutMs said.
+        ApplyCommandTimeout(connection, options);
+
         // Page size first: SQLite refuses to change it once the database is in WAL mode, so
         // applying journal_mode before this would make PageSize a no-op even on a new database
         // (measured: an 8192 request read back as 4096). A PageSize of 0 means "keep whatever
@@ -125,6 +130,10 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // See ConfigureConnection: the command timeout has to precede the PRAGMAs, which run
+        // under it.
+        ApplyCommandTimeout(connection, options);
+
         // See ConfigureConnection: page size must precede journal_mode, and 0 means "keep the
         // database's own page size".
         if (options.PageSize != 0)
@@ -162,6 +171,39 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         {
             await connection.ExecuteAsync(pragma, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Makes <see cref="DocumentStoreOptions.BusyTimeoutMs"/> the actual bound on a contended
+    /// statement by capping Microsoft.Data.Sqlite's own retry loop to the same value.
+    /// </summary>
+    /// <remarks>
+    /// <c>PRAGMA busy_timeout</c> bounds SQLite's busy handler *inside one attempt*; the provider
+    /// then retries the whole attempt while its command timeout has not elapsed. The effective
+    /// wait is therefore max(busy_timeout, command timeout), so leaving the provider's 30 s
+    /// default in place made <c>BusyTimeoutMs</c> a floor rather than the bound its documentation
+    /// promises — measured against real SQLite: a blocked <c>BEGIN IMMEDIATE</c> with
+    /// <c>busy_timeout = 250</c> returned after ~2 s under <c>Default Timeout=2</c> and ~4 s under
+    /// <c>Default Timeout=4</c>, while <c>busy_timeout = 3000</c> under <c>Default Timeout=1</c>
+    /// took ~3 s. A command timeout stated in the connection string wins, and a custom
+    /// <see cref="IConnectionFactory"/> has to do this itself.
+    /// </remarks>
+    private static void ApplyCommandTimeout(SqliteConnection connection, DocumentStoreOptions options)
+    {
+        // The connection's own string, not the options': ConfigureConnection is public and takes
+        // a caller-supplied connection, which need not have been opened from options.
+        // Microsoft.Data.Sqlite keeps the string verbatim, so a stated timeout is still visible.
+        if (SqliteConnectionStringGuard.SpecifiesCommandTimeout(connection.ConnectionString))
+        {
+            return;
+        }
+
+        // Seconds is the provider's unit and 0 means "retry forever" there, not "fail now"
+        // (measured: a blocked BEGIN IMMEDIATE with DefaultTimeout = 0 never came back, whatever
+        // busy_timeout said). So every value floors at one second: the provider's retry loop cannot
+        // express a shorter bound, and turning a caller's short timeout into an unbounded wait is
+        // the one outcome worse than rounding it up.
+        connection.DefaultTimeout = Math.Max(1, (int)Math.Ceiling(options.BusyTimeoutMs / 1000.0));
     }
 
     private static string GetSynchronousModeString(SynchronousMode mode)

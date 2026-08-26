@@ -15,8 +15,8 @@ namespace LiteDocumentStore;
 /// <remarks>
 /// The store owns a <see cref="SqliteConnectionPool"/> and rents a connection per operation,
 /// which makes it thread-safe and lets concurrent readers scale in WAL mode. Multi-statement
-/// atomicity comes from <see cref="BeginTransactionAsync"/>, which holds one connection for
-/// the transaction's lifetime.
+/// atomicity comes from <see cref="BeginTransactionAsync(CancellationToken)"/>, which holds one
+/// connection for the transaction's lifetime.
 /// </remarks>
 internal sealed class DocumentStore : IDocumentStore
 {
@@ -327,18 +327,36 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
-    public async Task<IDocumentTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
+    public Task<IDocumentTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default) =>
+        BeginTransactionAsync(TransactionMode.Deferred, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<IDocumentTransaction> BeginTransactionAsync(
+        TransactionMode mode,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+
+        if (mode is not (TransactionMode.Deferred or TransactionMode.Immediate))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transaction mode.");
+        }
 
         var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Deferred, so BEGIN itself takes no lock: a read-only transaction never blocks a
-            // writer, and write conflicts surface at the first write (where busy_timeout can
-            // retry them) instead of at BEGIN.
+            // Deferred stays the default: BEGIN takes no lock, so a read-only transaction never
+            // blocks a writer. The cost is that a read-then-write transaction pins a snapshot at
+            // its first read and fails the upgrade with SQLITE_BUSY_SNAPSHOT if anyone commits
+            // in between — measured, and busy_timeout cannot retry it (Microsoft.Data.Sqlite
+            // retries anyway until the connection's command timeout, so the caller stalls first;
+            // the factory caps that at BusyTimeoutMs, but a connection string stating its own
+            // Default Timeout keeps it).
+            // Immediate takes the write lock before any snapshot exists, turning that into a
+            // plain SQLITE_BUSY wait at BEGIN that busy_timeout does retry.
             var transaction = lease.Connection.BeginTransaction(
-                System.Data.IsolationLevel.Serializable, deferred: true);
+                System.Data.IsolationLevel.Serializable,
+                deferred: mode == TransactionMode.Deferred);
 
             return new DocumentStoreTransaction(
                 lease, transaction, _tableNamingConvention, _serializerOptions, _logger);
@@ -351,13 +369,20 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
+    public Task ExecuteInTransactionAsync(
+        Func<IDocumentTransaction, Task> action,
+        CancellationToken cancellationToken = default) =>
+        ExecuteInTransactionAsync(action, TransactionMode.Deferred, cancellationToken);
+
+    /// <inheritdoc />
     public async Task ExecuteInTransactionAsync(
         Func<IDocumentTransaction, Task> action,
+        TransactionMode mode,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(action);
 
-        await using var transaction = await BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await BeginTransactionAsync(mode, cancellationToken).ConfigureAwait(false);
         await action(transaction).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }

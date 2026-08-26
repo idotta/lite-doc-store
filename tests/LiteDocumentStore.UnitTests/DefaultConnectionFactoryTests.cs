@@ -57,6 +57,64 @@ public sealed class DefaultConnectionFactoryTests : IDisposable
         AssertFileIsNotLocked(options);
     }
 
+    [Theory]
+    [InlineData(5000, 5)]
+    [InlineData(250, 1)]   // Rounded up: a sub-second busy timeout must not become "no retry".
+    [InlineData(1500, 2)]
+    [InlineData(1, 1)]
+    [InlineData(0, 1)]     // Never 0: that means "retry forever" to the provider, not "fail now".
+    public void CreateConnection_CapsTheProvidersRetryLoopAtBusyTimeoutMs(int busyTimeoutMs, int expectedSeconds)
+    {
+        // PRAGMA busy_timeout only bounds SQLite's handler within one attempt; the provider then
+        // retries the attempt until the command timeout, whose 30 s default made BusyTimeoutMs a
+        // floor rather than a bound.
+        var options = FileOptions();
+        options.BusyTimeoutMs = busyTimeoutMs;
+
+        using var connection = new DefaultConnectionFactory().CreateConnection(options);
+
+        Assert.Equal(expectedSeconds, connection.DefaultTimeout);
+    }
+
+    [Theory]
+    [InlineData("Default Timeout=17")]
+    [InlineData("default timeout=17")]
+    [InlineData("Command Timeout=17")]
+    public void CreateConnection_LeavesACommandTimeoutStatedInTheConnectionStringAlone(string keyword)
+    {
+        var options = FileOptions();
+        options.ConnectionString = $"{options.ConnectionString};{keyword}";
+        options.BusyTimeoutMs = 250;
+
+        using var connection = new DefaultConnectionFactory().CreateConnection(options);
+
+        Assert.Equal(17, connection.DefaultTimeout);
+    }
+
+    [Fact]
+    public async Task CreateConnectionAsync_CapsTheProvidersRetryLoopAtBusyTimeoutMs()
+    {
+        var options = FileOptions();
+        options.BusyTimeoutMs = 2500;
+
+        await using var connection = await new DefaultConnectionFactory().CreateConnectionAsync(options);
+
+        Assert.Equal(3, connection.DefaultTimeout);
+    }
+
+    private DocumentStoreOptions FileOptions()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"lds-factory-{Guid.NewGuid():N}.db");
+        _databasePaths.Add(path);
+
+        var options = DocumentStoreOptions.ForFile(path);
+        // Written by hand rather than through SqliteConnectionStringBuilder: the builder rewrites
+        // the string with every keyword it knows, which would state a command timeout these tests
+        // need absent.
+        options.ConnectionString = $"Data Source={path};Pooling=False";
+        return options;
+    }
+
     private static void AssertFileIsNotLocked(DocumentStoreOptions options)
     {
         var path = new SqliteConnectionStringBuilder(options.ConnectionString).DataSource;

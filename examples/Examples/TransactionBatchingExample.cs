@@ -115,6 +115,9 @@ internal static class TransactionBatchingExample
         Console.WriteLine($"Document + raw SQL committed    => {david?.Name}\n");
 
         // Multi-table atomic write: an order and a customer status flip commit together.
+        // Immediate, because this callback reads and then writes: a deferred transaction pins a
+        // read snapshot at the GetAsync and fails the later write with SQLITE_BUSY_SNAPSHOT if
+        // another connection commits in between - an error busy_timeout cannot retry.
         await store.ExecuteInTransactionAsync(async tx =>
         {
             await tx.UpsertAsync("o1001", new Order("o1001", "c1", ["laptop", "mouse", "keyboard"], 1499.99m, DateTime.UtcNow));
@@ -124,7 +127,7 @@ internal static class TransactionBatchingExample
             {
                 await tx.UpsertAsync("c1", customer with { Active = false });
             }
-        });
+        }, TransactionMode.Immediate);
 
         var order = await store.GetAsync<Order>("o1001");
         var updatedCustomer = await store.GetAsync<Customer>("c1");

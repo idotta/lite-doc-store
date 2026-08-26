@@ -14,8 +14,9 @@ namespace LiteDocumentStore;
 /// <para>
 /// Because each operation runs on its own connection, operations invoked directly on the store
 /// each commit on their own. To make several writes atomic, use
-/// <see cref="BeginTransactionAsync"/> or <see cref="ExecuteInTransactionAsync"/> and invoke
-/// the operations on the returned <see cref="IDocumentTransaction"/>.
+/// <see cref="BeginTransactionAsync(CancellationToken)"/> or
+/// <see cref="ExecuteInTransactionAsync(Func{IDocumentTransaction, Task}, CancellationToken)"/>
+/// and invoke the operations on the returned <see cref="IDocumentTransaction"/>.
 /// </para>
 /// </remarks>
 public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDisposable
@@ -25,13 +26,29 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// transaction are committed or rolled back together.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The transaction holds one connection from the pool until it is disposed, so dispose it
     /// promptly — <c>await using</c> is the intended usage. Disposing without committing rolls
     /// back.
+    /// </para>
+    /// <para>
+    /// Starts in <see cref="TransactionMode.Deferred"/>. A unit of work that <b>reads and then
+    /// writes</b> should use
+    /// <see cref="BeginTransactionAsync(TransactionMode, CancellationToken)"/> with
+    /// <see cref="TransactionMode.Immediate"/> instead — see that enum for why.
+    /// </para>
     /// </remarks>
     /// <param name="cancellationToken">A token to cancel waiting for a free connection</param>
     /// <returns>A new transaction</returns>
     Task<IDocumentTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="BeginTransactionAsync(CancellationToken)" />
+    /// <param name="mode">Whether <c>BEGIN</c> takes the write lock up front</param>
+    /// <param name="cancellationToken">A token to cancel waiting for a free connection</param>
+    /// <returns>A new transaction</returns>
+    Task<IDocumentTransaction> BeginTransactionAsync(
+        TransactionMode mode,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Runs <paramref name="action"/> inside a transaction, committing when it returns and
@@ -46,15 +63,33 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// <para>
     /// <b>Do not write through the store from inside the callback.</b> Once the transaction has
     /// written, it holds the database's write lock, and a store write is a second connection
-    /// waiting for a lock only this transaction can release — so it blocks for
-    /// <see cref="DocumentStoreOptions.BusyTimeoutMs"/> and then throws
-    /// <c>SQLITE_BUSY</c> ("database is locked"). Reads through the store are fine in WAL mode.
+    /// waiting for a lock only this transaction can release — so it blocks and then throws
+    /// <c>SQLITE_BUSY</c> ("database is locked"). It blocks for
+    /// max(<see cref="DocumentStoreOptions.BusyTimeoutMs"/>, the connection's command timeout);
+    /// the store aligns the second with the first — floored at one second, and skipped when the
+    /// connection string states <c>Default Timeout</c> / <c>Command Timeout</c>. Reads through the
+    /// store are fine in WAL mode.
+    /// </para>
+    /// <para>
+    /// Runs in <see cref="TransactionMode.Deferred"/>. A callback that reads and then writes
+    /// should use
+    /// <see cref="ExecuteInTransactionAsync(Func{IDocumentTransaction, Task}, TransactionMode, CancellationToken)"/>
+    /// with <see cref="TransactionMode.Immediate"/> instead — see that enum for why.
     /// </para>
     /// </remarks>
     /// <param name="action">The work to run transactionally</param>
     /// <param name="cancellationToken">A token to cancel waiting for a free connection</param>
     Task ExecuteInTransactionAsync(
         Func<IDocumentTransaction, Task> action,
+        CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="ExecuteInTransactionAsync(Func{IDocumentTransaction, Task}, CancellationToken)" />
+    /// <param name="action">The work to run transactionally</param>
+    /// <param name="mode">Whether <c>BEGIN</c> takes the write lock up front</param>
+    /// <param name="cancellationToken">A token to cancel waiting for a free connection</param>
+    Task ExecuteInTransactionAsync(
+        Func<IDocumentTransaction, Task> action,
+        TransactionMode mode,
         CancellationToken cancellationToken = default);
 
     /// <summary>
