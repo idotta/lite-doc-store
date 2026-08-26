@@ -148,7 +148,9 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
-    /// Sets the busy timeout in milliseconds.
+    /// Sets the busy timeout in milliseconds. See
+    /// <see cref="DocumentStoreOptions.BusyTimeoutMs"/> — it also caps Microsoft.Data.Sqlite's own
+    /// retry loop, unless the connection string states a command timeout.
     /// </summary>
     /// <param name="timeoutMs">Timeout in milliseconds (must not be negative)</param>
     /// <returns>This builder for method chaining</returns>

@@ -98,6 +98,7 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
 
         // Configure busy timeout
         connection.Execute($"PRAGMA busy_timeout = {options.BusyTimeoutMs};");
+        ApplyCommandTimeout(connection, options);
 
         // Always stated, never skipped: Microsoft.Data.Sqlite opens connections with
         // foreign_keys already ON, so omitting the OFF left EnableForeignKeys = false doing
@@ -151,6 +152,7 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         // Configure busy timeout
         await connection.ExecuteAsync($"PRAGMA busy_timeout = {options.BusyTimeoutMs};", cancellationToken)
             .ConfigureAwait(false);
+        ApplyCommandTimeout(connection, options);
 
         // See ConfigureConnection: the OFF has to be stated, not skipped.
         await connection
@@ -162,6 +164,36 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         {
             await connection.ExecuteAsync(pragma, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Makes <see cref="DocumentStoreOptions.BusyTimeoutMs"/> the actual bound on a contended
+    /// statement by capping Microsoft.Data.Sqlite's own retry loop to the same value.
+    /// </summary>
+    /// <remarks>
+    /// <c>PRAGMA busy_timeout</c> bounds SQLite's busy handler *inside one attempt*; the provider
+    /// then retries the whole attempt while its command timeout has not elapsed. The effective
+    /// wait is therefore max(busy_timeout, command timeout), so leaving the provider's 30 s
+    /// default in place made <c>BusyTimeoutMs</c> a floor rather than the bound its documentation
+    /// promises — measured against real SQLite: a blocked <c>BEGIN IMMEDIATE</c> with
+    /// <c>busy_timeout = 250</c> returned after ~2 s under <c>Default Timeout=2</c> and ~4 s under
+    /// <c>Default Timeout=4</c>, while <c>busy_timeout = 3000</c> under <c>Default Timeout=1</c>
+    /// took ~3 s. A command timeout stated in the connection string wins, and a custom
+    /// <see cref="IConnectionFactory"/> has to do this itself.
+    /// </remarks>
+    private static void ApplyCommandTimeout(SqliteConnection connection, DocumentStoreOptions options)
+    {
+        if (SqliteConnectionStringGuard.SpecifiesCommandTimeout(options.ConnectionString))
+        {
+            return;
+        }
+
+        // Seconds is the provider's unit and 0 means "retry forever" there, not "fail now"
+        // (measured: a blocked BEGIN IMMEDIATE with DefaultTimeout = 0 never came back, whatever
+        // busy_timeout said). So every value floors at one second: the provider's retry loop cannot
+        // express a shorter bound, and turning a caller's short timeout into an unbounded wait is
+        // the one outcome worse than rounding it up.
+        connection.DefaultTimeout = Math.Max(1, (int)Math.Ceiling(options.BusyTimeoutMs / 1000.0));
     }
 
     private static string GetSynchronousModeString(SynchronousMode mode)

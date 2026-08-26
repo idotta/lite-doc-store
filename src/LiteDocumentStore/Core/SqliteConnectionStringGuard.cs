@@ -63,6 +63,42 @@ internal static class SqliteConnectionStringGuard
         return builder;
     }
 
+    /// <summary>
+    /// Whether the connection string states a command timeout, under any of the spellings
+    /// Microsoft.Data.Sqlite accepts for it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SqliteConnectionStringBuilder"/> cannot answer this — it reports every known
+    /// keyword as present and returns the provider default (30 s) for the ones the string omits,
+    /// so an explicit <c>Default Timeout=30</c> is indistinguishable from silence. The base
+    /// <see cref="System.Data.Common.DbConnectionStringBuilder"/> keeps only the keys the string
+    /// actually carried.
+    /// </remarks>
+    public static bool SpecifiesCommandTimeout(string connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return false;
+        }
+
+        System.Data.Common.DbConnectionStringBuilder keys;
+        try
+        {
+            keys = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = connectionString };
+        }
+        catch (ArgumentException)
+        {
+            // Unparseable: opening the connection will fail on its own terms, and defaulting the
+            // timeout here must not turn that into a different exception.
+            return true;
+        }
+
+        return keys.ContainsKey("Default Timeout")
+            || keys.ContainsKey("DefaultTimeout")
+            || keys.ContainsKey("Command Timeout")
+            || keys.ContainsKey("CommandTimeout");
+    }
+
     private static bool IsPrivateInMemory(SqliteConnectionStringBuilder builder)
     {
         if (!IsInMemory(builder))

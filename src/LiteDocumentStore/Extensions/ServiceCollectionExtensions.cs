@@ -12,7 +12,7 @@ namespace LiteDocumentStore;
 /// and rents a connection per operation from its own pool, so there is nothing for a scoped or
 /// transient registration to isolate — it would only multiply connection pools. Size the pool
 /// with <see cref="DocumentStoreOptions.MaxPoolSize"/> instead, and use
-/// <see cref="IDocumentStore.BeginTransactionAsync"/> for per-request units of work.
+/// <see cref="IDocumentStore.BeginTransactionAsync(CancellationToken)"/> for per-request units of work.
 /// </remarks>
 public static class ServiceCollectionExtensions
 {

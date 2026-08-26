@@ -57,6 +57,20 @@ public sealed class DocumentStoreOptions
     /// How long to wait when the database is locked before returning SQLITE_BUSY.
     /// Default is 5000ms (5 seconds).
     /// </summary>
+    /// <remarks>
+    /// Applied as <c>PRAGMA busy_timeout</c> and, because that only bounds SQLite's busy handler
+    /// within a single attempt, also as the connection's command timeout — Microsoft.Data.Sqlite
+    /// otherwise retries a contended statement for its own 30 s default, making this value a floor
+    /// instead of the bound. A command timeout stated in the connection string
+    /// (<c>Default Timeout</c> / <c>Command Timeout</c>) is left alone and then governs instead.
+    /// A custom <see cref="IConnectionFactory"/> applies both itself.
+    /// <para>
+    /// That retry loop is second-granular, and 0 means "retry forever" to it, so the store floors
+    /// the command timeout at one second: a value below 1000 — including 0 — still waits about a
+    /// second before <c>SQLITE_BUSY</c> surfaces. "Fail immediately on a locked database" is not
+    /// expressible through the provider.
+    /// </para>
+    /// </remarks>
     public int BusyTimeoutMs { get; set; } = 5000;
 
     /// <summary>
