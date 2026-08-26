@@ -952,12 +952,26 @@ internal readonly struct DocumentOperations
             throw new ArgumentException("The source stream is not readable.", nameof(source));
         }
 
+        // A seekable source can be measured before anything is written, so a wrong length fails
+        // the call rather than the copy. A non-seekable one cannot: see CopyExactlyAsync, which
+        // reads exactly 'length' bytes and never probes past them.
+        if (source.CanSeek)
+        {
+            var available = source.Length - source.Position;
+            if (available != length)
+            {
+                throw new ArgumentException(
+                    $"The source stream holds {available} bytes from its current position, " +
+                    $"but {length} were declared.",
+                    nameof(length));
+            }
+        }
+
         // Reserve and fill are two statements, and a failure between them would otherwise leave
-        // the id holding zero bytes, destroying whatever it held before. Outside an ambient
-        // transaction the pair gets its own, so a mid-copy failure restores the previous blob.
+        // the id holding zero bytes, destroying whatever it held before.
         if (_inAmbientTransaction)
         {
-            await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+            await PutBlobInSavepointAsync(id, source, length, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -966,6 +980,63 @@ internal readonly struct DocumentOperations
 
         await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs the write inside a savepoint, so a failure undoes it without touching the caller's
+    /// transaction.
+    /// </summary>
+    /// <remarks>
+    /// Rolling the whole transaction back is not this method's call to make — the caller may have
+    /// other work in it — but leaving the failure in place is not an option either: the reserve
+    /// statement has already replaced the payload with zero bytes, so a caller who catches the
+    /// exception and commits would persist a corrupt blob. The savepoint is the only construct
+    /// that undoes just this write. Cleanup runs on <see cref="CancellationToken.None"/>, since
+    /// the usual reason to be here is that the caller's token was cancelled.
+    /// </remarks>
+    private async Task PutBlobInSavepointAsync(
+        string id,
+        Stream source,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        // Generated, never caller-supplied, and validated by SqlGenerator like any identifier.
+        // The prefix matters: a savepoint name may not start with a digit.
+        var savepoint = $"blob_{Guid.NewGuid():N}";
+
+        await _connection.ExecuteAsync(SqlGenerator.GenerateSavepointSql(savepoint), cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            await PutBlobCoreAsync(id, source, length, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                await _connection.ExecuteAsync(
+                    SqlGenerator.GenerateRollbackToSavepointSql(savepoint), CancellationToken.None)
+                    .ConfigureAwait(false);
+                await _connection.ExecuteAsync(
+                    SqlGenerator.GenerateReleaseSavepointSql(savepoint), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception cleanupFailure)
+            {
+                // The original failure is the one the caller needs; this one only explains why the
+                // partial write may still be sitting in their transaction.
+                _logger.LogWarning(
+                    cleanupFailure,
+                    "Failed to roll back the savepoint for blob {Id} after a failed streamed write",
+                    id);
+            }
+
+            throw;
+        }
+
+        await _connection.ExecuteAsync(SqlGenerator.GenerateReleaseSavepointSql(savepoint), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task PutBlobCoreAsync(string id, Stream source, long length, CancellationToken cancellationToken)
@@ -982,14 +1053,23 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// Copies exactly <paramref name="length"/> bytes, rejecting a source that holds fewer or
-    /// more.
+    /// Consumes exactly <paramref name="length"/> bytes from <paramref name="source"/>, failing
+    /// if it ends first.
     /// </summary>
     /// <remarks>
-    /// A plain <see cref="Stream.CopyToAsync(Stream)"/> gets both mismatches wrong: a short
-    /// source silently leaves the reserved zero bytes as the tail of the stored blob, and a long
-    /// one runs off the end of a blob that cannot grow, which surfaces as the provider's
-    /// "size of a blob may not be changed" error rather than as the caller's mistake.
+    /// <para>
+    /// A plain <see cref="Stream.CopyToAsync(Stream)"/> would keep reading until the source ended
+    /// and run off the end of a blob that cannot grow, surfacing the provider's "size of a blob
+    /// may not be changed" error rather than the caller's mistake. Bounding the copy also leaves
+    /// a short source detectable, which a copy that stopped at EOF would not be.
+    /// </para>
+    /// <para>
+    /// It deliberately does <em>not</em> read past <paramref name="length"/> to check for a
+    /// longer source. On a live network stream or pipe that read blocks until the peer sends more
+    /// or closes — indefinitely, and even for a zero-length blob — and it would swallow a byte
+    /// belonging to whatever follows in a framed or concatenated stream. A source that can be
+    /// measured is measured up front instead, by the caller.
+    /// </para>
     /// </remarks>
     private static async Task CopyExactlyAsync(
         Stream source,
@@ -1017,14 +1097,6 @@ internal readonly struct DocumentOperations
                 await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
                     .ConfigureAwait(false);
                 copied += read;
-            }
-
-            // One byte past the declared length: a source with more to give means the length is
-            // wrong, and silently truncating would store a payload the caller never asked for.
-            if (await source.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false) != 0)
-            {
-                throw new ArgumentException(
-                    $"The source stream holds more than the declared {length} bytes.", nameof(length));
             }
         }
         finally

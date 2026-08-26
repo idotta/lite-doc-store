@@ -461,23 +461,35 @@ public interface IDocumentOperations
     /// disposes it.
     /// </param>
     /// <param name="length">
-    /// The exact number of bytes to read from <paramref name="source"/>. SQLite's incremental
-    /// blob I/O cannot resize a blob, so the row is reserved at this size before the first byte
-    /// is written and the source must hold exactly this many bytes.
+    /// Exactly how many bytes to consume from <paramref name="source"/>. SQLite's incremental
+    /// blob I/O cannot resize a blob, so the row is reserved at this size before the first byte is
+    /// written.
     /// </param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <remarks>
+    /// <para>
     /// Nothing is handed back to the caller, so there is no lifetime to manage: the copy happens
-    /// inside the call. Called on the store it runs in its own transaction, so a failure part-way
-    /// leaves any previous blob under <paramref name="id"/> intact; called on an
-    /// <see cref="IDocumentTransaction"/> it commits with the caller's other writes.
+    /// inside the call. Called on the store it runs in its own transaction, and called on an
+    /// <see cref="IDocumentTransaction"/> it runs in a savepoint within the caller's, so either
+    /// way a failure part-way leaves any previous blob under <paramref name="id"/> intact — even
+    /// if the caller catches the exception and commits.
+    /// </para>
+    /// <para>
+    /// A seekable <paramref name="source"/> is measured before anything is written, so a
+    /// <paramref name="length"/> that disagrees with it in either direction fails the call. A
+    /// non-seekable one cannot be measured, so exactly <paramref name="length"/> bytes are
+    /// consumed and no more: a source with further bytes is not an error and they are left
+    /// unread, which is what keeps a live network stream or a framed protocol usable here.
+    /// </para>
     /// </remarks>
     /// <exception cref="EndOfStreamException">
-    /// <paramref name="source"/> ended before <paramref name="length"/> bytes were read.
+    /// A non-seekable <paramref name="source"/> ended before <paramref name="length"/> bytes were
+    /// read.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// <paramref name="source"/> holds more than <paramref name="length"/> bytes, is not
-    /// readable, or <paramref name="id"/> is blank.
+    /// A seekable <paramref name="source"/> does not hold exactly <paramref name="length"/> bytes
+    /// from its current position, <paramref name="source"/> is not readable, or
+    /// <paramref name="id"/> is blank.
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="length"/> is negative or above <see cref="BlobLimits.MaxBlobLength"/>.

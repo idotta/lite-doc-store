@@ -68,11 +68,24 @@ internal static class BlobStreamingExample
             // A missing id is null, not an exception — and nothing to dispose.
             Console.WriteLine($"Absent blob                => {await store.OpenBlobReadAsync("nope") is null}");
 
-            // The declared length is enforced in both directions rather than silently padding or
-            // truncating the stored payload.
+            // A source that can be measured is measured before anything is written, so a wrong
+            // length fails the call in either direction rather than padding or truncating.
             try
             {
                 await store.PutBlobAsync("truncated", new MemoryStream([1, 2, 3]), 64);
+            }
+            catch (ArgumentException ex)
+            {
+                Console.WriteLine($"Wrong length rejected      => {ex.Message.Split(" (Parameter")[0]}");
+            }
+
+            // A source that cannot be measured — a request body, a socket — is read for exactly
+            // the declared length and no further, so nothing blocks waiting for a byte past it.
+            // Only a source that ends early can fail, and it fails after the row is reserved,
+            // which is why the write runs in a transaction (or, inside one, a savepoint).
+            try
+            {
+                await store.PutBlobAsync("truncated", new OneShotStream([1, 2, 3]), 64);
             }
             catch (EndOfStreamException ex)
             {
@@ -105,6 +118,47 @@ internal static class BlobStreamingExample
             Cleanup($"{databasePath}-wal");
             Cleanup($"{databasePath}-shm");
         }
+    }
+
+    /// <summary>
+    /// A source with no length and no seeking — what a request body or a socket looks like to the
+    /// store, and the case where the declared length is the only thing to go on.
+    /// </summary>
+    private sealed class OneShotStream(byte[] data) : Stream
+    {
+        private int _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = Math.Min(count, data.Length - _position);
+            Array.Copy(data, _position, buffer, offset, read);
+            _position += read;
+            return read;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private static byte[] BuildPayload(int length)

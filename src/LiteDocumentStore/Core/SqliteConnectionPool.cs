@@ -40,8 +40,16 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     private readonly ILogger _logger;
     private readonly ConcurrentBag<SqliteConnection> _idle = [];
     private readonly SemaphoreSlim _slots;
+    private readonly SemaphoreSlim _blobStreamSlots;
     private int _created;
     private int _disposed;
+
+    /// <summary>
+    /// How long a caller waits for a blob read stream slot before the wait is treated as
+    /// exhaustion rather than contention. Bounded so that streams leaked by one caller surface as
+    /// a diagnosable timeout instead of a hang.
+    /// </summary>
+    internal static readonly TimeSpan BlobStreamSlotTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Initializes a pool over the supplied options. No connection is opened until
@@ -60,6 +68,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         _connectionFactory = connectionFactory;
         _logger = logger;
         _slots = new SemaphoreSlim(_options.MaxPoolSize, _options.MaxPoolSize);
+        _blobStreamSlots = new SemaphoreSlim(_options.MaxPoolSize, _options.MaxPoolSize);
     }
 
     /// <summary>
@@ -293,15 +302,40 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
 
 
     /// <summary>
-    /// Opens a connection that this pool configures and guards but does not own, count or
-    /// hand out a slot for. The caller disposes it.
+    /// Claims one of the <see cref="MaxPoolSize"/> slots for concurrently open blob read streams,
+    /// throwing rather than waiting past <see cref="BlobStreamSlotTimeout"/>.
     /// </summary>
     /// <remarks>
-    /// Used by the streamed blob read, which returns a <see cref="Stream"/> that stays open for
-    /// as long as the caller holds it. Taking a pooled slot for that would let one caller who
-    /// forgets to dispose starve every other operation for the store's lifetime; on its own
-    /// connection the same mistake costs a single handle.
+    /// A separate bound from the operation slots, not a share of them: a blob read stream is held
+    /// by the caller until disposed, so renting an operation connection for one would let a
+    /// forgetful caller starve the whole store. Bounding them separately keeps the two from
+    /// starving each other while still refusing to open connections without limit.
     /// </remarks>
+    /// <exception cref="TimeoutException">Every slot is held by a stream that is still open</exception>
+    public async Task<BlobStreamSlot> RentBlobStreamSlotAsync(CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+
+        if (!await _blobStreamSlots.WaitAsync(BlobStreamSlotTimeout, cancellationToken).ConfigureAwait(false))
+        {
+            throw new TimeoutException(
+                $"Timed out after {BlobStreamSlotTimeout} waiting for a blob read stream slot " +
+                $"({_options.MaxPoolSize} may be open at once). Dispose blob read streams promptly — " +
+                "each holds a connection until it is disposed.");
+        }
+
+        return new BlobStreamSlot(this);
+    }
+
+    // Safe after disposal for the same reason as ReleaseSlot: the semaphore is never disposed,
+    // and a stream can outlive the store that opened it.
+    internal void ReleaseBlobStreamSlot() => _blobStreamSlots.Release();
+
+    /// <summary>
+    /// Opens a connection that this pool configures and guards but does not own or count. The
+    /// caller disposes it, and must already hold a slot from
+    /// <see cref="RentBlobStreamSlotAsync"/>.
+    /// </summary>
     public async Task<SqliteConnection> CreateUnpooledConnectionAsync(CancellationToken cancellationToken)
     {
         ThrowIfDisposed();

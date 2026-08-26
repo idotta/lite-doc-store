@@ -29,6 +29,7 @@ internal sealed class BlobReadStream : Stream
 {
     private readonly string _id;
     private readonly ILogger _logger;
+    private readonly BlobStreamSlot _slot;
     private SqliteBlob? _blob;
     private SqliteTransaction? _transaction;
     private SqliteConnection? _connection;
@@ -38,25 +39,27 @@ internal sealed class BlobReadStream : Stream
         SqliteBlob blob,
         SqliteTransaction transaction,
         SqliteConnection connection,
+        BlobStreamSlot slot,
         string id,
         ILogger logger)
     {
         _blob = blob;
         _transaction = transaction;
         _connection = connection;
+        _slot = slot;
         _id = id;
         _logger = logger;
     }
 
-
     /// <summary>
     /// Opens a read stream over one blob on a connection this stream takes ownership of,
-    /// returning null when the id is absent. The connection is disposed on every failure path,
-    /// so a caller that gets null or an exception owns nothing.
+    /// returning null when the id is absent. The connection is disposed and the slot released on
+    /// every failure path, so a caller that gets null or an exception owns nothing.
     /// </summary>
     internal static async Task<BlobReadStream?> OpenAsync(
         SqliteConnection connection,
         string id,
+        BlobStreamSlot slot,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -75,25 +78,59 @@ internal sealed class BlobReadStream : Stream
             if (rowId is null)
             {
                 logger.LogDebug("Blob {Id} not found", id);
-                await transaction.DisposeAsync().ConfigureAwait(false);
-                await connection.DisposeAsync().ConfigureAwait(false);
+                await ReleaseAsync(transaction, connection, slot, logger).ConfigureAwait(false);
                 return null;
             }
 
             var blob = new SqliteBlob(
                 connection, SqlGenerator.BlobTableName, "data", rowId.Value, readOnly: true);
 
-            return new BlobReadStream(blob, transaction, connection, id, logger);
+            return new BlobReadStream(blob, transaction, connection, slot, id, logger);
         }
         catch
         {
+            // Nested, so a throwing transaction disposal cannot skip the connection or the slot,
+            // and cannot replace the failure the caller actually needs to see.
+            await ReleaseAsync(transaction, connection, slot, logger).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async ValueTask ReleaseAsync(
+        SqliteTransaction? transaction,
+        SqliteConnection connection,
+        BlobStreamSlot slot,
+        ILogger logger)
+    {
+        try
+        {
             if (transaction is not null)
             {
-                await transaction.DisposeAsync().ConfigureAwait(false);
+                await DisposeQuietlyAsync(transaction, "read transaction", logger).ConfigureAwait(false);
             }
+        }
+        finally
+        {
+            try
+            {
+                await DisposeQuietlyAsync(connection, "blob stream connection", logger).ConfigureAwait(false);
+            }
+            finally
+            {
+                slot.Release();
+            }
+        }
+    }
 
-            await connection.DisposeAsync().ConfigureAwait(false);
-            throw;
+    private static async ValueTask DisposeQuietlyAsync(IAsyncDisposable resource, string what, ILogger logger)
+    {
+        try
+        {
+            await resource.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to dispose the {What} of a blob read stream", what);
         }
     }
     /// <inheritdoc />
@@ -213,7 +250,14 @@ internal sealed class BlobReadStream : Stream
             }
             finally
             {
-                await SafeDisposeAsync(connection, "blob stream connection").ConfigureAwait(false);
+                try
+                {
+                    await SafeDisposeAsync(connection, "blob stream connection").ConfigureAwait(false);
+                }
+                finally
+                {
+                    _slot.Release();
+                }
             }
         }
 
@@ -225,12 +269,25 @@ internal sealed class BlobReadStream : Stream
     {
         // The finalizer must not touch the provider's objects — they have their own finalizers,
         // and the SafeHandle behind the connection closes the database whether or not this runs.
-        // All it does is make a leak visible instead of silent.
+        // All it does is make a leak visible instead of silent, and it must not throw doing so:
+        // an exception escaping a finalizer terminates the process, and ILogger is caller-supplied.
         if (!disposing)
         {
-            _logger.LogError(
-                "Blob read stream for {Id} was never disposed; its connection stayed open until finalization",
-                _id);
+            try
+            {
+                _logger.LogError(
+                    "Blob read stream for {Id} was never disposed; its connection stayed open until finalization",
+                    _id);
+
+                // Released here too, so a leaked stream costs a handle until finalization rather
+                // than a slot forever.
+                _slot.Release();
+            }
+            catch
+            {
+                // Nothing left to report it to.
+            }
+
             base.Dispose(disposing);
             return;
         }
@@ -256,7 +313,14 @@ internal sealed class BlobReadStream : Stream
             }
             finally
             {
-                SafeDispose(connection, "blob stream connection");
+                try
+                {
+                    SafeDispose(connection, "blob stream connection");
+                }
+                finally
+                {
+                    _slot.Release();
+                }
             }
         }
 

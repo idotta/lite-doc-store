@@ -42,6 +42,17 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// transaction: it sees the database as of the moment it was opened.
     /// </para>
     /// <para>
+    /// The number of streams open at once is still bounded, separately from
+    /// <see cref="DocumentStoreOptions.MaxPoolSize"/> but by the same value; past that this
+    /// throws <see cref="TimeoutException"/> rather than opening connections without limit.
+    /// </para>
+    /// <para>
+    /// The open read snapshot has a cost while the stream lives: in WAL mode it pins the log
+    /// against truncation, and outside WAL its read lock blocks writers. Streaming a large blob
+    /// to a slow consumer therefore holds one for that whole time, which is inherent to reading
+    /// a row incrementally rather than a property of where the connection came from.
+    /// </para>
+    /// <para>
     /// This is deliberately absent from <see cref="IDocumentTransaction"/>: a stream that
     /// outlived its transaction would read through a connection already returned to the pool.
     /// Inside a transaction, read blobs with

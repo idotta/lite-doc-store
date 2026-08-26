@@ -232,6 +232,39 @@ internal static class SqlGenerator
     }
 
     /// <summary>
+    /// Generates a <c>SAVEPOINT</c> statement, the nestable transaction the streamed blob write
+    /// uses to undo itself inside a caller's transaction.
+    /// </summary>
+    public static string GenerateSavepointSql(string savepointName)
+    {
+        ValidateIdentifier(savepointName, nameof(savepointName));
+
+        return $"SAVEPOINT [{savepointName}]";
+    }
+
+    /// <summary>
+    /// Generates a <c>ROLLBACK TO</c> statement, undoing everything done since the savepoint
+    /// without touching the enclosing transaction.
+    /// </summary>
+    public static string GenerateRollbackToSavepointSql(string savepointName)
+    {
+        ValidateIdentifier(savepointName, nameof(savepointName));
+
+        return $"ROLLBACK TO [{savepointName}]";
+    }
+
+    /// <summary>
+    /// Generates a <c>RELEASE</c> statement, discarding a savepoint. Needed after a
+    /// <c>ROLLBACK TO</c> as well, which rewinds to the savepoint but does not pop it.
+    /// </summary>
+    public static string GenerateReleaseSavepointSql(string savepointName)
+    {
+        ValidateIdentifier(savepointName, nameof(savepointName));
+
+        return $"RELEASE [{savepointName}]";
+    }
+
+    /// <summary>
     /// Generates SQL for deleting a raw binary blob by ID.
     /// </summary>
     public static string GenerateDeleteBlobSql()

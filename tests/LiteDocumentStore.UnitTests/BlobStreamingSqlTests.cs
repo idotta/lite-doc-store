@@ -49,4 +49,28 @@ public class BlobStreamingSqlTests
     {
         Assert.Equal(1_000_000_000L, BlobLimits.MaxBlobLength);
     }
+
+    [Theory]
+    [InlineData("blob_a1")]
+    [InlineData("blob_00ff")]
+    public void SavepointGenerators_QuoteTheName(string name)
+    {
+        Assert.Equal($"SAVEPOINT [{name}]", SqlGenerator.GenerateSavepointSql(name));
+        Assert.Equal($"ROLLBACK TO [{name}]", SqlGenerator.GenerateRollbackToSavepointSql(name));
+        Assert.Equal($"RELEASE [{name}]", SqlGenerator.GenerateReleaseSavepointSql(name));
+    }
+
+    [Theory]
+    [InlineData("bad name")]
+    [InlineData("bad]name")]
+    [InlineData("1leading")]
+    [InlineData("")]
+    public void SavepointGenerators_RejectAnUnusableName(string name)
+    {
+        // The name is generated, never caller-supplied, but it is interpolated like any other
+        // identifier and so is validated like one.
+        Assert.Throws<ArgumentException>(() => SqlGenerator.GenerateSavepointSql(name));
+        Assert.Throws<ArgumentException>(() => SqlGenerator.GenerateRollbackToSavepointSql(name));
+        Assert.Throws<ArgumentException>(() => SqlGenerator.GenerateReleaseSavepointSql(name));
+    }
 }

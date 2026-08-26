@@ -161,8 +161,8 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task OpenReadStreams_DoNotConsumePooledConnections()
     {
-        // The point of the unpooled connection: more open streams than the pool holds, and normal
-        // operations still run.
+        // The point of the unpooled connection: every stream slot taken, and ordinary operations
+        // still run rather than queueing behind them.
         await using var store = await CreateFileStoreAsync();
         await store.PutBlobAsync("b", new MemoryStream([1]), 1);
 
@@ -171,7 +171,7 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
 
         try
         {
-            for (int i = 0; i < poolSize + 2; i++)
+            for (int i = 0; i < poolSize; i++)
             {
                 var stream = await store.OpenBlobReadAsync("b");
                 Assert.NotNull(stream);
@@ -191,16 +191,72 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PutBlobAsync_SourceShorterThanTheDeclaredLength_Throws()
+    public async Task OpenBlobReadAsync_BeyondTheStreamBound_ThrowsAndRecoversOnDisposal()
     {
+        // Unbounded stream connections would be an exhaustion path with no signal; the bound is
+        // separate from the operation pool so the two cannot starve each other.
         await using var store = await CreateFileStoreAsync();
+        await store.PutBlobAsync("b", new MemoryStream([1]), 1);
 
-        await Assert.ThrowsAsync<EndOfStreamException>(
-            () => store.PutBlobAsync("short", new MemoryStream([1, 2, 3]), 10));
+        var poolSize = ((DocumentStore)store).MaxPoolSize;
+        var streams = new List<Stream>();
+
+        try
+        {
+            for (int i = 0; i < poolSize; i++)
+            {
+                streams.Add((await store.OpenBlobReadAsync("b"))!);
+            }
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => store.OpenBlobReadAsync("b", cts.Token));
+
+            // Freeing one slot lets the next caller through.
+            await streams[0].DisposeAsync();
+            streams.RemoveAt(0);
+
+            await using var recovered = await store.OpenBlobReadAsync("b");
+            Assert.NotNull(recovered);
+        }
+        finally
+        {
+            foreach (var stream in streams)
+            {
+                await stream.DisposeAsync();
+            }
+        }
     }
 
     [Fact]
-    public async Task PutBlobAsync_SourceLongerThanTheDeclaredLength_Throws()
+    public async Task OpenBlobReadAsync_MissingId_ReleasesItsStreamSlot()
+    {
+        // The null path has to release, or a store would run out of slots by looking for blobs
+        // that are not there.
+        await using var store = await CreateFileStoreAsync();
+        await store.PutBlobAsync("b", new MemoryStream([1]), 1);
+
+        for (int i = 0; i < ((DocumentStore)store).MaxPoolSize + 2; i++)
+        {
+            Assert.Null(await store.OpenBlobReadAsync("absent"));
+        }
+
+        await using var stream = await store.OpenBlobReadAsync("b");
+        Assert.NotNull(stream);
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_SeekableSourceShorterThanTheDeclaredLength_ThrowsBeforeWriting()
+    {
+        await using var store = await CreateFileStoreAsync();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => store.PutBlobAsync("short", new MemoryStream([1, 2, 3]), 10));
+        Assert.Equal("length", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_SeekableSourceLongerThanTheDeclaredLength_ThrowsBeforeWriting()
     {
         await using var store = await CreateFileStoreAsync();
 
@@ -210,12 +266,62 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PutBlobAsync_SeekableSourceMeasuredFromItsCurrentPosition()
+    {
+        await using var store = await CreateFileStoreAsync();
+        var source = new MemoryStream([0, 1, 2, 3, 4, 5]);
+        source.Position = 2;
+
+        await store.PutBlobAsync("b", source, 4);
+
+        Assert.Equal(new byte[] { 2, 3, 4, 5 }, await store.GetBlobAsync("b"));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_NonSeekableSourceEndingEarly_Throws()
+    {
+        await using var store = await CreateFileStoreAsync();
+
+        await Assert.ThrowsAsync<EndOfStreamException>(
+            () => store.PutBlobAsync("short", new NonSeekableStream([1, 2, 3]), 10));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_NonSeekableSource_ConsumesExactlyTheDeclaredLengthAndNoMore()
+    {
+        // A read past the declared length would block indefinitely on a live network stream or
+        // pipe, and would swallow a byte belonging to whatever follows in a framed one.
+        await using var store = await CreateFileStoreAsync();
+        var source = new NonSeekableStream([1, 2, 3, 4, 5]);
+
+        await store.PutBlobAsync("b", source, 3);
+
+        Assert.Equal(new byte[] { 1, 2, 3 }, await store.GetBlobAsync("b"));
+        Assert.Equal(3, source.BytesRead);
+        Assert.Equal(new byte[] { 4, 5 }, source.ReadRemaining());
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_ZeroLengthFromANonSeekableSource_DoesNotReadIt()
+    {
+        // Even a zero-length blob used to probe for one more byte, which blocks on a stream that
+        // is open but has nothing to say yet.
+        await using var store = await CreateFileStoreAsync();
+        var source = new NonSeekableStream([1, 2, 3]);
+
+        await store.PutBlobAsync("b", source, 0);
+
+        Assert.Equal(0, source.BytesRead);
+        Assert.Equal(0, await store.BlobLengthAsync("b"));
+    }
+
+    [Fact]
     public async Task PutBlobAsync_LengthMismatch_StoresNothing()
     {
         await using var store = await CreateFileStoreAsync();
 
         await Assert.ThrowsAsync<EndOfStreamException>(
-            () => store.PutBlobAsync("short", new MemoryStream([1, 2, 3]), 10));
+            () => store.PutBlobAsync("short", new NonSeekableStream([1, 2, 3]), 10));
 
         Assert.False(await store.BlobExistsAsync("short"));
     }
@@ -230,9 +336,68 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
         await store.PutBlobAsync("b", new MemoryStream(original), original.Length);
 
         await Assert.ThrowsAsync<EndOfStreamException>(
-            () => store.PutBlobAsync("b", new MemoryStream(Payload(50)), 300));
+            () => store.PutBlobAsync("b", new NonSeekableStream(Payload(50)), 300));
 
         Assert.Equal(original, await store.GetBlobAsync("b"));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_FailedInsideACallersTransaction_CannotBeCommitted()
+    {
+        // The savepoint is what makes this true. The reserve statement has already replaced the
+        // payload with zero bytes by the time the copy fails, so without one a caller who catches
+        // and commits would persist a corrupt blob.
+        await using var store = await CreateFileStoreAsync();
+        var original = Payload(200);
+        await store.PutBlobAsync("b", new MemoryStream(original), original.Length);
+
+        await using (var txn = await store.BeginTransactionAsync())
+        {
+            await Assert.ThrowsAsync<EndOfStreamException>(
+                () => txn.PutBlobAsync("b", new NonSeekableStream(Payload(50)), 300));
+
+            // The caller swallows the failure and commits everything else.
+            await txn.UpsertAsync("doc", new Doc("unrelated"));
+            await txn.CommitAsync();
+        }
+
+        Assert.Equal(original, await store.GetBlobAsync("b"));
+        Assert.NotNull(await store.GetAsync<Doc>("doc"));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_FailedInsideACallersTransaction_LeavesTheTransactionUsable()
+    {
+        await using var store = await CreateFileStoreAsync();
+
+        await store.ExecuteInTransactionAsync(async txn =>
+        {
+            await Assert.ThrowsAsync<EndOfStreamException>(
+                () => txn.PutBlobAsync("b", new NonSeekableStream([1, 2]), 64));
+
+            // Rolling back to the savepoint must not have ended the caller's transaction.
+            await txn.PutBlobAsync("b", new MemoryStream([9, 9, 9]), 3);
+            await txn.UpsertAsync("doc", new Doc("after-failure"));
+        });
+
+        Assert.Equal(new byte[] { 9, 9, 9 }, await store.GetBlobAsync("b"));
+        Assert.NotNull(await store.GetAsync<Doc>("doc"));
+    }
+
+    [Fact]
+    public async Task PutBlobAsync_SucceedingInsideACallersTransaction_StillRollsBackWithIt()
+    {
+        // The savepoint is released on success, so the write remains part of the caller's
+        // transaction rather than being committed independently by it.
+        await using var store = await CreateFileStoreAsync();
+
+        await using (var txn = await store.BeginTransactionAsync())
+        {
+            await txn.PutBlobAsync("b", new MemoryStream([1, 2, 3]), 3);
+            await txn.RollbackAsync();
+        }
+
+        Assert.False(await store.BlobExistsAsync("b"));
     }
 
     [Fact]
@@ -365,6 +530,57 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
         }
 
         Assert.False(await store.BlobExistsAsync("b"));
+    }
+
+    /// <summary>
+    /// A source that cannot be measured up front, and that records how much of it was consumed —
+    /// the shape of a request body or a socket, where reading past the declared length is what
+    /// would block.
+    /// </summary>
+    private sealed class NonSeekableStream(byte[] data) : Stream
+    {
+        private int _position;
+
+        public int BytesRead => _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public byte[] ReadRemaining() => data.AsSpan(_position).ToArray();
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var count = Math.Min(buffer.Length, data.Length - _position);
+            data.AsMemory(_position, count).CopyTo(buffer);
+            _position += count;
+            return ValueTask.FromResult(count);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>

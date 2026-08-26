@@ -289,8 +289,22 @@ internal sealed class DocumentStore : IDocumentStore
 
         // Its own connection, not a rented one: the stream lives until the caller disposes it,
         // and a pooled slot held for that long by a caller who forgets would starve the store.
-        var connection = await _pool.CreateUnpooledConnectionAsync(cancellationToken).ConfigureAwait(false);
-        return await BlobReadStream.OpenAsync(connection, id, _logger, cancellationToken).ConfigureAwait(false);
+        // Bounded all the same, by a separate count of concurrently open streams — otherwise
+        // nothing would stop a caller opening connections without limit.
+        var slot = await _pool.RentBlobStreamSlotAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var connection = await _pool.CreateUnpooledConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return await BlobReadStream.OpenAsync(connection, id, slot, _logger, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Idempotent, so this is safe even though OpenAsync releases on its own failure paths.
+            slot.Release();
+            throw;
+        }
     }
 
     /// <inheritdoc />

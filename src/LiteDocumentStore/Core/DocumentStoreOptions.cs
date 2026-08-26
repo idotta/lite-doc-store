@@ -80,14 +80,23 @@ public sealed class DocumentStoreOptions
     public bool EnableForeignKeys { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets the maximum number of SQLite connections the store keeps open.
+    /// Gets or sets the maximum number of SQLite connections the store opens for operations.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The store rents a connection per operation from an internal pool, so this caps how
     /// many operations can touch the database concurrently; further callers wait for a free
     /// connection. SQLite serializes writers regardless of this value, so raising it helps
     /// read concurrency (in WAL mode) more than write throughput. Default is the processor
     /// count, clamped to [2, 16].
+    /// </para>
+    /// <para>
+    /// Blob read streams from <see cref="IDocumentStore.OpenBlobReadAsync"/> are counted
+    /// <em>separately</em>: each holds its own connection outside this pool until disposed, so
+    /// that a caller who forgets to dispose one cannot starve ordinary operations. This value
+    /// bounds that count too, as a second budget of the same size — so a store may hold up to
+    /// twice this many connections when every blob stream slot is in use.
+    /// </para>
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is less than 1</exception>
     public int MaxPoolSize
