@@ -423,6 +423,73 @@ public class MigrationIntegrationTests : IAsyncLifetime
     /// A migration that parks inside <c>UpAsync</c> — with the write transaction open — until the
     /// test releases it.
     /// </summary>
+    [Fact]
+    public async Task RollbackToVersionAsync_WhenDownFails_KeepsThatMigrationApplied()
+    {
+        // The mirror of the failing-up tests: each rollback runs in its own transaction, so a
+        // down that throws must leave both its schema change and its history row in place.
+        IMigration[] migrations =
+        [
+            CreateTable(1, "T1"),
+            new Migration(2, "CreateT2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE NoSuchTable"),
+        ];
+        await _store.MigrateAsync(migrations);
+
+        await Assert.ThrowsAsync<SqliteException>(() => _store.RollbackToVersionAsync(0, migrations));
+
+        Assert.Equal(2, await _store.GetCurrentMigrationVersionAsync());
+        Assert.True(await TableExistsAsync("T2"));
+
+        // Newest-first ordering, so the failure stopped the run before version 1 was reached.
+        Assert.True(await TableExistsAsync("T1"));
+    }
+
+    [Fact]
+    public async Task RollbackToVersionAsync_WhenDownFailsPartWayThrough_KeepsTheEarlierRollbacks()
+    {
+        IMigration[] migrations =
+        [
+            CreateTable(1, "T1"),
+            new Migration(2, "CreateT2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE NoSuchTable"),
+            CreateTable(3, "T3"),
+        ];
+        await _store.MigrateAsync(migrations);
+
+        await Assert.ThrowsAsync<SqliteException>(() => _store.RollbackToVersionAsync(0, migrations));
+
+        // 3 rolled back and committed before 2 threw; transactions are per migration, not per run.
+        Assert.Equal(2, await _store.GetCurrentMigrationVersionAsync());
+        Assert.False(await TableExistsAsync("T3"));
+        Assert.True(await TableExistsAsync("T2"));
+        Assert.True(await TableExistsAsync("T1"));
+    }
+
+    [Fact]
+    public async Task RollbackToVersionAsync_WhenDownThrowsFromCode_KeepsThatMigrationApplied()
+    {
+        // A DownAsync override that throws before touching the connection, rather than SQL that
+        // fails: the runner must not record the rollback on an exception it did not cause.
+        IMigration[] migrations = [CreateTable(1, "T1"), new ThrowingDownMigration(2, "T2")];
+        await _store.MigrateAsync(migrations);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            _store.RollbackToVersionAsync(1, migrations));
+
+        Assert.Equal(2, await _store.GetCurrentMigrationVersionAsync());
+        Assert.True(await TableExistsAsync("T2"));
+    }
+
+    private sealed class ThrowingDownMigration(long version, string tableName)
+        : Migration(
+            version,
+            $"Create{tableName}",
+            $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY)",
+            $"DROP TABLE {tableName}")
+    {
+        public override Task DownAsync(SqliteConnection connection, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("down failed");
+    }
+
     private sealed class GatedMigration(
         long version,
         string name,
