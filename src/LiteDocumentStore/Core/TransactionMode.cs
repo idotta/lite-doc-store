@@ -18,8 +18,9 @@ public enum TransactionMode
     /// transaction. Measured against SQLite through Microsoft.Data.Sqlite, the provider retries
     /// it anyway until its command timeout elapses, so the caller stalls for that long before the
     /// failure surfaces: the store caps that timeout at
-    /// <see cref="DocumentStoreOptions.BusyTimeoutMs"/>, but a connection string that states its
-    /// own <c>Default Timeout</c> keeps it (30 s if that is what it asks for). Use
+    /// <see cref="DocumentStoreOptions.BusyTimeoutMs"/> (floored at one second), but a connection
+    /// string that states its own <c>Default Timeout</c> keeps it (30 s if that is what it asks
+    /// for). Use
     /// <see cref="Immediate"/> for read-then-write units of work.
     /// </remarks>
     Deferred = 0,
@@ -38,8 +39,10 @@ public enum TransactionMode
     /// <c>PRAGMA busy_timeout</c> bounds only SQLite's own handler within one attempt, and
     /// Microsoft.Data.Sqlite retries the attempt until its command timeout elapses. The store
     /// sets that timeout from <see cref="DocumentStoreOptions.BusyTimeoutMs"/> so the two agree,
-    /// unless the connection string states <c>Default Timeout</c> / <c>Command Timeout</c>, which
-    /// then wins — and if it is longer, it is what the caller actually waits.
+    /// except that the provider's loop cannot express less than a second — a
+    /// <c>BusyTimeoutMs</c> below 1000, including 0, still waits about one second. A connection
+    /// string that states <c>Default Timeout</c> / <c>Command Timeout</c> wins instead, and if it
+    /// is longer, it is what the caller actually waits.
     /// </remarks>
     Immediate = 1
 }

@@ -66,9 +66,9 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// waiting for a lock only this transaction can release — so it blocks and then throws
     /// <c>SQLITE_BUSY</c> ("database is locked"). It blocks for
     /// max(<see cref="DocumentStoreOptions.BusyTimeoutMs"/>, the connection's command timeout);
-    /// the store aligns the second with the first unless the connection string states
-    /// <c>Default Timeout</c> / <c>Command Timeout</c>. Reads through the store are fine in WAL
-    /// mode.
+    /// the store aligns the second with the first — floored at one second, and skipped when the
+    /// connection string states <c>Default Timeout</c> / <c>Command Timeout</c>. Reads through the
+    /// store are fine in WAL mode.
     /// </para>
     /// <para>
     /// Runs in <see cref="TransactionMode.Deferred"/>. A callback that reads and then writes

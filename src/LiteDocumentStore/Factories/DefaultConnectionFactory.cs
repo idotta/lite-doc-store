@@ -74,6 +74,11 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
             connection.Open();
         }
 
+        // Before the PRAGMAs, not after them: every statement below runs under the command
+        // timeout, so applying it last left a contended `PRAGMA journal_mode = WAL` waiting the
+        // provider's 30 s whatever BusyTimeoutMs said.
+        ApplyCommandTimeout(connection, options);
+
         // Page size first: SQLite refuses to change it once the database is in WAL mode, so
         // applying journal_mode before this would make PageSize a no-op even on a new database
         // (measured: an 8192 request read back as 4096). A PageSize of 0 means "keep whatever
@@ -98,7 +103,6 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
 
         // Configure busy timeout
         connection.Execute($"PRAGMA busy_timeout = {options.BusyTimeoutMs};");
-        ApplyCommandTimeout(connection, options);
 
         // Always stated, never skipped: Microsoft.Data.Sqlite opens connections with
         // foreign_keys already ON, so omitting the OFF left EnableForeignKeys = false doing
@@ -126,6 +130,10 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // See ConfigureConnection: the command timeout has to precede the PRAGMAs, which run
+        // under it.
+        ApplyCommandTimeout(connection, options);
+
         // See ConfigureConnection: page size must precede journal_mode, and 0 means "keep the
         // database's own page size".
         if (options.PageSize != 0)
@@ -152,7 +160,6 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
         // Configure busy timeout
         await connection.ExecuteAsync($"PRAGMA busy_timeout = {options.BusyTimeoutMs};", cancellationToken)
             .ConfigureAwait(false);
-        ApplyCommandTimeout(connection, options);
 
         // See ConfigureConnection: the OFF has to be stated, not skipped.
         await connection
@@ -183,7 +190,10 @@ internal sealed class DefaultConnectionFactory : IConnectionFactory
     /// </remarks>
     private static void ApplyCommandTimeout(SqliteConnection connection, DocumentStoreOptions options)
     {
-        if (SqliteConnectionStringGuard.SpecifiesCommandTimeout(options.ConnectionString))
+        // The connection's own string, not the options': ConfigureConnection is public and takes
+        // a caller-supplied connection, which need not have been opened from options.
+        // Microsoft.Data.Sqlite keeps the string verbatim, so a stated timeout is still visible.
+        if (SqliteConnectionStringGuard.SpecifiesCommandTimeout(connection.ConnectionString))
         {
             return;
         }
