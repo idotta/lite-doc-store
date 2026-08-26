@@ -337,6 +337,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         BlobWriteOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ActiveTransaction();
         return _operations.PutBlobAsync(id, data, options, cancellationToken);
     }
@@ -360,6 +361,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         BlobWriteOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ActiveTransaction();
         return _operations.PutBlobAsync(id, source, length, options, null, cancellationToken);
     }
@@ -383,6 +385,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         BlobWriteOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ActiveTransaction();
         return _operations.PutBlobWithVersionAsync(id, data, expectedVersion, options, cancellationToken);
     }
@@ -408,6 +411,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         BlobWriteOptions options,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ActiveTransaction();
         return _operations.PutBlobAsync(id, source, length, options, expectedVersion, cancellationToken);
     }

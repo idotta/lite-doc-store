@@ -994,8 +994,7 @@ internal readonly struct DocumentOperations
 
     private Task<string?> LastBlobColumnAsync(CancellationToken cancellationToken) =>
         _connection.QueryFirstStringAsync(
-            $"SELECT name FROM pragma_table_info('{SqlGenerator.BlobTableName}') ORDER BY cid DESC LIMIT 1",
-            cancellationToken);
+            SqlGenerator.GenerateBlobLastColumnSql(), cancellationToken);
 
     /// <summary>
     /// Copies the blob table into the layout <see cref="SqlGenerator.GenerateCreateBlobTableSql"/>

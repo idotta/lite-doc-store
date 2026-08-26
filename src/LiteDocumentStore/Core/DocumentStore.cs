@@ -274,8 +274,11 @@ internal sealed class DocumentStore : IDocumentStore
         string id,
         ReadOnlyMemory<byte> data,
         BlobWriteOptions options,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.PutBlobAsync(id, data, options, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(ops => ops.PutBlobAsync(id, data, options, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task PutBlobAsync(
@@ -293,10 +296,13 @@ internal sealed class DocumentStore : IDocumentStore
         Stream source,
         long length,
         BlobWriteOptions options,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(
             ops => ops.PutBlobAsync(id, source, length, options, null, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> PutBlobWithVersionAsync(
@@ -314,10 +320,13 @@ internal sealed class DocumentStore : IDocumentStore
         ReadOnlyMemory<byte> data,
         long expectedVersion,
         BlobWriteOptions options,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(
             ops => ops.PutBlobWithVersionAsync(id, data, expectedVersion, options, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> PutBlobWithVersionAsync(
@@ -337,10 +346,13 @@ internal sealed class DocumentStore : IDocumentStore
         long length,
         long expectedVersion,
         BlobWriteOptions options,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(
             ops => ops.PutBlobAsync(id, source, length, options, expectedVersion, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default) =>

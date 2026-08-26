@@ -235,6 +235,18 @@ internal static class SqlGenerator
     }
 
     /// <summary>
+    /// Generates SQL for reading the blob table's last declared column, which is what tells the
+    /// current layout (payload last) from the one <c>ALTER TABLE ADD COLUMN</c> leaves behind.
+    /// </summary>
+    /// <remarks>
+    /// Answers null when the table does not exist, since a missing table has no columns.
+    /// </remarks>
+    public static string GenerateBlobLastColumnSql()
+    {
+        return $"SELECT name FROM pragma_table_info('{BlobTableName}') ORDER BY cid DESC LIMIT 1";
+    }
+
+    /// <summary>
     /// Generates SQL adding one metadata column to a blob table created before it existed.
     /// </summary>
     /// <exception cref="ArgumentException">

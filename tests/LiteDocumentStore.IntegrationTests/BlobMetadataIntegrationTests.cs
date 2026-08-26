@@ -647,6 +647,37 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BlobWrites_RejectNullOptionsUpFrontRatherThanTreatingThemAsNone()
+    {
+        await using var store = await CreateFileStoreAsync();
+
+        // Null is not "record no metadata" — that is the overload without options. Accepting it
+        // here would silently clear a stored content type on overwrite.
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => store.PutBlobAsync("doc", new byte[] { 1 }, null!));
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => store.PutBlobAsync("doc", new MemoryStream(new byte[1]), 1, null!));
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => store.PutBlobWithVersionAsync("doc", new byte[] { 1 }, 0, null!));
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => store.PutBlobWithVersionAsync("doc", new MemoryStream(new byte[1]), 1, 0, null!));
+
+        await store.ExecuteInTransactionAsync(async tx =>
+        {
+            await Assert.ThrowsAsync<ArgumentNullException>(
+                () => tx.PutBlobAsync("doc", new byte[] { 1 }, null!));
+            await Assert.ThrowsAsync<ArgumentNullException>(
+                () => tx.PutBlobAsync("doc", new MemoryStream(new byte[1]), 1, null!));
+            await Assert.ThrowsAsync<ArgumentNullException>(
+                () => tx.PutBlobWithVersionAsync("doc", new byte[] { 1 }, 0, null!));
+            await Assert.ThrowsAsync<ArgumentNullException>(
+                () => tx.PutBlobWithVersionAsync("doc", new MemoryStream(new byte[1]), 1, 0, null!));
+        });
+
+        Assert.False(await store.BlobExistsAsync("doc"));
+    }
+
+    [Fact]
     public async Task PutBlobAsync_RejectsABlankContentType()
     {
         await using var store = await CreateFileStoreAsync();

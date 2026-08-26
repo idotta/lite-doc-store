@@ -68,6 +68,15 @@ public class BlobMetadataSqlTests
     }
 
     [Fact]
+    public void GenerateBlobLastColumnSql_ReadsTheDeclaredColumnOrder()
+    {
+        var sql = SqlGenerator.GenerateBlobLastColumnSql();
+
+        Assert.Contains("pragma_table_info('__store_blobs')", sql);
+        Assert.Contains("ORDER BY cid DESC LIMIT 1", sql);
+    }
+
+    [Fact]
     public void GenerateBlobColumnExistsSql_BindsTheColumnName()
     {
         var sql = SqlGenerator.GenerateBlobColumnExistsSql();
@@ -211,8 +220,8 @@ public class BlobMetadataSqlTests
     [InlineData("a%", "a&")]
     [InlineData("é", "ê")]
     // A prefix ending at the last code point before the surrogate block skips over it: an
-    // unpaired surrogate is not a code point SQLite can hold.
-    [InlineData("a퟿", "a")]
+    // unpaired surrogate is not a code point SQLite can hold, so the bound steps past the block.
+    [InlineData("a\uD7FF", "a\uE000")]
     // Trailing maximum code points cannot be incremented, so they are dropped — "b" still bounds
     // every id starting with "a\U0010FFFF".
     [InlineData("a\U0010FFFF", "b")]
