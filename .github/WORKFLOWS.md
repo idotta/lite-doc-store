@@ -13,7 +13,7 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 
 **Jobs** (`ubuntu-latest`, except **Build and Test**, which runs on all three OSes):
 - **Build and Test**: Builds, runs unit + integration tests with coverage, runs every example (`-- all`), renders a ReportGenerator summary into the job summary from that same test run, and fails the job if coverage drops below the floors in the workflow `env:` block. Matrixed over `ubuntu-latest`, `windows-latest` and `macos-latest` with `fail-fast: false`; the coverage report and gate run on Linux only (the same tests cover the same code everywhere, and the gate is a Bash script), and each runner uploads its own `test-results-<os>` artifact
-- **Pack**: Packs the library and asserts the nupkg/snupkg actually contain the README, icon, XML docs and PDB
+- **Pack**: Packs the library, asserts the nupkg/snupkg actually contain the README, icon, XML docs and PDB, and fails if an `InternalsVisibleTo` friend name (the test or benchmark assemblies) leaked into the shipped DLL
 - **AOT Publish**: Publishes `examples/AotVerification` for `linux-x64` with trim/AOT warnings as errors, then runs the native binary
 - **Dependency Audit**: Fails on vulnerable packages (`dotnet list package --vulnerable --include-transitive`); reports deprecated ones
 - **Security Scan**: CodeQL analysis (`security-extended`)
@@ -51,39 +51,28 @@ Core CI: the code builds, tests pass, the samples still run against the current 
 
 **Triggers:**
 - Push to `main` or `develop` branches
-- Pull requests
+- Pull requests to `main` or `develop` branches
 - Weekly on Sunday at midnight
 - Manual dispatch
 
 **Jobs:**
 - **Format Check**: Validates code formatting with `dotnet format`
 - **Static Code Analysis**: Runs .NET analyzers with warnings as errors
-- **Documentation Check**: Validates XML documentation and README
 
-(Coverage reporting lives in the CI workflow, not here.)
+(Coverage reporting lives in the CI workflow, not here. So does the CodeQL security scan; XML documentation is enforced by the analyzer build, since `GenerateDocumentationFile` turns a missing doc comment into a warning and the build treats warnings as errors.)
 
 **Purpose:**
-Formatting, static analysis and documentation validation. Runs in parallel with CI to provide feedback without blocking the main pipeline.
+Formatting and static analysis. Runs in parallel with CI to provide feedback without blocking the main pipeline.
 
-### 4. Label PR Workflow (`label-pr.yml`)
-
-**Triggers:**
-- Pull request opened, edited, synchronized, or reopened
-
-**Jobs:**
-- Auto-labels PRs based on changed files
-- Adds size labels (xs, s, m, l, xl) based on PR size
-
-### 5. Stale Issues/PRs Workflow (`stale.yml`)
+### 4. Stale Issues/PRs Workflow (`stale.yml`)
 
 **Triggers:**
 - Daily at midnight
 - Manual dispatch
 
 **Configuration:**
-- Issues: Marked stale after 60 days, closed after 7 more days
-- PRs: Marked stale after 30 days, closed after 7 more days
-- Exempt labels: `pinned`, `security`, `bug`
+- Issues: Marked stale after 60 days, closed after 7 more days. Exempt labels: `pinned`, `security`, `bug`
+- PRs: Marked stale after 30 days, closed after 7 more days. Exempt labels: `pinned`, `security` — `bug` exempts issues only
 
 ## Dependabot
 
@@ -120,17 +109,20 @@ Enable these settings in your repository:
 
 ### 3. Release Process
 
-1. Update version in code if needed
-2. Create a new release on GitHub:
-   - Tag: `v1.0.0` (follow semantic versioning)
+1. Create a new release on GitHub:
+   - Tag: `v1.0.0` (follow semantic versioning) — the workflow reads the version from this tag and
+     passes it to build and pack, so there is no version to update in code
    - Title: `Release 1.0.0`
    - Description: Changelog
-3. Publish the release
-4. GitHub Actions will automatically:
+2. Publish the release
+3. GitHub Actions will automatically:
    - Run all tests
-   - Create NuGet package
-   - Publish to NuGet.org
-   - Attach package to release
+   - Create the NuGet package and symbols
+   - Attest build provenance
+   - Publish both to NuGet.org
+
+The workflow does not attach the package to the GitHub release; the release page carries the source
+archives only.
 
 ## Status Badges
 
@@ -140,8 +132,10 @@ Add these badges to your README:
 [![CI](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/ci.yml)
 [![Code Quality](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml/badge.svg)](https://github.com/idotta/lite-doc-store/actions/workflows/code-quality.yml)
 [![NuGet](https://img.shields.io/nuget/v/LiteDocumentStore.svg)](https://www.nuget.org/packages/LiteDocumentStore/)
-[![codecov](https://codecov.io/gh/idotta/lite-doc-store/branch/main/graph/badge.svg)](https://codecov.io/gh/idotta/lite-doc-store)
 ```
+
+There is no coverage badge: coverage is measured by ReportGenerator and gated inside the CI
+workflow, never uploaded to a coverage service, so a Codecov badge would render "unknown".
 
 ## Troubleshooting
 
@@ -149,7 +143,9 @@ Add these badges to your README:
 
 1. Check the workflow logs for detailed error messages
 2. Ensure all dependencies are compatible with .NET 10
-3. Verify SQLite 3.45+ is available (included in Microsoft.Data.Sqlite 10.0.0)
+3. Verify SQLite 3.45+ is available — the native library comes from the pinned
+   `SQLitePCLRaw.lib.e_sqlite3` package in `Directory.Packages.props`, not from
+   Microsoft.Data.Sqlite's own transitive version
 
 ### Publish Failures
 
@@ -167,8 +163,11 @@ workflow `env:` block. It prints one line per metric, so the log names which one
    see what the change left uncovered - the gate reads that same report. Only the Linux runner
    produces it; the Windows and macOS artifacts hold TRX files alone.
 2. Reproduce locally with the numbers CI sees:
-   `dotnet test LiteDocumentStore.slnx -c Release --collect:"XPlat Code Coverage"`, then
-   `reportgenerator -reports:'**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'TextSummary;JsonSummary'`
+   `dotnet test LiteDocumentStore.slnx -c Release --collect:"XPlat Code Coverage"`, then the same
+   report command the workflow runs -
+   `reportgenerator -reports:'**/TestResults/**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary;JsonSummary'`.
+   Keep `Html` in the list or step 1's `index.html` is never produced, and keep the glob anchored
+   at `TestResults` so a stale cobertura file elsewhere in the tree cannot skew the numbers
 3. The fix is a test, not a lower floor. Raise the floors only when coverage has genuinely
    climbed and you want to hold the new ground.
 4. `no coverage summary at coverage-report/Summary.json` means the report step produced
