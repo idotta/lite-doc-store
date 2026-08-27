@@ -78,13 +78,13 @@ public class ExceptionTests
     }
 
     [Fact]
-    public void SerializationException_MessageConstructor_CreatesException()
+    public void DocumentSerializationException_MessageConstructor_CreatesException()
     {
         // Arrange
         var message = "Serialization failed";
 
         // Act
-        var exception = new SerializationException(message);
+        var exception = new DocumentSerializationException(message);
 
         // Assert
         Assert.Equal(message, exception.Message);
@@ -92,14 +92,14 @@ public class ExceptionTests
     }
 
     [Fact]
-    public void SerializationException_InnerExceptionConstructor_PreservesInnerException()
+    public void DocumentSerializationException_InnerExceptionConstructor_PreservesInnerException()
     {
         // Arrange
         var message = "Serialization failed";
         var innerException = new InvalidOperationException("JSON error");
 
         // Act
-        var exception = new SerializationException(message, innerException);
+        var exception = new DocumentSerializationException(message, innerException);
 
         // Assert
         Assert.Equal(message, exception.Message);
@@ -108,7 +108,7 @@ public class ExceptionTests
     }
 
     [Fact]
-    public void SerializationException_TypeConstructor_SetsTargetType()
+    public void DocumentSerializationException_TypeConstructor_SetsTargetType()
     {
         // Arrange
         var message = "Serialization failed";
@@ -116,7 +116,7 @@ public class ExceptionTests
         var innerException = new InvalidOperationException("JSON error");
 
         // Act
-        var exception = new SerializationException(message, targetType, innerException);
+        var exception = new DocumentSerializationException(message, targetType, innerException);
 
         // Assert
         Assert.Equal(message, exception.Message);
@@ -195,17 +195,17 @@ public class ExceptionTests
     {
         // Assert
         Assert.IsAssignableFrom<LiteDocumentStoreException>(new TableNotFoundException("test"));
-        Assert.IsAssignableFrom<LiteDocumentStoreException>(new SerializationException("test"));
+        Assert.IsAssignableFrom<LiteDocumentStoreException>(new DocumentSerializationException("test"));
         Assert.IsAssignableFrom<LiteDocumentStoreException>(new ConcurrencyException("test"));
         Assert.IsAssignableFrom<LiteDocumentStoreException>(new CorruptDataException("test"));
     }
 
     [Fact]
-    public void CorruptDataException_IsNotASerializationException()
+    public void CorruptDataException_IsNotADocumentSerializationException()
     {
         // A deliberate split: a corrupt row and a JSON serialization failure are different
         // problems, so catching one must not catch the other.
-        Assert.IsNotAssignableFrom<SerializationException>(new CorruptDataException("test"));
+        Assert.IsNotAssignableFrom<DocumentSerializationException>(new CorruptDataException("test"));
     }
 
     [Fact]

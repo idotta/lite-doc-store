@@ -90,11 +90,11 @@ public sealed class RawSqlHelperTests
     }
 
     [Fact]
-    public async Task DeserializeDocument_WithMalformedJson_ThrowsSerializationException()
+    public async Task DeserializeDocument_WithMalformedJson_ThrowsDocumentSerializationException()
     {
         await using var store = await CreateStoreAsync();
 
-        var ex = Assert.Throws<SerializationException>(() => store.DeserializeDocument<Doc>("{not json"));
+        var ex = Assert.Throws<DocumentSerializationException>(() => store.DeserializeDocument<Doc>("{not json"));
 
         Assert.Equal(typeof(Doc), ex.TargetType);
     }

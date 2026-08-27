@@ -40,7 +40,7 @@ internal static class JsonHelper
     /// <summary>
     /// Serializes an object to UTF-8 encoded JSON bytes for JSONB storage.
     /// </summary>
-    /// <exception cref="SerializationException">Thrown when serialization fails</exception>
+    /// <exception cref="DocumentSerializationException">Thrown when serialization fails</exception>
     public static byte[] SerializeToUtf8Bytes<T>(T value, JsonSerializerOptions options)
     {
         try
@@ -50,14 +50,14 @@ internal static class JsonHelper
         }
         catch (JsonException ex)
         {
-            throw new SerializationException(
+            throw new DocumentSerializationException(
                 $"Failed to serialize object of type {typeof(T).Name}.",
                 typeof(T),
                 ex);
         }
         catch (NotSupportedException ex)
         {
-            throw new SerializationException(
+            throw new DocumentSerializationException(
                 $"Serialization not supported for type {typeof(T).Name}.",
                 typeof(T),
                 ex);
@@ -67,7 +67,7 @@ internal static class JsonHelper
     /// <summary>
     /// Deserializes UTF-8 encoded JSON bytes to a typed object.
     /// </summary>
-    /// <exception cref="SerializationException">Thrown when deserialization fails</exception>
+    /// <exception cref="DocumentSerializationException">Thrown when deserialization fails</exception>
     public static T? Deserialize<T>(ReadOnlySpan<byte> utf8Json, JsonSerializerOptions options)
     {
         if (utf8Json.IsEmpty)
@@ -82,7 +82,7 @@ internal static class JsonHelper
         }
         catch (JsonException ex)
         {
-            throw new SerializationException(
+            throw new DocumentSerializationException(
                 $"Failed to deserialize JSON to type {typeof(T).Name}.",
                 typeof(T),
                 ex);
@@ -93,7 +93,7 @@ internal static class JsonHelper
     /// Deserializes a JSON string to a typed object.
     /// This overload handles string data from the database.
     /// </summary>
-    /// <exception cref="SerializationException">Thrown when deserialization fails</exception>
+    /// <exception cref="DocumentSerializationException">Thrown when deserialization fails</exception>
     public static T? Deserialize<T>(string? json, JsonSerializerOptions options)
     {
         if (string.IsNullOrEmpty(json))
@@ -108,7 +108,7 @@ internal static class JsonHelper
         }
         catch (JsonException ex)
         {
-            throw new SerializationException(
+            throw new DocumentSerializationException(
                 $"Failed to deserialize JSON to type {typeof(T).Name}.",
                 typeof(T),
                 ex);
