@@ -12,7 +12,7 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 - Manual dispatch
 
 **Jobs** (all `ubuntu-latest` — CI is deliberately single-OS to keep it fast):
-- **Build and Test**: Builds, runs unit + integration tests with coverage, runs every example (`-- all`), and renders a ReportGenerator summary into the job summary from that same test run
+- **Build and Test**: Builds, runs unit + integration tests with coverage, runs every example (`-- all`), renders a ReportGenerator summary into the job summary from that same test run, and fails the job if coverage drops below the floors in the workflow `env:` block
 - **Pack**: Packs the library and asserts the nupkg/snupkg actually contain the README, icon, XML docs and PDB
 - **AOT Publish**: Publishes `examples/AotVerification` for `linux-x64` with trim/AOT warnings as errors, then runs the native binary
 - **Dependency Audit**: Fails on vulnerable packages (`dotnet list package --vulnerable --include-transitive`); reports deprecated ones
@@ -102,10 +102,6 @@ Add these secrets to your repository settings:
   - Requires "Push" permission
   - Set expiration as needed
 
-- `CODECOV_TOKEN` (Optional): For code coverage reporting
-  - Get it from https://codecov.io/
-  - Not required but recommended
-
 ### 2. Repository Settings
 
 Enable these settings in your repository:
@@ -161,10 +157,21 @@ Add these badges to your README:
 2. Check that the version number doesn't already exist on NuGet.org
 3. Ensure the package ID `LiteDocumentStore` is available or owned by you
 
-### Coverage Report Issues
+### Coverage Gate Failures
 
-1. Coverage reports require the `coverlet.collector` package (already included in test projects)
-2. If Codecov upload fails, check that `CODECOV_TOKEN` is set (optional but recommended)
+The `Coverage gate` step fails the build when line, branch or method coverage falls under
+`MIN_LINE_COVERAGE` / `MIN_BRANCH_COVERAGE` / `MIN_METHOD_COVERAGE` (90 / 88 / 90), set in the
+workflow `env:` block. It prints one line per metric, so the log names which one missed.
+
+1. Download the `test-results` artifact and open `coverage-report/index.html` to see what the
+   change left uncovered - the gate reads that same report.
+2. Reproduce locally with the numbers CI sees:
+   `dotnet test LiteDocumentStore.slnx -c Release --collect:"XPlat Code Coverage"`, then
+   `reportgenerator -reports:'**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'TextSummary;JsonSummary'`
+3. The fix is a test, not a lower floor. Raise the floors only when coverage has genuinely
+   climbed and you want to hold the new ground.
+4. `no coverage summary at coverage-report/Summary.json` means the report step produced
+   nothing - look at the test runs above it, not at the gate.
 
 ## Contributing
 

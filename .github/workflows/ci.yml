@@ -14,6 +14,12 @@ env:
   DOTNET_VERSION: '10.0.x'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # Minimum coverage the Build and Test job enforces. Baseline when the gate landed:
+  # line 92%, branch 90.7%, method 93.1% - the floors sit a couple of points under it so
+  # ordinary churn does not red-light a PR, while a real drop still fails the build.
+  MIN_LINE_COVERAGE: '90'
+  MIN_BRANCH_COVERAGE: '88'
+  MIN_METHOD_COVERAGE: '90'
 
 jobs:
   build-and-test:
@@ -51,8 +57,41 @@ jobs:
       if: always()
       run: |
         dotnet tool install --global dotnet-reportgenerator-globaltool
-        reportgenerator -reports:'**/TestResults/**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary'
+        reportgenerator -reports:'**/TestResults/**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary;JsonSummary'
         cat coverage-report/Summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+    # Gates on the numbers the step above already computed. Deliberately not `if: always()`:
+    # a failed test run fails the job on its own, and reporting a coverage miss on top of it
+    # only buries the real failure.
+    - name: Coverage gate
+      run: |
+        set -euo pipefail
+        summary=coverage-report/Summary.json
+        test -f "$summary" || { echo "no coverage summary at $summary"; exit 1; }
+
+        # A metric with no data reads as null, which coerces to 0 below and trips the gate -
+        # silence is a failure here, not a pass.
+        read -r line branch method < <(jq -r '.summary | "\(.linecoverage) \(.branchcoverage) \(.methodcoverage)"' "$summary")
+
+        awk -v line="$line" -v branch="$branch" -v method="$method" \
+            -v minline="$MIN_LINE_COVERAGE" -v minbranch="$MIN_BRANCH_COVERAGE" -v minmethod="$MIN_METHOD_COVERAGE" '
+          BEGIN {
+            failed = 0
+            split("line branch method", names, " ")
+            actual["line"] = line + 0;      minimum["line"] = minline + 0
+            actual["branch"] = branch + 0;  minimum["branch"] = minbranch + 0
+            actual["method"] = method + 0;  minimum["method"] = minmethod + 0
+            for (i = 1; i <= 3; i++) {
+              n = names[i]
+              if (actual[n] < minimum[n]) {
+                printf "FAIL %s coverage %.1f%% < %.1f%% minimum\n", n, actual[n], minimum[n]
+                failed = 1
+              } else {
+                printf "ok   %s coverage %.1f%% >= %.1f%% minimum\n", n, actual[n], minimum[n]
+              }
+            }
+            exit failed
+          }'
 
     - name: Upload test results and coverage
       uses: actions/upload-artifact@v7
