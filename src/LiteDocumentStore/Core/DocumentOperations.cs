@@ -1722,7 +1722,8 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// The exception for a row that exists but whose stored JSON deserializes to null.
+    /// The exception for a row that exists but reads back as nothing: a SQL NULL <c>data</c>
+    /// column, an empty <c>json(data)</c> projection, or stored JSON that deserializes to null.
     /// </summary>
     private static SerializationException NullDocument<T>(string? id, string tableName) =>
         new($"Document '{id}' in table '{tableName}' has no readable payload as {typeof(T).Name}. " +
