@@ -210,6 +210,24 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
+    public Task CreateIndexAsync<T>(
+        string jsonPath,
+        string? indexName = null,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(ops => ops.CreateIndexAsync<T>(jsonPath, indexName, null, cancellationToken), cancellationToken);
+
+    /// <inheritdoc />
+    public Task CreateIndexAsync<T>(
+        string jsonPath,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(ops => ops.CreateIndexAsync<T>(jsonPath, indexName, options, cancellationToken), cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
@@ -230,6 +248,28 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
+    public Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
+        string? indexName = null,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.CreateCompositeIndexAsync<T>(jsonPaths, indexName, null, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(
+            ops => ops.CreateCompositeIndexAsync<T>(jsonPaths, indexName, options, cancellationToken),
+            cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
@@ -238,6 +278,17 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default) =>
         RunAsync(
             ops => ops.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken),
+            cancellationToken);
+
+    /// <inheritdoc />
+    public Task AddVirtualColumnAsync<T>(
+        string jsonPath,
+        string columnName,
+        bool createIndex = false,
+        string columnType = "TEXT",
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            ops => ops.AddVirtualColumnAsync<T>(jsonPath, columnName, createIndex, columnType, cancellationToken),
             cancellationToken);
 
     /// <inheritdoc />

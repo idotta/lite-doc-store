@@ -726,7 +726,7 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}(Expression{Func{T, object}}, string, IndexOptions, CancellationToken)" />
-    public async Task CreateIndexAsync<T>(
+    public Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName,
         IndexOptions? options,
@@ -734,8 +734,27 @@ internal readonly struct DocumentOperations
     {
         ArgumentNullException.ThrowIfNull(jsonPath);
 
+        return CreateIndexAsync<T>(
+            ExtractJsonPath(jsonPath, nameof(jsonPath)),
+            indexName,
+            options,
+            cancellationToken);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.CreateIndexAsync{T}(string, string, IndexOptions, CancellationToken)" />
+    public async Task CreateIndexAsync<T>(
+        string jsonPath,
+        string? indexName,
+        IndexOptions? options,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var pathString = ExtractJsonPath(jsonPath);
+
+        // Validated before the name is derived from it: a bad path otherwise reaches the
+        // generator inside the derived index name and is reported against indexName.
+        var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath));
         var finalIndexName = indexName ?? GenerateIndexName(tableName, pathString);
 
         // Generated before the pre-check so an invalid identifier, path or collation throws
@@ -758,7 +777,7 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}(Expression{Func{T, object}}[], string, IndexOptions, CancellationToken)" />
-    public async Task CreateCompositeIndexAsync<T>(
+    public Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName,
         IndexOptions? options,
@@ -770,8 +789,39 @@ internal readonly struct DocumentOperations
             throw new ArgumentException("At least one JSON path is required for composite index.", nameof(jsonPaths));
         }
 
+        var pathStrings = new string[jsonPaths.Length];
+        for (var i = 0; i < jsonPaths.Length; i++)
+        {
+            ArgumentNullException.ThrowIfNull(jsonPaths[i], nameof(jsonPaths));
+            pathStrings[i] = ExtractJsonPath(jsonPaths[i], nameof(jsonPaths));
+        }
+
+        return CreateCompositeIndexAsync<T>(pathStrings, indexName, options, cancellationToken);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}(string[], string, IndexOptions, CancellationToken)" />
+    public async Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
+        string? indexName,
+        IndexOptions? options,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(jsonPaths);
+        if (jsonPaths.Length == 0)
+        {
+            throw new ArgumentException("At least one JSON path is required for composite index.", nameof(jsonPaths));
+        }
+
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var pathStrings = jsonPaths.Select(ExtractJsonPath).ToList();
+        var pathStrings = new List<string>(jsonPaths.Length);
+
+        // Validated before the name is derived from them, for the reason in CreateIndexAsync.
+        foreach (var path in jsonPaths)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path, nameof(jsonPaths));
+            pathStrings.Add(SqlGenerator.ValidateJsonPath(path, nameof(jsonPaths)));
+        }
+
         var finalIndexName = indexName ?? GenerateCompositeIndexName(tableName, pathStrings);
 
         // Generated before the pre-check, for the reason in CreateIndexAsync.
@@ -792,8 +842,8 @@ internal readonly struct DocumentOperations
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <inheritdoc cref="IDocumentOperations.AddVirtualColumnAsync{T}" />
-    public async Task AddVirtualColumnAsync<T>(
+    /// <inheritdoc cref="IDocumentOperations.AddVirtualColumnAsync{T}(Expression{Func{T, object}}, string, bool, string, CancellationToken)" />
+    public Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
         bool createIndex,
@@ -802,13 +852,31 @@ internal readonly struct DocumentOperations
     {
         ArgumentNullException.ThrowIfNull(jsonPath);
 
+        return AddVirtualColumnAsync<T>(
+            ExtractJsonPath(jsonPath, nameof(jsonPath)),
+            columnName,
+            createIndex,
+            columnType,
+            cancellationToken);
+    }
+
+    /// <inheritdoc cref="IDocumentOperations.AddVirtualColumnAsync{T}(string, string, bool, string, CancellationToken)" />
+    public async Task AddVirtualColumnAsync<T>(
+        string jsonPath,
+        string columnName,
+        bool createIndex,
+        string columnType,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+
         if (string.IsNullOrWhiteSpace(columnName))
         {
             throw new ArgumentException("Column name cannot be null or empty.", nameof(columnName));
         }
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var pathString = ExtractJsonPath(jsonPath);
+        var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath));
 
         // Check if column already exists using SchemaIntrospector
         var introspector = new SchemaIntrospector(_connection);
@@ -881,7 +949,7 @@ internal readonly struct DocumentOperations
         // index that call creates for the same path. An explicitly named index has to go
         // through the string overload.
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var indexName = GenerateIndexName(tableName, ExtractJsonPath(expression));
+        var indexName = GenerateIndexName(tableName, ExtractJsonPath(expression, nameof(expression)));
 
         return DropIndexAsync(indexName, cancellationToken);
     }
@@ -1623,39 +1691,13 @@ internal readonly struct DocumentOperations
     /// <summary>
     /// Extracts the JSON path from a lambda expression.
     /// Supports simple property access (e.g., x => x.Email) and nested properties (e.g., x => x.Address.City).
-    /// Uses property names as-is to match the default System.Text.Json serialization (PascalCase).
+    /// Every segment is resolved through the store's own <see cref="JsonSerializerOptions"/>, so the
+    /// path names what the documents actually carry rather than the CLR member name.
     /// Only reads member names from the expression tree (no compilation or closure evaluation),
     /// so it is AOT/trim safe.
     /// </summary>
-    internal static string ExtractJsonPath<T>(Expression<Func<T, object>> expression)
-    {
-        var body = expression.Body;
-
-        // Handle convert expressions (when boxing value types to object)
-        if (body is UnaryExpression unary && unary.NodeType == ExpressionType.Convert)
-        {
-            body = unary.Operand;
-        }
-
-        var members = new List<string>();
-        var current = body;
-
-        while (current is MemberExpression memberExpr)
-        {
-            members.Insert(0, memberExpr.Member.Name);
-            current = memberExpr.Expression;
-        }
-
-        if (members.Count == 0)
-        {
-            throw new ArgumentException(
-                "Expression must be a property access (e.g., x => x.Email or x => x.Address.City).",
-                nameof(expression));
-        }
-
-        // Use property names as-is to match default System.Text.Json serialization (PascalCase)
-        return "$." + string.Join(".", members);
-    }
+    private string ExtractJsonPath<T>(Expression<Func<T, object>> expression, string paramName) =>
+        JsonPathResolver.Resolve(expression, _serializerOptions, paramName);
 
     /// <summary>
     /// Generates an index name from table name and JSON path.
