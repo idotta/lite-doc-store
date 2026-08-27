@@ -355,10 +355,19 @@ internal readonly struct DocumentOperations
 
         var row = await _connection.QueryFirstStringInt64Async(sql, cancellationToken, ("Id", id))
             .ConfigureAwait(false);
-        if (row is not { Text: { Length: > 0 } json, Number: var version })
+        if (row is null)
         {
             _logger.LogDebug("Document {Id} not found in table {TableName}", id, tableName);
             return null;
+        }
+
+        var (json, version) = row.Value;
+
+        // The row exists. A NULL or empty projection is a corrupt row, and testing the text for
+        // emptiness instead of testing row presence reported it as not found.
+        if (string.IsNullOrEmpty(json))
+        {
+            throw NullDocument<T>(id, tableName);
         }
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
@@ -382,13 +391,22 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetByIdSql(tableName);
 
-        var json = await _connection.QueryFirstStringAsync(sql, cancellationToken, ("Id", id))
+        // Row presence, not the projected text, decides "not found": QueryFirstStringAsync maps
+        // both no-row and a NULL data column to null, so it cannot tell them apart.
+        var (json, found) = await _connection.QueryFirstStringRowAsync(sql, cancellationToken, ("Id", id))
             .ConfigureAwait(false);
 
-        if (string.IsNullOrEmpty(json))
+        if (!found)
         {
             _logger.LogDebug("Document {Id} not found in table {TableName}", id, tableName);
             return default;
+        }
+
+        // Checked before deserializing: JsonHelper maps empty JSON to default(T), which for a
+        // value type is not null, so the guard below would let a corrupt row read back as 0.
+        if (string.IsNullOrEmpty(json))
+        {
+            throw NullDocument<T>(id, tableName);
         }
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
@@ -1704,11 +1722,12 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// The exception for a row that exists but whose stored JSON deserializes to null.
+    /// The exception for a row that exists but reads back as nothing: a SQL NULL <c>data</c>
+    /// column, an empty <c>json(data)</c> projection, or stored JSON that deserializes to null.
     /// </summary>
     private static SerializationException NullDocument<T>(string? id, string tableName) =>
-        new($"Document '{id}' in table '{tableName}' deserialized to null as {typeof(T).Name}. " +
-            "The stored JSON is null or empty; fix or remove the row.",
+        new($"Document '{id}' in table '{tableName}' has no readable payload as {typeof(T).Name}. " +
+            "The stored data is SQL NULL, empty, or JSON null; fix or remove the row.",
             typeof(T));
 
     /// <summary>
