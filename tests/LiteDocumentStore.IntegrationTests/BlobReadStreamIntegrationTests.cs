@@ -44,12 +44,15 @@ public class BlobReadStreamIntegrationTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    private async Task<IDocumentStore> CreateFileStoreAsync()
+    private async Task<IDocumentStore> CreateFileStoreAsync(bool enableWal = true)
     {
         var path = Path.Combine(Path.GetTempPath(), $"lds-readstream-{Guid.NewGuid():N}.db");
         _databasePaths.Add(path);
 
-        var store = await new DocumentStoreFactory().CreateAsync(DocumentStoreOptions.ForFile(path));
+        var options = DocumentStoreOptions.ForFile(path);
+        options.EnableWalMode = enableWal;
+
+        var store = await new DocumentStoreFactory().CreateAsync(options);
         await store.CreateBlobTableAsync();
         return store;
     }
@@ -207,6 +210,11 @@ public class BlobReadStreamIntegrationTests : IAsyncLifetime
         await s.FlushAsync(CancellationToken.None);
 
         Assert.Equal(0L, s.Position);
+
+        // A no-op still observes cancellation, as Stream's own FlushAsync does.
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        await Assert.ThrowsAsync<TaskCanceledException>(() => s.FlushAsync(cts.Token));
     }
 
     [Fact]
@@ -275,7 +283,12 @@ public class BlobReadStreamIntegrationTests : IAsyncLifetime
     {
         // A caller who never disposes costs one handle until finalization - but not a stream slot
         // forever, which would make the store refuse every later OpenBlobReadAsync.
-        await using var store = await CreateFileStoreAsync();
+        // Deliberately not a WAL store. The finalizer releases the slot but does not touch the
+        // provider's objects, so an abandoned connection keeps its deferred read transaction open
+        // until SQLite's own handle is finalized - which no number of GC passes here reliably
+        // forces. With WAL on, the checkpoint at store disposal then blocks on those readers for
+        // the full BusyTimeoutMs (measured: 5.6 s for this one test). Nothing here is about WAL.
+        await using var store = await CreateFileStoreAsync(enableWal: false);
         await store.PutBlobAsync("b/1", Payload(16));
 
         var slots = ((DocumentStore)store).MaxPoolSize;
