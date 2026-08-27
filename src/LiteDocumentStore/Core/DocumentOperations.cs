@@ -755,7 +755,17 @@ internal readonly struct DocumentOperations
         // Validated before the name is derived from it: a bad path otherwise reaches the
         // generator inside the derived index name and is reported against indexName.
         var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath));
-        var finalIndexName = indexName ?? GenerateIndexName(tableName, pathString);
+
+        string finalIndexName;
+        if (indexName is null)
+        {
+            RequireDerivableName(pathString, nameof(jsonPath));
+            finalIndexName = GenerateIndexName(tableName, pathString);
+        }
+        else
+        {
+            finalIndexName = indexName;
+        }
 
         // Generated before the pre-check so an invalid identifier, path or collation throws
         // whether or not the index happens to exist already: a bad argument is a bad argument.
@@ -822,7 +832,20 @@ internal readonly struct DocumentOperations
             pathStrings.Add(SqlGenerator.ValidateJsonPath(path, nameof(jsonPaths)));
         }
 
-        var finalIndexName = indexName ?? GenerateCompositeIndexName(tableName, pathStrings);
+        string finalIndexName;
+        if (indexName is null)
+        {
+            foreach (var path in pathStrings)
+            {
+                RequireDerivableName(path, nameof(jsonPaths));
+            }
+
+            finalIndexName = GenerateCompositeIndexName(tableName, pathStrings);
+        }
+        else
+        {
+            finalIndexName = indexName;
+        }
 
         // Generated before the pre-check, for the reason in CreateIndexAsync.
         var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
@@ -1707,6 +1730,29 @@ internal readonly struct DocumentOperations
         // Remove special characters and convert to valid index name
         var pathPart = jsonPath.Replace("$.", "").Replace(".", "_");
         return $"idx_{tableName}_{pathPart}";
+    }
+
+    /// <summary>
+    /// Refuses to derive a name from a path the derivation cannot express.
+    /// </summary>
+    /// <remarks>
+    /// The flattening keeps a path's characters verbatim apart from its separators, so an
+    /// indexer segment carries its brackets into the name and <c>ValidateIdentifier</c> rejects
+    /// it — reported against the index name the caller never passed. Rewriting the brackets is
+    /// not the fix: the scheme already maps distinct paths onto one name, and the
+    /// <c>sqlite_master</c> pre-check turns a collision into a silently skipped creation, so
+    /// widening it trades a loud error for a quiet one. Only expression-derived paths reach the
+    /// derivation without an indexer, and those cannot contain one.
+    /// </remarks>
+    private static void RequireDerivableName(string jsonPath, string paramName)
+    {
+        if (jsonPath.Contains('[', StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"No index name can be derived from '{jsonPath}': a path with an array indexer needs " +
+                "an explicit index name.",
+                paramName);
+        }
     }
 
     /// <summary>

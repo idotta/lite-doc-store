@@ -20,7 +20,11 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
         string Id,
         [property: JsonPropertyName("email_address")] string? Email,
         string? City,
-        int Age);
+        int Age)
+    {
+        [JsonExtensionData]
+        public Dictionary<string, object>? Extra { get; set; }
+    }
 
     private IDocumentStore _store = null!;
 
@@ -163,6 +167,77 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
         await _store.DropIndexAsync<Member>(x => x.Email!);
 
         Assert.Null(await IndexDdlAsync("idx_Member_email_address"));
+    }
+
+    /// <summary>
+    /// Extension data is the second shape of the same failure: the member has a getter and a
+    /// name, but its entries serialize into the containing object, so an index over the member's
+    /// own name is NULL in every row and a UNIQUE over it enforces nothing.
+    /// </summary>
+    [Fact]
+    public async Task CreateIndexAsync_OverExtensionData_ThrowsInsteadOfIndexingNothing()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.CreateIndexAsync<Member>(x => x.Extra!, null, new IndexOptions { Unique = true }));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+        Assert.Contains("JsonExtensionData", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_OverExtensionData_Throws()
+    {
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.AddVirtualColumnAsync<Member>(x => x.Extra!, "extra_col"));
+    }
+
+    [Fact]
+    public async Task ExtensionDataKeysAreReachableAsStringPaths()
+    {
+        // The rejection is not a dead end: the key itself is an ordinary path.
+        await _store.CreateIndexAsync<Member>("$.nickname", "idx_member_nickname");
+        await _store.UpsertAsync(
+            "m1",
+            new Member("m1", "a@b.c", "Boston", 30) { Extra = new Dictionary<string, object> { ["nickname"] = "ace" } });
+
+        var found = await _store.QueryAsync<Member, string>("$.nickname", "ace");
+
+        Assert.Single(found);
+        Assert.NotNull(await IndexDdlAsync("idx_member_nickname"));
+    }
+
+    // --- Derived index names --------------------------------------------------------------
+
+    [Fact]
+    public async Task CreateIndexAsync_WithAnArrayPathAndNoIndexName_ThrowsNamingThePath()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.CreateIndexAsync<Member>("$.tags[0]"));
+
+        // The derived name would carry the brackets and be rejected as an identifier, which
+        // reported the failure against an index name the caller never passed.
+        Assert.Equal("jsonPath", exception.ParamName);
+        Assert.Contains("explicit index name", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreateCompositeIndexAsync_WithAnArrayPathAndNoIndexName_ThrowsNamingThePaths()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.CreateCompositeIndexAsync<Member>(["$.city", "$.tags[0]"]));
+
+        Assert.Equal("jsonPaths", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task CreateIndexAsync_WithAnArrayPathAndAnExplicitName_Creates()
+    {
+        await _store.CreateIndexAsync<Member>("$.tags[0]", "idx_member_first_tag");
+
+        var ddl = await IndexDdlAsync("idx_member_first_tag");
+
+        Assert.NotNull(ddl);
+        Assert.Contains("json_extract(data, '$.tags[0]')", ddl, StringComparison.Ordinal);
     }
 
     // --- The string-path overloads --------------------------------------------------------

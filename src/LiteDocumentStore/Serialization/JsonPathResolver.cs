@@ -38,18 +38,10 @@ internal static class JsonPathResolver
         JsonSerializerOptions serializerOptions,
         string paramName)
     {
-        var body = expression.Body;
-
-        // Handle convert expressions (when boxing value types to object)
-        if (body is UnaryExpression unary && unary.NodeType == ExpressionType.Convert)
-        {
-            body = unary.Operand;
-        }
-
         // Collected innermost-first, so the walk out of the expression tree can be reversed into
         // document order without re-resolving anything.
         var hops = new List<(Type Container, string Member)>();
-        var current = body;
+        var current = Unwrap(expression.Body);
 
         while (current is MemberExpression memberExpr)
         {
@@ -60,13 +52,17 @@ internal static class JsonPathResolver
             }
 
             hops.Add((container, memberExpr.Member.Name));
-            current = memberExpr.Expression;
+            current = Unwrap(memberExpr.Expression);
         }
 
-        if (hops.Count == 0)
+        // The chain has to bottom out at the lambda's own parameter. One rooted anywhere else —
+        // a captured local, a static — describes a document this store never wrote, and would
+        // otherwise be reported against the compiler-generated closure class it walks into.
+        if (hops.Count == 0 || current is not ParameterExpression)
         {
             throw new ArgumentException(
-                "Expression must be a property access (e.g., x => x.Email or x => x.Address.City).",
+                "Expression must be a property access rooted at the lambda parameter " +
+                "(e.g., x => x.Email or x => x.Address.City).",
                 paramName);
         }
 
@@ -80,6 +76,15 @@ internal static class JsonPathResolver
 
         return path.ToString();
     }
+
+    /// <summary>
+    /// Strips the <c>Convert</c> the compiler inserts to box a value type into <c>object</c>, and
+    /// the one an explicit cast to a base type adds mid-chain.
+    /// </summary>
+    private static Expression? Unwrap(Expression? expression) =>
+        expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } unary
+            ? unary.Operand
+            : expression;
 
     private static string SerializedName(
         Type container,
@@ -128,6 +133,19 @@ internal static class JsonPathResolver
             throw new ArgumentException(
                 $"'{container.Name}.{memberName}' is not serialized (it is [JsonIgnore]d or has no getter), " +
                 "so no stored document carries it.",
+                paramName);
+        }
+
+        // [JsonExtensionData] has a getter and a name, but its entries are written into the
+        // containing object rather than under that name — {"Name":"n","k":"v"}, never
+        // {"Extra":{"k":"v"}} — so the member itself names nothing. Its keys are only reachable
+        // as paths in their own right, through the string overloads.
+        if (property.IsExtensionData)
+        {
+            throw new ArgumentException(
+                $"'{container.Name}.{memberName}' is [JsonExtensionData]: its entries serialize into " +
+                $"'{container.Name}' itself, not under '{property.Name}', so no stored document carries " +
+                "that path. Name the extension key directly as a JSON path string.",
                 paramName);
         }
 

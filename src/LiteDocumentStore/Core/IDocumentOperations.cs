@@ -341,7 +341,10 @@ public interface IDocumentOperations
     /// against what the documents carry.
     /// </remarks>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
-    /// <param name="jsonPath">The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c></param>
+    /// <param name="jsonPath">
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A path holding an array indexer
+    /// has no derivable index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentException">
@@ -383,7 +386,10 @@ public interface IDocumentOperations
     /// that name does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
-    /// <param name="jsonPath">The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c></param>
+    /// <param name="jsonPath">
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A path holding an array indexer
+    /// has no derivable index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="options">The index DDL options</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
@@ -414,7 +420,10 @@ public interface IDocumentOperations
     /// Creates a composite index over several explicit JSON paths, if it does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
-    /// <param name="jsonPaths">The JSON paths, in index column order</param>
+    /// <param name="jsonPaths">
+    /// The JSON paths, in index column order. A path holding an array indexer has no derivable
+    /// index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentException">
@@ -458,7 +467,10 @@ public interface IDocumentOperations
     /// an index of that name does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
-    /// <param name="jsonPaths">The JSON paths, in index column order</param>
+    /// <param name="jsonPaths">
+    /// The JSON paths, in index column order. A path holding an array indexer has no derivable
+    /// index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="options">The index DDL options</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
