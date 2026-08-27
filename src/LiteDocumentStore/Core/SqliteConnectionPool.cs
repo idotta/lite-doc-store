@@ -248,8 +248,14 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
             if (connection.State != ConnectionState.Open)
             {
                 DiscardBrokenConnection(connection, $"state {connection.State}");
+                return;
             }
-            else if (SqliteSessionState.IsSessionDirty(connection, externalAccess, out var reason))
+
+            // Only the probes are guarded, and the guard decides rather than cleans up: whatever
+            // it concludes, the connection is disposed of exactly once below. Nothing here is
+            // allowed to throw — this runs from a lease disposal, so an exception would replace
+            // whatever is already in flight, including the one a caller's own callback threw.
+            if (IsSessionDirty(connection, externalAccess, out var reason))
             {
                 DiscardBrokenConnection(connection, reason);
             }
@@ -258,17 +264,32 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 _idle.Add(connection);
             }
         }
-        catch (Exception ex)
-        {
-            // Swallowed on purpose: this runs from a lease disposal, so rethrowing would replace
-            // whatever exception is already in flight — including the one the caller's own
-            // callback threw. A connection the pool cannot vouch for is closed rather than banked.
-            _logger.LogWarning(ex, "Failed to verify a returned pooled connection");
-            DiscardBrokenConnection(connection, "the pool could not verify its session state");
-        }
         finally
         {
             ReleaseSlot();
+        }
+    }
+
+    /// <summary>
+    /// Runs the session-state probes, treating a probe that throws as a dirty verdict.
+    /// </summary>
+    /// <remarks>
+    /// A probe reads a live SQLite handle, so it can fail on a connection that went away
+    /// underneath it. There is no caller to report that to — the operation has already
+    /// finished — and a connection the pool cannot vouch for must not be recycled, so the
+    /// failure is logged and answered as dirty.
+    /// </remarks>
+    private bool IsSessionDirty(SqliteConnection connection, bool externalAccess, out string reason)
+    {
+        try
+        {
+            return SqliteSessionState.IsSessionDirty(connection, externalAccess, out reason);
+        }
+        catch (Exception ex)
+        {
+            LogWarningQuietly(ex, "Failed to verify a returned pooled connection");
+            reason = "the pool could not verify its session state";
+            return true;
         }
     }
 
@@ -322,14 +343,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
 
         while (_idle.TryTake(out var pooled))
         {
-            try
-            {
-                pooled.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to close a pooled connection during disposal");
-            }
+            CloseQuietly(pooled);
         }
     }
 
@@ -343,14 +357,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
 
         while (_idle.TryTake(out var pooled))
         {
-            try
-            {
-                await pooled.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to close a pooled connection during disposal");
-            }
+            await CloseQuietlyAsync(pooled).ConfigureAwait(false);
         }
     }
 
@@ -449,7 +456,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     private void DiscardBrokenConnection(SqliteConnection connection, string reason)
     {
         Interlocked.Decrement(ref _created);
-        _logger.LogWarning("Discarding a pooled connection: {Reason}", reason);
+        LogWarningQuietly(reason);
         CloseQuietly(connection);
     }
 
@@ -468,10 +475,83 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         try
         {
             connection.Dispose();
+            return;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to close a pooled connection");
+            LogWarningQuietly(ex, "Failed to close a pooled connection; retrying once");
+        }
+
+        // The one failure mode measured here clears itself: the first Dispose throws while
+        // rolling back a transaction object that has nothing to roll back, but it detaches that
+        // object on the way out, so a second attempt closes the connection. Without the retry the
+        // handle — and its file lock — would survive until finalization.
+        try
+        {
+            connection.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LogWarningQuietly(ex, "Failed to close a pooled connection");
+        }
+    }
+
+    /// <inheritdoc cref="CloseQuietly" />
+    private async ValueTask CloseQuietlyAsync(SqliteConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            return;
+        }
+        catch (Exception ex)
+        {
+            LogWarningQuietly(ex, "Failed to close a pooled connection; retrying once");
+        }
+
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogWarningQuietly(ex, "Failed to close a pooled connection");
+        }
+    }
+
+    /// <summary>
+    /// Logs that a connection is being discarded, swallowing a failure from the logger itself.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ILogger"/> is caller-supplied and may throw. Everywhere this is used, the
+    /// operation that owned the connection has already produced its result or its exception, and
+    /// the connection still has to be disposed of — so a logging failure must not escape, and
+    /// must not stop the cleanup that follows it. The same reasoning as the finalizer in
+    /// <c>BlobReadStream</c>. Logging on the rent path is deliberately left unguarded: a caller
+    /// is waiting there, and a broken logger should fail their rent rather than be hidden.
+    /// </remarks>
+    private void LogWarningQuietly(string reason)
+    {
+        try
+        {
+            _logger.LogWarning("Discarding a pooled connection: {Reason}", reason);
+        }
+        catch
+        {
+            // Nothing left to report it to.
+        }
+    }
+
+    /// <inheritdoc cref="LogWarningQuietly(string)" />
+    private void LogWarningQuietly(Exception error, string message)
+    {
+        try
+        {
+            _logger.LogWarning(error, "{Message}", message);
+        }
+        catch
+        {
+            // Nothing left to report it to.
         }
     }
 

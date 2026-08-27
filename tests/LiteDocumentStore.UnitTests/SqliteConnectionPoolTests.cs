@@ -1,5 +1,6 @@
 using System.Data;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -18,6 +19,37 @@ public sealed class SqliteConnectionPoolTests
         options.MaxPoolSize = maxPoolSize;
 
         return new SqliteConnectionPool(options, new DefaultConnectionFactory(), NullLogger.Instance);
+    }
+
+    private static SqliteConnectionPool CreatePoolWithAThrowingLogger(int maxPoolSize = 1)
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = maxPoolSize;
+
+        return new SqliteConnectionPool(options, new DefaultConnectionFactory(), new ThrowingLogger());
+    }
+
+    /// <summary>
+    /// A consumer logger that fails on exactly the level the pool's cleanup paths use.
+    /// </summary>
+    private sealed class ThrowingLogger : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                throw new InvalidOperationException("logger failed");
+            }
+        }
     }
 
     private static void Execute(SqliteConnection connection, string sql)
@@ -217,6 +249,10 @@ public sealed class SqliteConnectionPoolTests
 
         Assert.Equal(0, pool.ConnectionCount);
 
+        // Closing this shape throws on the first attempt and succeeds on the second, so the
+        // connection is really closed rather than left open until finalization.
+        Assert.Equal(ConnectionState.Closed, poisoned.State);
+
         await using var replacement = await pool.RentAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
         Assert.NotSame(poisoned, replacement.Connection);
         await using var transaction = await replacement.Connection.BeginTransactionAsync();
@@ -243,6 +279,67 @@ public sealed class SqliteConnectionPoolTests
 
         await Assert.ThrowsAsync<ObjectDisposedException>(
             () => queued.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        GC.KeepAlive(stale);
+    }
+
+    [Fact]
+    public async Task DirtyReturn_WithAThrowingLogger_StillDiscardsTheConnectionExactlyOnce()
+    {
+        // ILogger is caller-supplied. A logger that throws used to escape the return — which runs
+        // from a lease disposal, so it replaced whatever the caller's operation had produced —
+        // and leave the connection open, untracked and holding its transaction, while
+        // ConnectionCount was decremented twice for one connection.
+        using var pool = CreatePoolWithAThrowingLogger();
+
+        var lease = await pool.RentAsync();
+        var poisoned = lease.Connection;
+        Execute(poisoned, "BEGIN");
+
+        Assert.Null(Record.Exception(lease.ReturnAfterExternalAccess));
+
+        Assert.Equal(ConnectionState.Closed, poisoned.State);
+        Assert.Equal(0, pool.ConnectionCount);
+
+        await using var replacement = await pool.RentAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotSame(poisoned, replacement.Connection);
+    }
+
+    [Fact]
+    public async Task DirtyReturn_WithAThrowingLoggerAndAThrowingClose_DoesNotEscape()
+    {
+        // Both halves of the cleanup fail at once: the discard log throws, and closing a
+        // connection whose transaction object survived a raw COMMIT throws too.
+        using var pool = CreatePoolWithAThrowingLogger();
+
+        var lease = await pool.RentAsync();
+        var stale = lease.Connection.BeginTransaction();
+        Execute(lease.Connection, "COMMIT");
+
+        Assert.Null(Record.Exception(lease.ReturnAfterExternalAccess));
+        Assert.Equal(0, pool.ConnectionCount);
+        Assert.Equal(ConnectionState.Closed, lease.Connection.State);
+
+        GC.KeepAlive(stale);
+    }
+
+    [Fact]
+    public async Task Dispose_WithAThrowingLogger_StillClosesEveryIdleConnection()
+    {
+        // The drain loop logs a failed close; a throwing logger there used to abandon the rest of
+        // the bag with its connections still open.
+        var pool = CreatePoolWithAThrowingLogger(maxPoolSize: 2);
+
+        var first = await pool.RentAsync();
+        var second = await pool.RentAsync();
+        var stale = first.Connection.BeginTransaction();
+        Execute(first.Connection, "COMMIT");
+        var connections = new[] { first.Connection, second.Connection };
+        first.Dispose();
+        second.Dispose();
+
+        Assert.Null(Record.Exception(pool.Dispose));
+        Assert.All(connections, c => Assert.Equal(ConnectionState.Closed, c.State));
 
         GC.KeepAlive(stale);
     }
