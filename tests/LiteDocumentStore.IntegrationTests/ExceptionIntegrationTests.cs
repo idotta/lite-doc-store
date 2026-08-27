@@ -199,6 +199,84 @@ public class ExceptionIntegrationTests : IDisposable
         Assert.Null(await _store.GetWithVersionAsync<StrictModel>("no-such-id"));
     }
 
+    [Theory]
+    [InlineData("GetAll")]
+    [InlineData("Query")]
+    [InlineData("GetMany")]
+    public async Task CollectionRead_WithASqlNullValueTypePayload_ThrowsInsteadOfReturningDefault(
+        string operation)
+    {
+        await CreateNullableTableAsync<StrictValue>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictValue] (id, data) VALUES ('null-row', NULL)",
+            ct));
+
+        // JsonHelper maps an absent JSON string to default(T). For a struct that is a real value,
+        // so checking only the deserialized result fabricates a document instead of detecting the
+        // SQL NULL row. The single-row reads guard the projection before deserializing; every
+        // collection shape must make the same distinction.
+        Func<Task> read = operation switch
+        {
+            "GetAll" => async () => _ = await _store.GetAllAsync<StrictValue>(),
+            "Query" => async () => _ = await _store.QueryAsync(DocumentQuery<StrictValue>.All()),
+            "GetMany" => async () => _ = await _store.GetManyAsync<StrictValue>(["null-row"]),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+        };
+
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(read);
+
+        Assert.Equal("null-row", exception.Id);
+        Assert.Equal("StrictValue", exception.TableName);
+        Assert.Equal(typeof(StrictValue), exception.TargetType);
+    }
+
+    [Theory]
+    [InlineData("Get")]
+    [InlineData("GetWithVersion")]
+    [InlineData("GetAll")]
+    [InlineData("Query")]
+    [InlineData("GetMany")]
+    public async Task EveryRead_WithAJsonNullValueTypePayload_ThrowsTheSameExceptionAsAReferenceType(
+        string operation)
+    {
+        await _store.CreateTableAsync<StrictValue>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictValue] (id, data, version) VALUES ('json-null', jsonb('null'), 1)",
+            ct));
+
+        // The other shape of a row that reads back as nothing: json(data) yields the 4-character
+        // text "null". A reference type deserializes that to null and was already reported as
+        // corrupt, but a value type made System.Text.Json refuse the conversion, so the one row
+        // surfaced as a SerializationException instead — the exception type depended on the type
+        // the row was read as. It is rejected before deserializing now, so it does not.
+        Func<Task> read = operation switch
+        {
+            "Get" => async () => _ = await _store.GetAsync<StrictValue>("json-null"),
+            "GetWithVersion" => async () => _ = await _store.GetWithVersionAsync<StrictValue>("json-null"),
+            "GetAll" => async () => _ = await _store.GetAllAsync<StrictValue>(),
+            "Query" => async () => _ = await _store.QueryAsync(DocumentQuery<StrictValue>.All()),
+            "GetMany" => async () => _ = await _store.GetManyAsync<StrictValue>(["json-null"]),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+        };
+
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(read);
+
+        Assert.Equal("json-null", exception.Id);
+        Assert.Equal("StrictValue", exception.TableName);
+        Assert.Equal(typeof(StrictValue), exception.TargetType);
+    }
+
+    [Fact]
+    public async Task DeserializeDocument_WithAJsonNullPayload_KeepsItsOwnContract()
+    {
+        // The raw-SQL helper is documented to return default for null/empty JSON and to throw
+        // SerializationException on malformed input; the corrupt-row guard lives in the read
+        // paths, not in JsonHelper, so this surface is deliberately unchanged.
+        Assert.Null(_store.DeserializeDocument<StrictModel>(null));
+        Assert.Null(_store.DeserializeDocument<StrictModel>(string.Empty));
+        Assert.Null(_store.DeserializeDocument<StrictModel>("null"));
+    }
+
     [Fact]
     public async Task GetAsync_WithACorruptJsonbPayload_SurfacesTheSqliteError()
     {

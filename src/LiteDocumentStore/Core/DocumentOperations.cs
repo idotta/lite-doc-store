@@ -363,12 +363,9 @@ internal readonly struct DocumentOperations
 
         var (json, version) = row.Value;
 
-        // The row exists. A NULL or empty projection is a corrupt row, and testing the text for
-        // emptiness instead of testing row presence reported it as not found.
-        if (string.IsNullOrEmpty(json))
-        {
-            throw NullDocument<T>(id, tableName);
-        }
+        // The row exists. A projection carrying no payload is a corrupt row, and testing the text
+        // for emptiness instead of testing row presence reported it as not found.
+        EnsureDocumentPayload<T>(json, id, tableName);
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
         if (document is null)
@@ -404,10 +401,7 @@ internal readonly struct DocumentOperations
 
         // Checked before deserializing: JsonHelper maps empty JSON to default(T), which for a
         // value type is not null, so the guard below would let a corrupt row read back as 0.
-        if (string.IsNullOrEmpty(json))
-        {
-            throw NullDocument<T>(id, tableName);
-        }
+        EnsureDocumentPayload<T>(json, id, tableName);
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
         if (document is null)
@@ -480,9 +474,11 @@ internal readonly struct DocumentOperations
 
             foreach (var (id, json) in rows)
             {
-                // A row that deserializes to null throws instead of being skipped, so a broken
+                // A row that reads back as nothing throws instead of being skipped, so a broken
                 // row cannot masquerade as a missing document. The id cannot be null: an
                 // 'id IN (...)' list never matches one.
+                EnsureDocumentPayload<T>(json, id, tableName);
+
                 if (JsonHelper.Deserialize<T>(json, _serializerOptions) is not { } document)
                 {
                     throw NullDocument<T>(id, tableName);
@@ -1738,6 +1734,8 @@ internal readonly struct DocumentOperations
 
         foreach (var (id, json) in rows)
         {
+            EnsureDocumentPayload<T>(json, id, tableName);
+
             if (JsonHelper.Deserialize<T>(json, _serializerOptions) is not { } item)
             {
                 throw NullDocument<T>(id, tableName);
@@ -1747,6 +1745,36 @@ internal readonly struct DocumentOperations
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Validates that a document row's <c>json(data)</c> projection carries a payload at all,
+    /// throwing when it is SQL NULL, empty, or the JSON literal <c>null</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every document read funnels through here <em>before</em> deserializing, and the ordering
+    /// is what makes the contract independent of <typeparamref name="T"/>.
+    /// <c>JsonHelper</c> maps a null or empty projection to <c>default(T)</c> — for a value-type
+    /// <typeparamref name="T"/> a real value, which the <c>is not { }</c> guard downstream
+    /// happily matches — so checking only the deserialized document added a fabricated zero row
+    /// to a collection read instead of reporting the corrupt one.
+    /// </para>
+    /// <para>
+    /// The JSON literal <c>null</c> is rejected here for the same reason from the other side: a
+    /// reference type deserializes it to null and was reported as corrupt, while a value type
+    /// made <c>System.Text.Json</c> refuse the conversion outright, so the one row surfaced as
+    /// two different exceptions depending on the type it was read as. Neither shape is reachable
+    /// through a store write — <c>SerializeDocument</c> rejects a null document — so only raw
+    /// SQL can produce one.
+    /// </para>
+    /// </remarks>
+    private static void EnsureDocumentPayload<T>(string? json, string? id, string tableName)
+    {
+        if (string.IsNullOrEmpty(json) || string.Equals(json, "null", StringComparison.Ordinal))
+        {
+            throw NullDocument<T>(id, tableName);
+        }
     }
 
     /// <summary>

@@ -180,6 +180,11 @@ public interface IDocumentOperations
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>All stored documents</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any row reads back as nothing — a SQL NULL <c>data</c> column, or the JSON
+    /// literal <c>null</c>. The read fails rather than skipping the row: returning fewer
+    /// documents than the table holds is data loss the caller cannot detect.
+    /// </exception>
     Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -199,6 +204,10 @@ public interface IDocumentOperations
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="ids"/> is null</exception>
     /// <exception cref="ArgumentException">
     /// Thrown when any id is null, empty or whitespace
+    /// </exception>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when a matched row reads back as nothing. A missing id is an absent key, never a
+    /// null value, so the two cases stay distinguishable.
     /// </exception>
     Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
         IEnumerable<string> ids,
@@ -257,6 +266,10 @@ public interface IDocumentOperations
     /// <param name="value">The value to match</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The matching documents</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any matching row reads back as nothing, for the reason given on
+    /// <see cref="GetAllAsync{T}(CancellationToken)"/>.
+    /// </exception>
     Task<IEnumerable<T>> QueryAsync<T, TValue>(
         string jsonPath,
         TValue value,
@@ -276,6 +289,10 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The matching documents</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any matching row reads back as nothing, for the reason given on
+    /// <see cref="GetAllAsync{T}(CancellationToken)"/>.
+    /// </exception>
     Task<IEnumerable<T>> QueryAsync<T>(
         DocumentQuery<T> query,
         CancellationToken cancellationToken = default);
