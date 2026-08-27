@@ -12,9 +12,9 @@ namespace LiteDocumentStore.Exceptions;
 /// ever describes a row that is really there.
 /// </para>
 /// <para>
-/// It is distinct from <see cref="SerializationException"/>, which reports a JSON
+/// It is distinct from <see cref="DocumentSerializationException"/>, which reports a JSON
 /// serialization or deserialization failure. Stored JSON that is well-formed but incompatible
-/// with the target type still surfaces as <see cref="SerializationException"/> from the
+/// with the target type still surfaces as <see cref="DocumentSerializationException"/> from the
 /// serializer, since nothing about the row itself is corrupt.
 /// </para>
 /// <para>

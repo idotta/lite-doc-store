@@ -22,7 +22,7 @@ public class ExceptionIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SerializationException_ThrownWhenSerializationFails()
+    public async Task DocumentSerializationException_ThrownWhenSerializationFails()
     {
         // Arrange
         await _store.CreateTableAsync<CircularReference>();
@@ -32,7 +32,7 @@ public class ExceptionIntegrationTests : IDisposable
         obj.Self = obj;
 
         // Act & Assert
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<DocumentSerializationException>(
             async () => await _store.UpsertAsync("test-1", obj));
 
         Assert.NotNull(exception);
@@ -41,7 +41,7 @@ public class ExceptionIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SerializationException_ThrownWhenDeserializationFails()
+    public async Task DocumentSerializationException_ThrownWhenDeserializationFails()
     {
         // Arrange
         await _store.CreateTableAsync<StrictModel>();
@@ -53,11 +53,11 @@ public class ExceptionIntegrationTests : IDisposable
             ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}")));
 
         // Act & Assert - Deserialization should fail because "not-a-number" cannot be parsed as int
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<DocumentSerializationException>(
             async () => await _store.GetAsync<StrictModel>("test-1"));
 
         // Pinned, not "either type": JsonHelper wraps every JsonException on the way out, so a
-        // caller catching SerializationException catches the whole family.
+        // caller catching DocumentSerializationException catches the whole family.
         Assert.IsType<JsonException>(exception.InnerException);
         Assert.Equal(typeof(StrictModel), exception.TargetType);
     }
@@ -98,7 +98,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         // Assert
         Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(TableNotFoundException)));
-        Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(SerializationException)));
+        Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(DocumentSerializationException)));
         Assert.True(typeof(LiteDocumentStoreException).IsAssignableFrom(typeof(ConcurrencyException)));
     }
 
@@ -247,7 +247,7 @@ public class ExceptionIntegrationTests : IDisposable
         // The other shape of a row that reads back as nothing: json(data) yields the 4-character
         // text "null". A reference type deserializes that to null and was already reported as
         // corrupt, but a value type made System.Text.Json refuse the conversion, so the one row
-        // surfaced as a SerializationException instead — the exception type depended on the type
+        // surfaced as a DocumentSerializationException instead — the exception type depended on the type
         // the row was read as. It is rejected before deserializing now, so it does not.
         Func<Task> read = operation switch
         {
@@ -270,7 +270,7 @@ public class ExceptionIntegrationTests : IDisposable
     public async Task DeserializeDocument_WithAJsonNullPayload_KeepsItsOwnContract()
     {
         // The raw-SQL helper is documented to return default for null/empty JSON and to throw
-        // SerializationException on malformed input; the corrupt-row guard lives in the read
+        // DocumentSerializationException on malformed input; the corrupt-row guard lives in the read
         // paths, not in JsonHelper, so this surface is deliberately unchanged.
         Assert.Null(_store.DeserializeDocument<StrictModel>(null));
         Assert.Null(_store.DeserializeDocument<StrictModel>(string.Empty));
@@ -284,7 +284,7 @@ public class ExceptionIntegrationTests : IDisposable
 
         // Bytes that are not JSONB at all. SQLite fails inside the json(data) projection, before
         // any of them reach the serializer, so this is a SqliteException and neither a
-        // CorruptDataException nor a SerializationException. Translating it would mean classifying
+        // CorruptDataException nor a DocumentSerializationException. Translating it would mean classifying
         // SQLite error text, which this library deliberately does not do — pinned here as the
         // honest current contract.
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(

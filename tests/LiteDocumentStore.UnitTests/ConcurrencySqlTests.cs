@@ -95,9 +95,9 @@ public class ConcurrencySqlTests
     }
 
     [Fact]
-    public void SerializationException_WithTargetTypeOnly_KeepsTheType()
+    public void DocumentSerializationException_WithTargetTypeOnly_KeepsTheType()
     {
-        var exception = new SerializationException("null document", typeof(string));
+        var exception = new DocumentSerializationException("null document", typeof(string));
 
         Assert.Equal(typeof(string), exception.TargetType);
         Assert.Null(exception.InnerException);

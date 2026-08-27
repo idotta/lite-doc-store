@@ -909,7 +909,7 @@ public interface IDocumentOperations
     /// <param name="value">The document to serialize</param>
     /// <returns>The UTF-8 JSON bytes</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is null</exception>
-    /// <exception cref="Exceptions.SerializationException">Thrown when serialization fails</exception>
+    /// <exception cref="Exceptions.DocumentSerializationException">Thrown when serialization fails</exception>
     byte[] SerializeDocument<T>(T value);
 
     /// <summary>
@@ -918,6 +918,6 @@ public interface IDocumentOperations
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="json">The JSON text, as returned by <c>json(data)</c></param>
     /// <returns>The document, or default when <paramref name="json"/> is null or empty</returns>
-    /// <exception cref="Exceptions.SerializationException">Thrown when deserialization fails</exception>
+    /// <exception cref="Exceptions.DocumentSerializationException">Thrown when deserialization fails</exception>
     T? DeserializeDocument<T>(string? json);
 }
