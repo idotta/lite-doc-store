@@ -22,6 +22,10 @@
          (bundle -> config.e_sqlite3 + SQLite + managed core 3.x) under a Microsoft.Data.Sqlite
          built against core 2.1.x — a migration with its own validation, not a pin swap. -->
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+    <!-- The managed layer Microsoft.Data.Sqlite 10.0.11 itself depends on. Referenced directly
+         because the pool calls sqlite3_get_autocommit to decide whether a returned connection
+         still carries a transaction; see SqliteSessionState. -->
+    <PackageVersion Include="SQLitePCLRaw.core" Version="2.1.12" />
   </ItemGroup>
 
   <!-- DI / logging -->

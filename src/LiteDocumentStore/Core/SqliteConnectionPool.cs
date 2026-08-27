@@ -27,10 +27,13 @@ namespace LiteDocumentStore;
 /// the database silently ignored fails there too.
 /// </para>
 /// <para>
-/// Connections are never closed while the pool is alive, only returned to the idle bag. That
-/// is what keeps an in-memory database alive between operations: a shared-cache in-memory
+/// A returned connection normally goes straight back to the idle bag rather than being closed,
+/// which is what keeps an in-memory database alive between operations: a shared-cache in-memory
 /// database is destroyed when its last connection closes, so the pool eagerly opens one
-/// connection at initialization and holds it until disposal.
+/// connection at initialization and holds it until disposal. It is closed instead when it comes
+/// back unusable — a state other than Open, a caller reporting it through
+/// <see cref="Discard"/>, or transaction state left on it (see <see cref="SqliteSessionState"/>
+/// and <see cref="ReturnAfterExternalAccess"/>).
 /// </para>
 /// </remarks>
 internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
@@ -196,33 +199,77 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// <summary>
     /// Returns a rented connection to the idle bag, or closes it when the pool is disposed.
     /// </summary>
-    internal void Return(SqliteConnection connection)
+    /// <remarks>
+    /// A connection with a transaction still pending is closed rather than banked: recycling it
+    /// would hand the next renter an open transaction, whose statements silently enlist in it.
+    /// Only the cheap half of the check runs here — see
+    /// <see cref="SqliteSessionState.HasPendingTransaction"/> for its cost and
+    /// <see cref="ReturnAfterExternalAccess"/> for the paths that pay for both halves.
+    /// </remarks>
+    internal void Return(SqliteConnection connection) => ReturnCore(connection, externalAccess: false);
+
+    /// <summary>
+    /// Returns a connection a caller has run their own SQL against, closing it when either half
+    /// of its transaction state is dirty.
+    /// </summary>
+    /// <remarks>
+    /// The extra check over <see cref="Return"/> is
+    /// <see cref="SqliteSessionState.HasManagedTransaction"/>, which costs ~223 ns and 192 bytes
+    /// and catches what SQLite's own autocommit flag cannot: a transaction object the provider
+    /// still has attached after a raw <c>COMMIT</c> or <c>ROLLBACK</c>. Only the raw-connection
+    /// paths pay it — <c>ExecuteRawAsync</c> and a migration's own SQL — so the ~20 document
+    /// operations keep the cheap check alone.
+    /// </remarks>
+    internal void ReturnAfterExternalAccess(SqliteConnection connection) =>
+        ReturnCore(connection, externalAccess: true);
+
+    private void ReturnCore(SqliteConnection connection, bool externalAccess)
     {
         if (connection is null)
         {
             return;
         }
 
-        if (Volatile.Read(ref _disposed) != 0)
+        // The slot is released whatever happens below. A waiter parked in RentAsync only wakes on
+        // a free slot, so a throw on this path — a Dispose that fails to roll back, a probe on a
+        // handle that has gone away — would hang it forever rather than surfacing anything.
+        try
         {
-            connection.Dispose();
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                // Close it and release anyway: a waiter parked when the pool was disposed only
+                // wakes on a free slot, and then throws from ThrowIfDisposed instead of hanging.
+                // Not DiscardBrokenConnection — disposal's own drain loop does not adjust
+                // ConnectionCount either, and a shutdown is not a broken connection.
+                CloseQuietly(connection);
+                return;
+            }
 
-            // Release anyway: a waiter parked when the pool was disposed only wakes on a free
-            // slot, and then throws from ThrowIfDisposed instead of hanging.
+            if (connection.State != ConnectionState.Open)
+            {
+                DiscardBrokenConnection(connection, $"state {connection.State}");
+            }
+            else if (SqliteSessionState.IsSessionDirty(connection, externalAccess, out var reason))
+            {
+                DiscardBrokenConnection(connection, reason);
+            }
+            else
+            {
+                _idle.Add(connection);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Swallowed on purpose: this runs from a lease disposal, so rethrowing would replace
+            // whatever exception is already in flight — including the one the caller's own
+            // callback threw. A connection the pool cannot vouch for is closed rather than banked.
+            _logger.LogWarning(ex, "Failed to verify a returned pooled connection");
+            DiscardBrokenConnection(connection, "the pool could not verify its session state");
+        }
+        finally
+        {
             ReleaseSlot();
-            return;
         }
-
-        if (connection.State != ConnectionState.Open)
-        {
-            DiscardBrokenConnection(connection, $"state {connection.State}");
-        }
-        else
-        {
-            _idle.Add(connection);
-        }
-
-        ReleaseSlot();
     }
 
     /// <summary>
@@ -237,15 +284,22 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
             return;
         }
 
-        if (Volatile.Read(ref _disposed) != 0)
+        // Same reason Return releases in a finally: closing a connection whose transaction cannot
+        // be rolled back throws, and this runs from a lease disposal.
+        try
         {
-            connection.Dispose();
-            ReleaseSlot();
-            return;
-        }
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                CloseQuietly(connection);
+                return;
+            }
 
-        DiscardBrokenConnection(connection, "the caller reported it as no longer usable");
-        ReleaseSlot();
+            DiscardBrokenConnection(connection, "the caller reported it as no longer usable");
+        }
+        finally
+        {
+            ReleaseSlot();
+        }
     }
 
     // Safe after disposal: _slots is never disposed. See the remarks on Dispose.
@@ -396,14 +450,28 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     {
         Interlocked.Decrement(ref _created);
         _logger.LogWarning("Discarding a pooled connection: {Reason}", reason);
+        CloseQuietly(connection);
+    }
 
+    /// <summary>
+    /// Closes a connection, logging rather than propagating a failure.
+    /// </summary>
+    /// <remarks>
+    /// <c>SqliteConnection.Dispose</c> is not exception-free: it rolls back a pending
+    /// transaction, and a connection whose transaction object is attached but whose SQLite
+    /// transaction is already gone — what a raw <c>COMMIT</c> leaves behind — fails with
+    /// <c>cannot rollback - no transaction is active</c>. Every close here runs while the pool is
+    /// tidying up, often under an exception that matters more.
+    /// </remarks>
+    private void CloseQuietly(SqliteConnection connection)
+    {
         try
         {
             connection.Dispose();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to close a broken pooled connection");
+            _logger.LogWarning(ex, "Failed to close a pooled connection");
         }
     }
 

@@ -194,7 +194,7 @@ internal sealed class MigrationRunner
         }
         catch (Exception ex)
         {
-            transaction.Rollback();
+            // Disposal rolls the transaction back; no explicit Rollback needed here.
             _logger.LogError(ex, "Failed to apply migration {Version}: {Name}",
                 migration.Version, migration.Name);
             throw;
@@ -239,7 +239,7 @@ internal sealed class MigrationRunner
         }
         catch (Exception ex)
         {
-            transaction.Rollback();
+            // Disposal rolls the transaction back; no explicit Rollback needed here.
             _logger.LogError(ex, "Failed to rollback migration {Version}: {Name}",
                 migration.Version, migration.Name);
             throw;
@@ -410,27 +410,20 @@ internal sealed class MigrationRunner
     /// </summary>
     private async Task AddChecksumColumnAsync(CancellationToken cancellationToken)
     {
+        // No catch: disposing an uncommitted transaction rolls it back.
         using var transaction = _connection.BeginTransaction(IsolationLevel.Serializable, deferred: false);
-        try
+        if (await HasChecksumColumnAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (await HasChecksumColumnAsync(cancellationToken).ConfigureAwait(false))
-            {
-                transaction.Commit();
-                return;
-            }
-
-            _logger.LogInformation("Upgrading migration history table: adding the checksum column");
-            await _connection.ExecuteAsync(
-                $"ALTER TABLE [{MigrationTableName}] ADD COLUMN checksum TEXT NULL",
-                cancellationToken).ConfigureAwait(false);
-
             transaction.Commit();
+            return;
         }
-        catch
-        {
-            transaction.Rollback();
-            throw;
-        }
+
+        _logger.LogInformation("Upgrading migration history table: adding the checksum column");
+        await _connection.ExecuteAsync(
+            $"ALTER TABLE [{MigrationTableName}] ADD COLUMN checksum TEXT NULL",
+            cancellationToken).ConfigureAwait(false);
+
+        transaction.Commit();
     }
 
     private async Task<bool> HasChecksumColumnAsync(CancellationToken cancellationToken)
