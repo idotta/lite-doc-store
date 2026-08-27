@@ -37,6 +37,18 @@ internal readonly struct PooledConnection : IDisposable, IAsyncDisposable
     public void Discard() => _pool?.Discard(Connection);
 
     /// <summary>
+    /// Returns the connection after a caller has run their own SQL against it, closing it rather
+    /// than recycling it when they left transaction state behind.
+    /// </summary>
+    /// <remarks>
+    /// Use instead of <see cref="Dispose"/> wherever the raw connection was handed out — an
+    /// <c>ExecuteRawAsync</c> callback or a migration's own SQL. It costs one extra check that
+    /// <see cref="Dispose"/> does not pay for; see
+    /// <see cref="SqliteConnectionPool.ReturnAfterExternalAccess"/>.
+    /// </remarks>
+    public void ReturnAfterExternalAccess() => _pool?.ReturnAfterExternalAccess(Connection);
+
+    /// <summary>
     /// Returns the connection to the pool.
     /// </summary>
     public ValueTask DisposeAsync()

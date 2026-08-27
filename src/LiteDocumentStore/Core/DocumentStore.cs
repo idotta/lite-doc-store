@@ -480,8 +480,17 @@ internal sealed class DocumentStore : IDocumentStore
         ArgumentNullException.ThrowIfNull(operation);
         ThrowIfDisposed();
 
-        await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
-        return await operation(lease.Connection, cancellationToken).ConfigureAwait(false);
+        // Not 'await using': the callback has had the raw connection, so it may have left a
+        // transaction on it — see PooledConnection.ReturnAfterExternalAccess.
+        var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await operation(lease.Connection, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.ReturnAfterExternalAccess();
+        }
     }
 
     /// <inheritdoc />
@@ -492,8 +501,16 @@ internal sealed class DocumentStore : IDocumentStore
         ArgumentNullException.ThrowIfNull(operation);
         ThrowIfDisposed();
 
-        await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
-        await operation(lease.Connection, cancellationToken).ConfigureAwait(false);
+        // See the generic overload: the callback owns the connection for its duration.
+        var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await operation(lease.Connection, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.ReturnAfterExternalAccess();
+        }
     }
 
     /// <inheritdoc />
@@ -681,8 +698,17 @@ internal sealed class DocumentStore : IDocumentStore
     {
         ThrowIfDisposed();
 
-        await using var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
-        return await operation(new MigrationRunner(lease.Connection, _logger)).ConfigureAwait(false);
+        // A migration's UpAsync/DownAsync runs arbitrary SQL on this connection, so it is checked
+        // like an ExecuteRawAsync callback rather than like a store operation.
+        var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await operation(new MigrationRunner(lease.Connection, _logger)).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.ReturnAfterExternalAccess();
+        }
     }
 
     /// <summary>

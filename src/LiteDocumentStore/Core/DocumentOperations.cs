@@ -1033,19 +1033,13 @@ internal readonly struct DocumentOperations
             }
             else
             {
+                // No catch: disposing an uncommitted transaction rolls it back, and an explicit
+                // Rollback here would only be a second attempt at the same statement.
                 using var transaction = _connection.BeginTransaction(
                     IsolationLevel.Serializable, deferred: false);
-                try
-                {
-                    missing = await MissingBlobColumnsAsync(cancellationToken).ConfigureAwait(false);
-                    await AddBlobColumnsAsync(missing, cancellationToken).ConfigureAwait(false);
-                    transaction.Commit();
-                }
-                catch
-                {
-                    transaction.Rollback();
-                    throw;
-                }
+                missing = await MissingBlobColumnsAsync(cancellationToken).ConfigureAwait(false);
+                await AddBlobColumnsAsync(missing, cancellationToken).ConfigureAwait(false);
+                transaction.Commit();
             }
         }
     }
@@ -1140,22 +1134,14 @@ internal readonly struct DocumentOperations
             return true;
         }
 
+        // See EnsureBlobMetadataColumnsAsync: disposal rolls back an uncommitted transaction.
         using var transaction = _connection.BeginTransaction(IsolationLevel.Serializable, deferred: false);
-        try
+        foreach (var step in steps)
         {
-            foreach (var step in steps)
-            {
-                await _connection.ExecuteAsync(step, cancellationToken).ConfigureAwait(false);
-            }
-
-            transaction.Commit();
-        }
-        catch
-        {
-            transaction.Rollback();
-            throw;
+            await _connection.ExecuteAsync(step, cancellationToken).ConfigureAwait(false);
         }
 
+        transaction.Commit();
         return true;
     }
 

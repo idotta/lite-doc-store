@@ -97,7 +97,9 @@ raw SQL.
 
 The connection is on loan for the duration of the callback. `GetTableName<T>()` gives the table the
 store uses for `T`, so nothing is hardcoded, and `DeserializeDocument<T>()` reads a `json(data)`
-column back with the store's own serializer options.
+column back with the store's own serializer options. Finish any transaction you open in the
+callback: a connection handed back with one still on it is closed rather than pooled, so the leak
+costs a connection instead of poisoning the next caller.
 
 ```csharp
 var table = store.GetTableName<Customer>();
