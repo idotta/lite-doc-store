@@ -183,6 +183,32 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
+    /// Executes a query and returns the first column of the first row as a string together with
+    /// whether the statement produced a row at all.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="QueryFirstStringAsync"/> collapses "no row" and "row whose column is NULL" into
+    /// the same null, which is right for the schema and PRAGMA reads but not for a document read:
+    /// a row that exists and reads back as nothing is a corrupt row, not a missing one.
+    /// </remarks>
+    public static async Task<(string? Text, bool Found)> QueryFirstStringRowAsync(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return (null, false);
+        }
+
+        return (reader.IsDBNull(0) ? null : reader.GetString(0), true);
+    }
+
+    /// <summary>
     /// Executes a query and returns the first column of the first row as a string,
     /// or null when there is no row or the value is NULL.
     /// </summary>

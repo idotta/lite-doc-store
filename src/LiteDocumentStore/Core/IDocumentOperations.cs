@@ -153,8 +153,9 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The document and its version, or null when not found</returns>
     /// <exception cref="Exceptions.SerializationException">
-    /// Thrown when the row exists but its stored JSON deserializes to null, which would
-    /// otherwise be indistinguishable from not found.
+    /// Thrown when the row exists but reads back as nothing — a SQL NULL <c>data</c> column
+    /// (only reachable through raw SQL, since the store's own DDL forbids it) or stored JSON
+    /// that deserializes to null — which would otherwise be indistinguishable from not found.
     /// </exception>
     Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
@@ -168,7 +169,8 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The document, or default when not found</returns>
     /// <exception cref="Exceptions.SerializationException">
-    /// Thrown when the row exists but its stored JSON deserializes to null.
+    /// Thrown when the row exists but reads back as nothing — a SQL NULL <c>data</c> column or
+    /// stored JSON that deserializes to null. An absent id still returns default.
     /// </exception>
     Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default);
 

@@ -146,6 +146,60 @@ public class ExceptionIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAsync_WithASqlNullDataColumn_ThrowsInsteadOfLookingMissing()
+    {
+        await CreateNullableTableAsync<StrictModel>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            ct));
+
+        var exception = await Assert.ThrowsAsync<SerializationException>(
+            () => _store.GetAsync<StrictModel>("null-row"));
+
+        Assert.Equal(typeof(StrictModel), exception.TargetType);
+        Assert.Contains("null-row", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("StrictModel", exception.Message, StringComparison.Ordinal);
+
+        // The row that made the single read throw is the same row Exists reports as present, which
+        // is the contradiction this pins: one answer for the whole store, not two.
+        Assert.True(await _store.ExistsAsync<StrictModel>("null-row"));
+    }
+
+    [Fact]
+    public async Task GetWithVersionAsync_WithASqlNullDataColumn_ThrowsInsteadOfReturningNull()
+    {
+        // A value-type document on purpose: an empty projection deserializes to default(T), which
+        // is 0 rather than null for a struct, so a guard that only tests the deserialized document
+        // for null would hand back a fabricated row here instead of throwing.
+        await CreateNullableTableAsync<StrictValue>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictValue] (id, data) VALUES ('null-row', NULL)",
+            ct));
+
+        var exception = await Assert.ThrowsAsync<SerializationException>(
+            () => _store.GetWithVersionAsync<StrictValue>("null-row"));
+
+        Assert.Equal(typeof(StrictValue), exception.TargetType);
+        Assert.Contains("null-row", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("StrictValue", exception.Message, StringComparison.Ordinal);
+        Assert.True(await _store.ExistsAsync<StrictValue>("null-row"));
+    }
+
+    [Fact]
+    public async Task GetAsync_WithASqlNullDataRowInTheTable_StillReportsAMissingIdAsMissing()
+    {
+        await CreateNullableTableAsync<StrictModel>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            ct));
+
+        // Row presence now decides "not found", so the absent id must stay absent rather than
+        // being swept into the new throw.
+        Assert.Null(await _store.GetAsync<StrictModel>("no-such-id"));
+        Assert.Null(await _store.GetWithVersionAsync<StrictModel>("no-such-id"));
+    }
+
+    [Fact]
     public async Task GetAsync_WithACorruptJsonbPayload_SurfacesTheSqliteError()
     {
         await _store.CreateTableAsync<StrictModel>();
@@ -173,4 +227,6 @@ public class ExceptionIntegrationTests : IDisposable
         public int RequiredInt { get; set; }
         public string Name { get; set; } = string.Empty;
     }
+
+    private readonly record struct StrictValue(int RequiredInt, string Name);
 }
