@@ -209,8 +209,13 @@ internal sealed class BlobReadStream : Stream
         // Read-only: nothing is buffered.
     }
 
+    // Nothing to flush, but a cancelled token still has to be observed: Stream's own FlushAsync
+    // returns a cancelled task, and so do the ReadAsync overrides above.
     /// <inheritdoc />
-    public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public override Task FlushAsync(CancellationToken cancellationToken) =>
+        cancellationToken.IsCancellationRequested
+            ? Task.FromCanceled(cancellationToken)
+            : Task.CompletedTask;
 
     /// <inheritdoc />
     public override void SetLength(long value) =>

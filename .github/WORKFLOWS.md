@@ -11,8 +11,8 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 - Pull requests to `main` or `develop` branches
 - Manual dispatch
 
-**Jobs** (all `ubuntu-latest` — CI is deliberately single-OS to keep it fast):
-- **Build and Test**: Builds, runs unit + integration tests with coverage, runs every example (`-- all`), renders a ReportGenerator summary into the job summary from that same test run, and fails the job if coverage drops below the floors in the workflow `env:` block
+**Jobs** (`ubuntu-latest`, except **Build and Test**, which runs on all three OSes):
+- **Build and Test**: Builds, runs unit + integration tests with coverage, runs every example (`-- all`), renders a ReportGenerator summary into the job summary from that same test run, and fails the job if coverage drops below the floors in the workflow `env:` block. Matrixed over `ubuntu-latest`, `windows-latest` and `macos-latest` with `fail-fast: false`; the coverage report and gate run on Linux only (the same tests cover the same code everywhere, and the gate is a Bash script), and each runner uploads its own `test-results-<os>` artifact
 - **Pack**: Packs the library and asserts the nupkg/snupkg actually contain the README, icon, XML docs and PDB
 - **AOT Publish**: Publishes `examples/AotVerification` for `linux-x64` with trim/AOT warnings as errors, then runs the native binary
 - **Dependency Audit**: Fails on vulnerable packages (`dotnet list package --vulnerable --include-transitive`); reports deprecated ones
@@ -21,7 +21,7 @@ This repository uses GitHub Actions for Continuous Integration and Continuous De
 **Purpose:**
 Core CI: the code builds, tests pass, the samples still run against the current API, the package is well formed, the AOT claim is proven by an actual Native AOT publish + run, and no vulnerable dependency slips in.
 
-**Not covered:** Windows and macOS. The integration tests contain Windows-specific file-lock workarounds that nothing exercises, and the bundled SQLite version differs per OS — re-add `strategy.matrix.os` if either bites.
+**Why the matrix is on the test job only:** what differs per OS is file locking, path handling and WAL sidecar deletion — the integration tests carry Windows-specific file-lock workarounds that a Linux-only pipeline never exercised. The bundled SQLite does *not* differ: the native `e_sqlite3` ships with the pinned `SQLitePCLRaw.lib.e_sqlite3` package, so every runner gets the same version. Packing, AOT publishing, the dependency audit and CodeQL would re-prove the same thing on each runner, so they stay single-OS.
 
 **Artifacts:**
 - Test results (TRX) and the coverage HTML report
@@ -160,11 +160,12 @@ Add these badges to your README:
 ### Coverage Gate Failures
 
 The `Coverage gate` step fails the build when line, branch or method coverage falls under
-`MIN_LINE_COVERAGE` / `MIN_BRANCH_COVERAGE` / `MIN_METHOD_COVERAGE` (90 / 88 / 90), set in the
+`MIN_LINE_COVERAGE` / `MIN_BRANCH_COVERAGE` / `MIN_METHOD_COVERAGE` (93 / 90 / 96), set in the
 workflow `env:` block. It prints one line per metric, so the log names which one missed.
 
-1. Download the `test-results` artifact and open `coverage-report/index.html` to see what the
-   change left uncovered - the gate reads that same report.
+1. Download the `test-results-ubuntu-latest` artifact and open `coverage-report/index.html` to
+   see what the change left uncovered - the gate reads that same report. Only the Linux runner
+   produces it; the Windows and macOS artifacts hold TRX files alone.
 2. Reproduce locally with the numbers CI sees:
    `dotnet test LiteDocumentStore.slnx -c Release --collect:"XPlat Code Coverage"`, then
    `reportgenerator -reports:'**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'TextSummary;JsonSummary'`
