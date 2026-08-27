@@ -1257,14 +1257,20 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateGetBlobSql();
-        var payload = await _connection.ExecuteScalarAsync<byte[]>(sql, cancellationToken, ("Id", id))
+
+        // Row presence, not the payload, decides "not found": a row that exists and holds no
+        // readable blob is corrupt, and returning null for it was indistinguishable from absent.
+        var (storedTypeName, payload, found) = await _connection
+            .QueryFirstBlobRowAsync(sql, cancellationToken, ("Id", id))
             .ConfigureAwait(false);
 
-        if (payload is null)
+        if (!found)
         {
             _logger.LogDebug("Blob {Id} not found", id);
+            return null;
         }
 
+        EnsureBlobPayload(storedTypeName, id);
         return payload;
     }
 
@@ -1529,9 +1535,21 @@ internal readonly struct DocumentOperations
             throw new ArgumentException("ID cannot be null or empty.", nameof(id));
         }
 
-        return await _connection.QueryFirstInt64Async(
-            SqlGenerator.GenerateBlobLengthSql(), cancellationToken, ("Id", id))
+        // Row presence decides "not found" here too, and the storage class has to be checked
+        // even though the payload is never read: length() counts characters on a TEXT value and
+        // digits on a number, so a non-blob row reported a plausible byte count that was not one.
+        var (storedTypeName, length, found) = await _connection
+            .QueryFirstInt64RowAsync(SqlGenerator.GenerateBlobLengthSql(), cancellationToken, ("Id", id))
             .ConfigureAwait(false);
+
+        if (!found)
+        {
+            _logger.LogDebug("Blob {Id} not found", id);
+            return null;
+        }
+
+        EnsureBlobPayload(storedTypeName, id);
+        return length;
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteBlobAsync" />
@@ -1638,8 +1656,15 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// Reads <c>id, length(data), content_type, created_at, updated_at, version</c> rows.
+    /// Reads <c>id, typeof(data), length(data), content_type, created_at, updated_at,
+    /// version</c> rows.
     /// </summary>
+    /// <remarks>
+    /// The id travels with each row so a corrupt one can be named — the reason the listing
+    /// projects it at all. A single unreadable row fails the whole listing rather than being
+    /// skipped, matching <c>GetAllAsync</c>: returning fewer rows than the table holds is data
+    /// loss the caller cannot detect.
+    /// </remarks>
     private async Task<List<BlobInfo>> ReadBlobInfosAsync(
         string sql,
         CancellationToken cancellationToken,
@@ -1657,13 +1682,16 @@ internal readonly struct DocumentOperations
         var results = new List<BlobInfo>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            var id = reader.GetString(0);
+            EnsureBlobPayload(reader.IsDBNull(1) ? null : reader.GetString(1), id);
+
             results.Add(new BlobInfo(
-                reader.GetString(0),
-                reader.GetInt64(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                id,
+                reader.GetInt64(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
-                reader.GetInt64(5)));
+                reader.IsDBNull(5) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                reader.GetInt64(6)));
         }
 
         return results;
@@ -1722,13 +1750,43 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// The exception for a row that exists but reads back as nothing: a SQL NULL <c>data</c>
-    /// column, an empty <c>json(data)</c> projection, or stored JSON that deserializes to null.
+    /// The exception for a document row that exists but reads back as nothing: a SQL NULL
+    /// <c>data</c> column, an empty <c>json(data)</c> projection, or stored JSON that
+    /// deserializes to null.
     /// </summary>
-    private static SerializationException NullDocument<T>(string? id, string tableName) =>
+    private static CorruptDataException NullDocument<T>(string? id, string tableName) =>
         new($"Document '{id}' in table '{tableName}' has no readable payload as {typeof(T).Name}. " +
             "The stored data is SQL NULL, empty, or JSON null; fix or remove the row.",
+            id,
+            tableName,
             typeof(T));
+
+    /// <summary>
+    /// Validates that a blob row's <c>data</c> column holds a BLOB, throwing when it holds any
+    /// other storage class.
+    /// </summary>
+    /// <remarks>
+    /// Every blob read that consumes the payload — or reports its length, which
+    /// <c>length()</c> answers for TEXT and numbers too — funnels through here, so the five
+    /// read paths cannot drift apart again. An empty blob (<c>x''</c> or <c>zeroblob(0)</c>) is
+    /// a BLOB and passes.
+    /// </remarks>
+    internal static void EnsureBlobPayload(string? storedTypeName, string id)
+    {
+        if (storedTypeName == SqliteStorageClass.Blob)
+        {
+            return;
+        }
+
+        throw new CorruptDataException(
+            $"Blob '{id}' in table '{SqlGenerator.BlobTableName}' has no readable payload: its " +
+            $"data column holds {storedTypeName ?? "an unknown storage class"}, not a blob. " +
+            "Overwrite or remove the row.",
+            id,
+            SqlGenerator.BlobTableName,
+            targetType: null,
+            storedTypeName: storedTypeName);
+    }
 
     /// <summary>
     /// Extracts the JSON path from a lambda expression.
