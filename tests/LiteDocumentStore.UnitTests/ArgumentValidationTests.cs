@@ -104,9 +104,18 @@ public sealed class ArgumentValidationTests
         table.Add("QueryAsync(query)", s => s.QueryAsync<Doc>((DocumentQuery<Doc>)null!));
         table.Add("CountAsync(query)", s => s.CountAsync<Doc>(null!));
         table.Add("ExistsAsync(query)", s => s.ExistsAsync<Doc>((DocumentQuery<Doc>)null!));
-        table.Add("CreateIndexAsync(jsonPath)", s => s.CreateIndexAsync<Doc>(null!));
-        table.Add("CreateCompositeIndexAsync(jsonPaths)", s => s.CreateCompositeIndexAsync<Doc>(null!));
-        table.Add("AddVirtualColumnAsync(jsonPath)", s => s.AddVirtualColumnAsync<Doc>(null!, "col"));
+        table.Add(
+            "CreateIndexAsync(expression)",
+            s => s.CreateIndexAsync<Doc>((System.Linq.Expressions.Expression<System.Func<Doc, object>>)null!));
+        table.Add("CreateIndexAsync(jsonPath)", s => s.CreateIndexAsync<Doc>((string)null!));
+        table.Add(
+            "CreateCompositeIndexAsync(expressions)",
+            s => s.CreateCompositeIndexAsync<Doc>((System.Linq.Expressions.Expression<System.Func<Doc, object>>[])null!));
+        table.Add("CreateCompositeIndexAsync(jsonPaths)", s => s.CreateCompositeIndexAsync<Doc>((string[])null!));
+        table.Add(
+            "AddVirtualColumnAsync(expression)",
+            s => s.AddVirtualColumnAsync<Doc>((System.Linq.Expressions.Expression<System.Func<Doc, object>>)null!, "col"));
+        table.Add("AddVirtualColumnAsync(jsonPath)", s => s.AddVirtualColumnAsync<Doc>((string)null!, "col"));
         table.Add("DropIndexAsync(expression)", s => s.DropIndexAsync<Doc>(null!));
         table.Add("PutBlobAsync(source)", s => s.PutBlobAsync("a", (Stream)null!, 3));
         table.Add("PutBlobWithVersionAsync(source)", s => s.PutBlobWithVersionAsync("a", (Stream)null!, 3, 0));

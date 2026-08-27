@@ -257,6 +257,28 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task CreateIndexAsync<T>(
+        string jsonPath,
+        string? indexName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CreateIndexAsync<T>(jsonPath, indexName, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task CreateIndexAsync<T>(
+        string jsonPath,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.CreateIndexAsync<T>(jsonPath, indexName, options, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
@@ -279,6 +301,28 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
+        string? indexName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.CreateCompositeIndexAsync<T>(jsonPaths, indexName, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ActiveTransaction();
+        return _operations.CreateCompositeIndexAsync<T>(jsonPaths, indexName, options, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
@@ -288,6 +332,18 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         ActiveTransaction();
         return _operations.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task AddVirtualColumnAsync<T>(
+        string jsonPath,
+        string columnName,
+        bool createIndex = false,
+        string columnType = "TEXT",
+        CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.AddVirtualColumnAsync<T>(jsonPath, columnName, createIndex, columnType, cancellationToken);
     }
 
     /// <inheritdoc />

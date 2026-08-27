@@ -64,4 +64,4 @@ BenchmarkDotNet.Artifacts
 aot-out/
 
 # Local audit working notes — deliberately untracked.
-AUDIT.md
+AUDIT*.md

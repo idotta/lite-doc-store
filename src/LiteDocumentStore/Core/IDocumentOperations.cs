@@ -311,12 +311,47 @@ public interface IDocumentOperations
     /// <summary>
     /// Creates an index over a JSON path, if it does not already exist.
     /// </summary>
+    /// <remarks>
+    /// The path is resolved through the store's own <c>SerializerOptions</c>, so
+    /// <c>x => x.Email</c> names whatever key the documents carry — <c>$.Email</c>,
+    /// <c>$.email</c> under a naming policy, or <c>$.email_address</c> under a
+    /// <c>[JsonPropertyName]</c>. A member the serializer does not write throws rather than
+    /// producing an index that is NULL in every row.
+    /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="jsonPath">A property-access expression, e.g. <c>x => x.Email</c></param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPath"/> is not a property access, when the serializer has
+    /// no metadata for a type along it, or when the member it names is not serialized
+    /// </exception>
     Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
+        string? indexName = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates an index over an explicit JSON path, if it does not already exist.
+    /// </summary>
+    /// <remarks>
+    /// The string form the query and patch APIs already take, for paths no property-access
+    /// expression can name: a key written by something other than <typeparamref name="T"/>'s
+    /// serializer, or an array element. The path is used verbatim — nothing reconciles it
+    /// against what the documents carry.
+    /// </remarks>
+    /// <typeparam name="T">The document type, which selects the table</typeparam>
+    /// <param name="jsonPath">
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A path holding an array indexer
+    /// has no derivable index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
+    /// <param name="indexName">An explicit index name, or null to derive one</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPath"/> is null, empty, whitespace or not a valid JSON path
+    /// </exception>
+    Task CreateIndexAsync<T>(
+        string jsonPath,
         string? indexName = null,
         CancellationToken cancellationToken = default);
 
@@ -347,6 +382,29 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates an index over an explicit JSON path with explicit DDL options, if an index of
+    /// that name does not already exist.
+    /// </summary>
+    /// <typeparam name="T">The document type, which selects the table</typeparam>
+    /// <param name="jsonPath">
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A path holding an array indexer
+    /// has no derivable index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
+    /// <param name="indexName">An explicit index name, or null to derive one</param>
+    /// <param name="options">The index DDL options</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPath"/> is not a valid JSON path, or when
+    /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
+    /// </exception>
+    Task CreateIndexAsync<T>(
+        string jsonPath,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates a composite index over several JSON paths, if it does not already exist.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>
@@ -355,6 +413,25 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
+        string? indexName = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a composite index over several explicit JSON paths, if it does not already exist.
+    /// </summary>
+    /// <typeparam name="T">The document type, which selects the table</typeparam>
+    /// <param name="jsonPaths">
+    /// The JSON paths, in index column order. A path holding an array indexer has no derivable
+    /// index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
+    /// <param name="indexName">An explicit index name, or null to derive one</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPaths"/> is empty or holds a path that is null, empty,
+    /// whitespace or not a valid JSON path
+    /// </exception>
+    Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
         string? indexName = null,
         CancellationToken cancellationToken = default);
 
@@ -386,6 +463,29 @@ public interface IDocumentOperations
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates a composite index over several explicit JSON paths with explicit DDL options, if
+    /// an index of that name does not already exist.
+    /// </summary>
+    /// <typeparam name="T">The document type, which selects the table</typeparam>
+    /// <param name="jsonPaths">
+    /// The JSON paths, in index column order. A path holding an array indexer has no derivable
+    /// index name, so it needs an explicit <paramref name="indexName"/>
+    /// </param>
+    /// <param name="indexName">An explicit index name, or null to derive one</param>
+    /// <param name="options">The index DDL options</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPaths"/> is empty or holds an invalid path, or when
+    /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
+    /// </exception>
+    Task CreateCompositeIndexAsync<T>(
+        string[] jsonPaths,
+        string? indexName,
+        IndexOptions options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Adds a generated (virtual) column projecting a JSON path, so that raw SQL can index
     /// and seek on it.
     /// </summary>
@@ -397,6 +497,28 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
+        string columnName,
+        bool createIndex = false,
+        string columnType = "TEXT",
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adds a generated (virtual) column projecting an explicit JSON path, so that raw SQL can
+    /// index and seek on it.
+    /// </summary>
+    /// <typeparam name="T">The document type, which selects the table</typeparam>
+    /// <param name="jsonPath">The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c></param>
+    /// <param name="columnName">The generated column's name</param>
+    /// <param name="createIndex">Whether to also index the column</param>
+    /// <param name="columnType">The column's SQLite type (default TEXT)</param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPath"/> or <paramref name="columnName"/> is null, empty or
+    /// whitespace, when the path is not a valid JSON path, or when <paramref name="columnType"/>
+    /// is not a SQLite storage class
+    /// </exception>
+    Task AddVirtualColumnAsync<T>(
+        string jsonPath,
         string columnName,
         bool createIndex = false,
         string columnType = "TEXT",
