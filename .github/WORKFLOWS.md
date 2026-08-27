@@ -160,11 +160,12 @@ Add these badges to your README:
 ### Coverage Gate Failures
 
 The `Coverage gate` step fails the build when line, branch or method coverage falls under
-`MIN_LINE_COVERAGE` / `MIN_BRANCH_COVERAGE` / `MIN_METHOD_COVERAGE` (90 / 88 / 90), set in the
+`MIN_LINE_COVERAGE` / `MIN_BRANCH_COVERAGE` / `MIN_METHOD_COVERAGE` (93 / 90 / 96), set in the
 workflow `env:` block. It prints one line per metric, so the log names which one missed.
 
-1. Download the `test-results` artifact and open `coverage-report/index.html` to see what the
-   change left uncovered - the gate reads that same report.
+1. Download the `test-results-ubuntu-latest` artifact and open `coverage-report/index.html` to
+   see what the change left uncovered - the gate reads that same report. Only the Linux runner
+   produces it; the Windows and macOS artifacts hold TRX files alone.
 2. Reproduce locally with the numbers CI sees:
    `dotnet test LiteDocumentStore.slnx -c Release --collect:"XPlat Code Coverage"`, then
    `reportgenerator -reports:'**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'TextSummary;JsonSummary'`
