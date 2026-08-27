@@ -287,7 +287,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LogWarningQuietly(ex, "Failed to verify a returned pooled connection");
+            _logger.LogWarningQuietly(ex, "Failed to verify a returned pooled connection");
             reason = "the pool could not verify its session state";
             return true;
         }
@@ -456,7 +456,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     private void DiscardBrokenConnection(SqliteConnection connection, string reason)
     {
         Interlocked.Decrement(ref _created);
-        LogWarningQuietly(reason);
+        _logger.LogWarningQuietly("Discarding a pooled connection: {Reason}", reason);
         CloseQuietly(connection);
     }
 
@@ -479,7 +479,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LogWarningQuietly(ex, "Failed to close a pooled connection; retrying once");
+            _logger.LogWarningQuietly(ex, "Failed to close a pooled connection; retrying once");
         }
 
         // The one failure mode measured here clears itself: the first Dispose throws while
@@ -492,7 +492,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LogWarningQuietly(ex, "Failed to close a pooled connection");
+            _logger.LogWarningQuietly(ex, "Failed to close a pooled connection");
         }
     }
 
@@ -506,7 +506,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LogWarningQuietly(ex, "Failed to close a pooled connection; retrying once");
+            _logger.LogWarningQuietly(ex, "Failed to close a pooled connection; retrying once");
         }
 
         try
@@ -515,43 +515,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            LogWarningQuietly(ex, "Failed to close a pooled connection");
-        }
-    }
-
-    /// <summary>
-    /// Logs that a connection is being discarded, swallowing a failure from the logger itself.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="ILogger"/> is caller-supplied and may throw. Everywhere this is used, the
-    /// operation that owned the connection has already produced its result or its exception, and
-    /// the connection still has to be disposed of — so a logging failure must not escape, and
-    /// must not stop the cleanup that follows it. The same reasoning as the finalizer in
-    /// <c>BlobReadStream</c>. Logging on the rent path is deliberately left unguarded: a caller
-    /// is waiting there, and a broken logger should fail their rent rather than be hidden.
-    /// </remarks>
-    private void LogWarningQuietly(string reason)
-    {
-        try
-        {
-            _logger.LogWarning("Discarding a pooled connection: {Reason}", reason);
-        }
-        catch
-        {
-            // Nothing left to report it to.
-        }
-    }
-
-    /// <inheritdoc cref="LogWarningQuietly(string)" />
-    private void LogWarningQuietly(Exception error, string message)
-    {
-        try
-        {
-            _logger.LogWarning(error, "{Message}", message);
-        }
-        catch
-        {
-            // Nothing left to report it to.
+            _logger.LogWarningQuietly(ex, "Failed to close a pooled connection");
         }
     }
 

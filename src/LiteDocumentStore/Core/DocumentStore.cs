@@ -752,8 +752,18 @@ internal sealed class DocumentStore : IDocumentStore
             return;
         }
 
-        await PerformWalCheckpointAsync().ConfigureAwait(false);
-        await _pool.DisposeAsync().ConfigureAwait(false);
+        // The pool closes in a finally: _disposed is already set, so a throw out of the
+        // checkpoint would leave every pooled connection — and its file lock — open until the
+        // process ends, with no second chance to close them. The checkpoint swallows its own
+        // failures, so this guards against what is added to that method later.
+        try
+        {
+            await PerformWalCheckpointAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await _pool.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <inheritdoc cref="DisposeAsync" />
@@ -764,8 +774,15 @@ internal sealed class DocumentStore : IDocumentStore
             return;
         }
 
-        PerformWalCheckpoint();
-        _pool.Dispose();
+        // See DisposeAsync.
+        try
+        {
+            PerformWalCheckpoint();
+        }
+        finally
+        {
+            _pool.Dispose();
+        }
     }
 
     /// <summary>
@@ -794,17 +811,17 @@ internal sealed class DocumentStore : IDocumentStore
 
             if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogDebug("Executing WAL checkpoint before disposal");
+                _logger.LogDebugQuietly("Executing WAL checkpoint before disposal");
                 // PRAGMA wal_checkpoint(TRUNCATE) ensures all WAL frames are checkpointed and the WAL file is truncated
                 await lease.Connection.ExecuteAsync("PRAGMA wal_checkpoint(TRUNCATE)", CancellationToken.None)
                     .ConfigureAwait(false);
-                _logger.LogInformation("WAL checkpoint completed successfully");
+                _logger.LogInformationQuietly("WAL checkpoint completed successfully");
             }
         }
         catch (Exception ex)
         {
             // Don't throw during disposal - log and continue
-            _logger.LogWarning(ex, "Failed to perform WAL checkpoint during disposal");
+            _logger.LogWarningQuietly(ex, "Failed to perform WAL checkpoint during disposal");
         }
     }
 
@@ -824,16 +841,16 @@ internal sealed class DocumentStore : IDocumentStore
 
             if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogDebug("Executing WAL checkpoint before disposal");
+                _logger.LogDebugQuietly("Executing WAL checkpoint before disposal");
                 // PRAGMA wal_checkpoint(TRUNCATE) ensures all WAL frames are checkpointed and the WAL file is truncated
                 lease.Connection.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
-                _logger.LogInformation("WAL checkpoint completed successfully");
+                _logger.LogInformationQuietly("WAL checkpoint completed successfully");
             }
         }
         catch (Exception ex)
         {
             // Don't throw during disposal - log and continue
-            _logger.LogWarning(ex, "Failed to perform WAL checkpoint during disposal");
+            _logger.LogWarningQuietly(ex, "Failed to perform WAL checkpoint during disposal");
         }
     }
 

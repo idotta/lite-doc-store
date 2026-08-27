@@ -45,11 +45,24 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         var transaction = ActiveTransaction();
 
+        // The provider await sits outside the try on purpose: a commit that fails leaves the
+        // transaction alive so the caller can roll back or retry, and releasing the lease here
+        // would take that away. Everything after it is in a finally, because Release is the only
+        // path back to the pool and it is one-shot — a throw between the successful commit and
+        // that call (a caller-supplied ILogger is caller code) would lose the connection for the
+        // lifetime of the process. The log stays loud: a caller is waiting on this method and
+        // should learn that their logger is broken.
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        IsCommitted = true;
-        _logger.LogDebug("Transaction committed");
 
-        Release();
+        try
+        {
+            IsCommitted = true;
+            _logger.LogDebug("Transaction committed");
+        }
+        finally
+        {
+            Release();
+        }
     }
 
     /// <inheritdoc />
@@ -57,10 +70,17 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         var transaction = ActiveTransaction();
 
+        // See CommitAsync for why the await is outside the try and the log stays loud.
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-        _logger.LogDebug("Transaction rolled back");
 
-        Release();
+        try
+        {
+            _logger.LogDebug("Transaction rolled back");
+        }
+        finally
+        {
+            Release();
+        }
     }
 
     // Every operation below goes through ActiveTransaction() first: once the transaction has
@@ -567,8 +587,17 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
             return;
         }
 
-        RollbackIfPending();
-        Release();
+        // Release in a finally, and never past a log that could throw: it is the only path back
+        // to the pool, it is one-shot, and _disposed is already set, so anything that escapes
+        // before it loses this connection for the lifetime of the process.
+        try
+        {
+            RollbackIfPending();
+        }
+        finally
+        {
+            Release();
+        }
     }
 
     /// <inheritdoc cref="Dispose" />
@@ -579,23 +608,30 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
             return;
         }
 
-        if (_transaction is { } pending)
+        // See Dispose: Release runs in a finally, and both logs are quiet because a throw from
+        // either would skip it.
+        try
         {
-            try
+            if (_transaction is { } pending)
             {
-                await pending.RollbackAsync().ConfigureAwait(false);
-                _logger.LogDebug("Uncommitted transaction rolled back on disposal");
-            }
-            catch (Exception ex)
-            {
-                // The connection may still carry an open transaction, which would poison the
-                // next renter, so it must not go back into the pool.
-                _connectionCompromised = true;
-                _logger.LogWarning(ex, "Failed to roll back an uncommitted transaction during disposal");
+                try
+                {
+                    await pending.RollbackAsync().ConfigureAwait(false);
+                    _logger.LogDebugQuietly("Uncommitted transaction rolled back on disposal");
+                }
+                catch (Exception ex)
+                {
+                    // The connection may still carry an open transaction, which would poison the
+                    // next renter, so it must not go back into the pool.
+                    _connectionCompromised = true;
+                    _logger.LogWarningQuietly(ex, "Failed to roll back an uncommitted transaction during disposal");
+                }
             }
         }
-
-        Release();
+        finally
+        {
+            Release();
+        }
     }
 
     private void RollbackIfPending()
@@ -608,14 +644,14 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         try
         {
             pending.Rollback();
-            _logger.LogDebug("Uncommitted transaction rolled back on disposal");
+            _logger.LogDebugQuietly("Uncommitted transaction rolled back on disposal");
         }
         catch (Exception ex)
         {
             // See DisposeAsync: a connection that may still hold an open transaction cannot be
             // recycled.
             _connectionCompromised = true;
-            _logger.LogWarning(ex, "Failed to roll back an uncommitted transaction during disposal");
+            _logger.LogWarningQuietly(ex, "Failed to roll back an uncommitted transaction during disposal");
         }
     }
 
@@ -645,23 +681,31 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
 
         var transaction = Interlocked.Exchange(ref _transaction, null);
 
+        // The hand-back is in a finally and the log is quiet, so nothing between the decision and
+        // the return can skip it. _released is already set, so a lease that is not handed back
+        // here is never handed back at all.
         try
         {
-            transaction?.Dispose();
+            try
+            {
+                transaction?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _connectionCompromised = true;
+                _logger.LogWarningQuietly(ex, "Failed to dispose the underlying SQLite transaction");
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            _connectionCompromised = true;
-            _logger.LogWarning(ex, "Failed to dispose the underlying SQLite transaction");
-        }
-
-        if (_connectionCompromised)
-        {
-            _lease.Discard();
-        }
-        else
-        {
-            _lease.Dispose();
+            if (_connectionCompromised)
+            {
+                _lease.Discard();
+            }
+            else
+            {
+                _lease.Dispose();
+            }
         }
     }
 }
