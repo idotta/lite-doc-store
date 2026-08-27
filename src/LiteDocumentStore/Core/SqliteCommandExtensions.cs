@@ -209,6 +209,86 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
+    /// Executes a blob read whose first row is <c>typeof(data), data</c>, and returns the
+    /// storage class, the payload and whether the statement produced a row at all.
+    /// </summary>
+    /// <remarks>
+    /// The payload is only read when the storage class is exactly <c>"blob"</c>, and that check
+    /// is load-bearing rather than defensive: <c>GetFieldValue&lt;byte[]&gt;</c> silently
+    /// succeeds on a TEXT, INTEGER or REAL value, handing back SQLite's coerced bytes, so
+    /// reading first and validating afterwards would substitute wrong bytes for a detectable
+    /// failure. <see cref="ExecuteScalarAsync{T}"/> cannot serve this read at all —
+    /// <see cref="ConvertScalar{T}"/> reaches <c>Convert.ChangeType</c>, which cannot target
+    /// <c>byte[]</c>.
+    /// </remarks>
+    public static async Task<(string? TypeName, byte[]? Payload, bool Found)> QueryFirstBlobRowAsync(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return (null, null, false);
+        }
+
+        var typeName = reader.IsDBNull(0) ? null : reader.GetString(0);
+        var payload = typeName == SqliteStorageClass.Blob ? reader.GetFieldValue<byte[]>(1) : null;
+        return (typeName, payload, true);
+    }
+
+    /// <summary>
+    /// Executes a query whose first row is <c>typeof(data), &lt;integer&gt;</c>, and returns the
+    /// storage class, the integer and whether the statement produced a row at all.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="QueryFirstInt64Async"/> collapses "no row" and "row whose column is NULL" into
+    /// the same null, which is right for a <c>RETURNING version</c> guard but not for a blob
+    /// length: a row that exists and holds no readable payload is corrupt, not missing.
+    /// </remarks>
+    public static async Task<(string? TypeName, long? Value, bool Found)> QueryFirstInt64RowAsync(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return (null, null, false);
+        }
+
+        var typeName = reader.IsDBNull(0) ? null : reader.GetString(0);
+        return (typeName, reader.IsDBNull(1) ? null : reader.GetInt64(1), true);
+    }
+
+    /// <summary>
+    /// Executes a query whose first row has an integer first column and a string second column
+    /// (e.g. <c>SELECT rowid, typeof(data)</c>). Returns null when there is no row.
+    /// </summary>
+    public static async Task<(long Number, string? Text)?> QueryFirstInt64StringAsync(
+        this SqliteConnection connection,
+        string commandText,
+        CancellationToken cancellationToken,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using var command = CreateCommand(connection, commandText, parameters);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return (reader.GetInt64(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
+    /// <summary>
     /// Executes a query and returns the first column of the first row as a string,
     /// or null when there is no row or the value is NULL.
     /// </summary>

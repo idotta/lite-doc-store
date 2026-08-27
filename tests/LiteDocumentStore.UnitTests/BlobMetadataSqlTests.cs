@@ -175,6 +175,24 @@ public class BlobMetadataSqlTests
         Assert.DoesNotContain("SELECT data", sql);
     }
 
+    [Fact]
+    public void GenerateBlobInfoSql_CarriesTheStorageClassBesideTheLength()
+    {
+        // Without it a TEXT or numeric payload reports its character or digit count as a byte
+        // length — a wrong answer rather than a detectable one.
+        Assert.Contains("typeof(data)", SqlGenerator.GenerateBlobInfoSql());
+    }
+
+    [Fact]
+    public void GenerateListBlobsSql_CarriesTheIdAndTheStorageClassOnEveryRow()
+    {
+        var sql = SqlGenerator.GenerateListBlobsSql(false, false, false, false);
+
+        // The id is what lets a corrupt row in a listing be named; the storage class is what
+        // makes it detectable at all.
+        Assert.Contains("SELECT id, typeof(data), length(data)", sql);
+    }
+
     [Theory]
     [InlineData(false, false, false, false)]
     [InlineData(true, true, false, false)]

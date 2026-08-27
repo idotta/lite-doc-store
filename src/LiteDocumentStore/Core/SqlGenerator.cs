@@ -363,10 +363,15 @@ internal static class SqlGenerator
     /// <summary>
     /// Generates SQL for reading a blob's metadata without reading the payload.
     /// </summary>
+    /// <remarks>
+    /// <c>typeof(data)</c> travels with the row because <c>length()</c> answers for a non-BLOB
+    /// payload too — characters for TEXT, digits for a number — so the reported length would
+    /// otherwise be a wrong answer rather than a detectable one.
+    /// </remarks>
     public static string GenerateBlobInfoSql()
     {
         return $@"
-            SELECT id, length(data), content_type, created_at, updated_at, version
+            SELECT id, typeof(data), length(data), content_type, created_at, updated_at, version
             FROM [{BlobTableName}]
             WHERE id = @Id";
     }
@@ -389,7 +394,7 @@ internal static class SqlGenerator
     {
         var sql = new StringBuilder();
         sql.Append($@"
-            SELECT id, length(data), content_type, created_at, updated_at, version
+            SELECT id, typeof(data), length(data), content_type, created_at, updated_at, version
             FROM [{BlobTableName}]");
 
         if (hasPrefix)
@@ -422,28 +427,45 @@ internal static class SqlGenerator
     }
 
     /// <summary>
-    /// Generates SQL for retrieving a raw binary blob by ID.
+    /// Generates SQL for retrieving a raw binary blob by ID, with the storage class its
+    /// <c>data</c> column actually holds.
     /// </summary>
+    /// <remarks>
+    /// <c>typeof(data)</c> leads the projection on every blob read so the payload can be
+    /// rejected before it is used. A reader hands back SQLite's coerced bytes for a TEXT,
+    /// INTEGER or REAL value without complaint, so nothing downstream can tell those from a
+    /// real blob.
+    /// </remarks>
     public static string GenerateGetBlobSql()
     {
-        return $"SELECT data FROM [{BlobTableName}] WHERE id = @Id";
+        return $"SELECT typeof(data), data FROM [{BlobTableName}] WHERE id = @Id";
     }
 
     /// <summary>
     /// Generates SQL for retrieving the rowid of a blob by ID, which SQLite's incremental
-    /// blob I/O addresses rows by.
+    /// blob I/O addresses rows by, together with its storage class.
     /// </summary>
+    /// <remarks>
+    /// The storage class is read here because incremental blob I/O accepts a TEXT value and
+    /// reads its UTF-8 bytes — only INTEGER and REAL make <c>SqliteBlob</c> refuse — so a
+    /// non-BLOB payload has to be caught before the handle opens.
+    /// </remarks>
     public static string GenerateBlobRowIdSql()
     {
-        return $"SELECT rowid FROM [{BlobTableName}] WHERE id = @Id";
+        return $"SELECT rowid, typeof(data) FROM [{BlobTableName}] WHERE id = @Id";
     }
 
     /// <summary>
-    /// Generates SQL for retrieving the byte length of a blob by ID, without reading it.
+    /// Generates SQL for retrieving the byte length of a blob by ID, without reading it,
+    /// together with its storage class.
     /// </summary>
+    /// <remarks>
+    /// <c>length()</c> counts characters on a TEXT value and digits on a number, so without the
+    /// storage class a non-BLOB payload reports a plausible byte count that is not one.
+    /// </remarks>
     public static string GenerateBlobLengthSql()
     {
-        return $"SELECT length(data) FROM [{BlobTableName}] WHERE id = @Id";
+        return $"SELECT typeof(data), length(data) FROM [{BlobTableName}] WHERE id = @Id";
     }
 
     /// <summary>
@@ -562,7 +584,7 @@ internal static class SqlGenerator
     /// </summary>
     /// <remarks>
     /// The id travels with the document so a row that deserializes to null can be named in a
-    /// <see cref="Exceptions.SerializationException"/> instead of being silently dropped.
+    /// <see cref="Exceptions.CorruptDataException"/> instead of being silently dropped.
     /// </remarks>
     public static string GenerateGetAllSql(string tableName)
     {

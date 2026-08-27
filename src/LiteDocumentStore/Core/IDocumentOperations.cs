@@ -152,7 +152,7 @@ public interface IDocumentOperations
     /// <param name="id">The document identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The document and its version, or null when not found</returns>
-    /// <exception cref="Exceptions.SerializationException">
+    /// <exception cref="Exceptions.CorruptDataException">
     /// Thrown when the row exists but reads back as nothing — a SQL NULL <c>data</c> column
     /// (only reachable through raw SQL, since the store's own DDL forbids it) or stored JSON
     /// that deserializes to null — which would otherwise be indistinguishable from not found.
@@ -168,7 +168,7 @@ public interface IDocumentOperations
     /// <param name="id">The document identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The document, or default when not found</returns>
-    /// <exception cref="Exceptions.SerializationException">
+    /// <exception cref="Exceptions.CorruptDataException">
     /// Thrown when the row exists but reads back as nothing — a SQL NULL <c>data</c> column or
     /// stored JSON that deserializes to null. An absent id still returns default.
     /// </exception>
@@ -180,6 +180,11 @@ public interface IDocumentOperations
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>All stored documents</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any row reads back as nothing — a SQL NULL <c>data</c> column, or the JSON
+    /// literal <c>null</c>. The read fails rather than skipping the row: returning fewer
+    /// documents than the table holds is data loss the caller cannot detect.
+    /// </exception>
     Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -199,6 +204,10 @@ public interface IDocumentOperations
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="ids"/> is null</exception>
     /// <exception cref="ArgumentException">
     /// Thrown when any id is null, empty or whitespace
+    /// </exception>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when a matched row reads back as nothing. A missing id is an absent key, never a
+    /// null value, so the two cases stay distinguishable.
     /// </exception>
     Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
         IEnumerable<string> ids,
@@ -257,6 +266,10 @@ public interface IDocumentOperations
     /// <param name="value">The value to match</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The matching documents</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any matching row reads back as nothing, for the reason given on
+    /// <see cref="GetAllAsync{T}(CancellationToken)"/>.
+    /// </exception>
     Task<IEnumerable<T>> QueryAsync<T, TValue>(
         string jsonPath,
         TValue value,
@@ -276,6 +289,10 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The matching documents</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any matching row reads back as nothing, for the reason given on
+    /// <see cref="GetAllAsync{T}(CancellationToken)"/>.
+    /// </exception>
     Task<IEnumerable<T>> QueryAsync<T>(
         DocumentQuery<T> query,
         CancellationToken cancellationToken = default);
@@ -751,6 +768,11 @@ public interface IDocumentOperations
     /// <param name="id">The blob identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The stored length in bytes, or null when the blob does not exist</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when the row exists but its <c>data</c> column holds no blob. <c>length()</c>
+    /// answers for a TEXT or numeric value too — counting characters or digits — so the
+    /// alternative was a plausible byte count that is not one.
+    /// </exception>
     Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -759,6 +781,11 @@ public interface IDocumentOperations
     /// <param name="id">The blob identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The stored bytes, or null when not found</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when the row exists but its <c>data</c> column holds no blob — SQL NULL, or a
+    /// TEXT or numeric value, neither of which the store's own DDL permits. An absent id still
+    /// returns null.
+    /// </exception>
     Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -794,6 +821,10 @@ public interface IDocumentOperations
     /// <param name="id">The blob identifier</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The metadata, or null when the blob does not exist</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when the row exists but its <c>data</c> column holds no blob, for the reason given
+    /// on <see cref="BlobLengthAsync"/>. An absent id still returns null.
+    /// </exception>
     Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -812,6 +843,12 @@ public interface IDocumentOperations
     /// <param name="take">How many to return, or null for all that remain</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The matching metadata, in id order</returns>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when any row in the listing holds no blob in its <c>data</c> column. The listing
+    /// fails rather than skipping the row, matching
+    /// <see cref="GetAllAsync{T}(CancellationToken)"/>: returning fewer rows than the table
+    /// holds is data loss the caller cannot detect.
+    /// </exception>
     Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
         string? idPrefix = null,
         int skip = 0,

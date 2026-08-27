@@ -197,6 +197,54 @@ public class ExceptionTests
         Assert.IsAssignableFrom<LiteDocumentStoreException>(new TableNotFoundException("test"));
         Assert.IsAssignableFrom<LiteDocumentStoreException>(new SerializationException("test"));
         Assert.IsAssignableFrom<LiteDocumentStoreException>(new ConcurrencyException("test"));
+        Assert.IsAssignableFrom<LiteDocumentStoreException>(new CorruptDataException("test"));
+    }
+
+    [Fact]
+    public void CorruptDataException_IsNotASerializationException()
+    {
+        // A deliberate split: a corrupt row and a JSON serialization failure are different
+        // problems, so catching one must not catch the other.
+        Assert.IsNotAssignableFrom<SerializationException>(new CorruptDataException("test"));
+    }
+
+    [Fact]
+    public void CorruptDataException_MessageConstructor_LeavesEveryPropertyUnset()
+    {
+        var exception = new CorruptDataException("no readable payload");
+
+        Assert.Equal("no readable payload", exception.Message);
+        Assert.Null(exception.Id);
+        Assert.Null(exception.TableName);
+        Assert.Null(exception.TargetType);
+        Assert.Null(exception.StoredTypeName);
+    }
+
+    [Fact]
+    public void CorruptDataException_ForADocument_CarriesTheIdTableAndType()
+    {
+        var exception = new CorruptDataException("corrupt", "doc-1", "Customer", typeof(Customer));
+
+        Assert.Equal("doc-1", exception.Id);
+        Assert.Equal("Customer", exception.TableName);
+        Assert.Equal(typeof(Customer), exception.TargetType);
+
+        // A document read projects json(data), never typeof(data), so no storage class is seen.
+        Assert.Null(exception.StoredTypeName);
+    }
+
+    [Fact]
+    public void CorruptDataException_ForABlob_CarriesTheStorageClassAndNoTargetType()
+    {
+        var exception = new CorruptDataException(
+            "corrupt", "blob-1", "__store_blobs", targetType: null, storedTypeName: "text");
+
+        Assert.Equal("blob-1", exception.Id);
+        Assert.Equal("__store_blobs", exception.TableName);
+
+        // A blob is raw bytes; there is no type it was being read as.
+        Assert.Null(exception.TargetType);
+        Assert.Equal("text", exception.StoredTypeName);
     }
 
     private sealed class Customer

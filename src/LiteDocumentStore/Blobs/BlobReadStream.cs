@@ -72,18 +72,26 @@ internal sealed class BlobReadStream : Stream
             // blob handle opens.
             transaction = connection.BeginTransaction(System.Data.IsolationLevel.Serializable, deferred: true);
 
-            var rowId = await connection.QueryFirstInt64Async(
+            var row = await connection.QueryFirstInt64StringAsync(
                 SqlGenerator.GenerateBlobRowIdSql(), cancellationToken, ("Id", id)).ConfigureAwait(false);
 
-            if (rowId is null)
+            if (row is null)
             {
                 logger.LogDebug("Blob {Id} not found", id);
                 await ReleaseAsync(transaction, connection, slot, logger).ConfigureAwait(false);
                 return null;
             }
 
+            var (rowId, storedTypeName) = row.Value;
+
+            // Before the handle opens, because SqliteBlob accepts a TEXT value and reads its
+            // UTF-8 bytes — only INTEGER and REAL make it refuse, and then with a provider
+            // exception. The throw runs through the catch below, so the transaction, the
+            // connection and the slot are all released.
+            DocumentOperations.EnsureBlobPayload(storedTypeName, id);
+
             var blob = new SqliteBlob(
-                connection, SqlGenerator.BlobTableName, "data", rowId.Value, readOnly: true);
+                connection, SqlGenerator.BlobTableName, "data", rowId, readOnly: true);
 
             return new BlobReadStream(blob, transaction, connection, slot, id, logger);
         }

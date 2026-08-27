@@ -59,6 +59,12 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// <see cref="IDocumentOperations.GetBlobAsync"/>.
     /// </para>
     /// </remarks>
+    /// <exception cref="Exceptions.CorruptDataException">
+    /// Thrown when the row exists but its <c>data</c> column holds no blob. Checked before the
+    /// handle opens, because SQLite's incremental blob I/O accepts a TEXT value and reads its
+    /// UTF-8 bytes — only a numeric value makes it refuse, and then with a provider exception.
+    /// An absent id still returns null.
+    /// </exception>
     Task<Stream?> OpenBlobReadAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>

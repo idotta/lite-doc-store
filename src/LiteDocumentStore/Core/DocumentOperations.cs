@@ -363,12 +363,9 @@ internal readonly struct DocumentOperations
 
         var (json, version) = row.Value;
 
-        // The row exists. A NULL or empty projection is a corrupt row, and testing the text for
-        // emptiness instead of testing row presence reported it as not found.
-        if (string.IsNullOrEmpty(json))
-        {
-            throw NullDocument<T>(id, tableName);
-        }
+        // The row exists. A projection carrying no payload is a corrupt row, and testing the text
+        // for emptiness instead of testing row presence reported it as not found.
+        EnsureDocumentPayload<T>(json, id, tableName);
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
         if (document is null)
@@ -404,10 +401,7 @@ internal readonly struct DocumentOperations
 
         // Checked before deserializing: JsonHelper maps empty JSON to default(T), which for a
         // value type is not null, so the guard below would let a corrupt row read back as 0.
-        if (string.IsNullOrEmpty(json))
-        {
-            throw NullDocument<T>(id, tableName);
-        }
+        EnsureDocumentPayload<T>(json, id, tableName);
 
         var document = JsonHelper.Deserialize<T>(json, _serializerOptions);
         if (document is null)
@@ -480,9 +474,11 @@ internal readonly struct DocumentOperations
 
             foreach (var (id, json) in rows)
             {
-                // A row that deserializes to null throws instead of being skipped, so a broken
+                // A row that reads back as nothing throws instead of being skipped, so a broken
                 // row cannot masquerade as a missing document. The id cannot be null: an
                 // 'id IN (...)' list never matches one.
+                EnsureDocumentPayload<T>(json, id, tableName);
+
                 if (JsonHelper.Deserialize<T>(json, _serializerOptions) is not { } document)
                 {
                     throw NullDocument<T>(id, tableName);
@@ -1257,14 +1253,20 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateGetBlobSql();
-        var payload = await _connection.ExecuteScalarAsync<byte[]>(sql, cancellationToken, ("Id", id))
+
+        // Row presence, not the payload, decides "not found": a row that exists and holds no
+        // readable blob is corrupt, and returning null for it was indistinguishable from absent.
+        var (storedTypeName, payload, found) = await _connection
+            .QueryFirstBlobRowAsync(sql, cancellationToken, ("Id", id))
             .ConfigureAwait(false);
 
-        if (payload is null)
+        if (!found)
         {
             _logger.LogDebug("Blob {Id} not found", id);
+            return null;
         }
 
+        EnsureBlobPayload(storedTypeName, id);
         return payload;
     }
 
@@ -1529,9 +1531,21 @@ internal readonly struct DocumentOperations
             throw new ArgumentException("ID cannot be null or empty.", nameof(id));
         }
 
-        return await _connection.QueryFirstInt64Async(
-            SqlGenerator.GenerateBlobLengthSql(), cancellationToken, ("Id", id))
+        // Row presence decides "not found" here too, and the storage class has to be checked
+        // even though the payload is never read: length() counts characters on a TEXT value and
+        // digits on a number, so a non-blob row reported a plausible byte count that was not one.
+        var (storedTypeName, length, found) = await _connection
+            .QueryFirstInt64RowAsync(SqlGenerator.GenerateBlobLengthSql(), cancellationToken, ("Id", id))
             .ConfigureAwait(false);
+
+        if (!found)
+        {
+            _logger.LogDebug("Blob {Id} not found", id);
+            return null;
+        }
+
+        EnsureBlobPayload(storedTypeName, id);
+        return length;
     }
 
     /// <inheritdoc cref="IDocumentOperations.DeleteBlobAsync" />
@@ -1638,8 +1652,15 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// Reads <c>id, length(data), content_type, created_at, updated_at, version</c> rows.
+    /// Reads <c>id, typeof(data), length(data), content_type, created_at, updated_at,
+    /// version</c> rows.
     /// </summary>
+    /// <remarks>
+    /// The id travels with each row so a corrupt one can be named — the reason the listing
+    /// projects it at all. A single unreadable row fails the whole listing rather than being
+    /// skipped, matching <c>GetAllAsync</c>: returning fewer rows than the table holds is data
+    /// loss the caller cannot detect.
+    /// </remarks>
     private async Task<List<BlobInfo>> ReadBlobInfosAsync(
         string sql,
         CancellationToken cancellationToken,
@@ -1657,13 +1678,16 @@ internal readonly struct DocumentOperations
         var results = new List<BlobInfo>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            var id = reader.GetString(0);
+            EnsureBlobPayload(reader.IsDBNull(1) ? null : reader.GetString(1), id);
+
             results.Add(new BlobInfo(
-                reader.GetString(0),
-                reader.GetInt64(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.IsDBNull(3) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
+                id,
+                reader.GetInt64(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
-                reader.GetInt64(5)));
+                reader.IsDBNull(5) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                reader.GetInt64(6)));
         }
 
         return results;
@@ -1710,6 +1734,8 @@ internal readonly struct DocumentOperations
 
         foreach (var (id, json) in rows)
         {
+            EnsureDocumentPayload<T>(json, id, tableName);
+
             if (JsonHelper.Deserialize<T>(json, _serializerOptions) is not { } item)
             {
                 throw NullDocument<T>(id, tableName);
@@ -1722,13 +1748,73 @@ internal readonly struct DocumentOperations
     }
 
     /// <summary>
-    /// The exception for a row that exists but reads back as nothing: a SQL NULL <c>data</c>
-    /// column, an empty <c>json(data)</c> projection, or stored JSON that deserializes to null.
+    /// Validates that a document row's <c>json(data)</c> projection carries a payload at all,
+    /// throwing when it is SQL NULL, empty, or the JSON literal <c>null</c>.
     /// </summary>
-    private static SerializationException NullDocument<T>(string? id, string tableName) =>
+    /// <remarks>
+    /// <para>
+    /// Every document read funnels through here <em>before</em> deserializing, and the ordering
+    /// is what makes the contract independent of <typeparamref name="T"/>.
+    /// <c>JsonHelper</c> maps a null or empty projection to <c>default(T)</c> — for a value-type
+    /// <typeparamref name="T"/> a real value, which the <c>is not { }</c> guard downstream
+    /// happily matches — so checking only the deserialized document added a fabricated zero row
+    /// to a collection read instead of reporting the corrupt one.
+    /// </para>
+    /// <para>
+    /// The JSON literal <c>null</c> is rejected here for the same reason from the other side: a
+    /// reference type deserializes it to null and was reported as corrupt, while a value type
+    /// made <c>System.Text.Json</c> refuse the conversion outright, so the one row surfaced as
+    /// two different exceptions depending on the type it was read as. Neither shape is reachable
+    /// through a store write — <c>SerializeDocument</c> rejects a null document — so only raw
+    /// SQL can produce one.
+    /// </para>
+    /// </remarks>
+    private static void EnsureDocumentPayload<T>(string? json, string? id, string tableName)
+    {
+        if (string.IsNullOrEmpty(json) || string.Equals(json, "null", StringComparison.Ordinal))
+        {
+            throw NullDocument<T>(id, tableName);
+        }
+    }
+
+    /// <summary>
+    /// The exception for a document row that exists but reads back as nothing: a SQL NULL
+    /// <c>data</c> column, an empty <c>json(data)</c> projection, or stored JSON that
+    /// deserializes to null.
+    /// </summary>
+    private static CorruptDataException NullDocument<T>(string? id, string tableName) =>
         new($"Document '{id}' in table '{tableName}' has no readable payload as {typeof(T).Name}. " +
             "The stored data is SQL NULL, empty, or JSON null; fix or remove the row.",
+            id,
+            tableName,
             typeof(T));
+
+    /// <summary>
+    /// Validates that a blob row's <c>data</c> column holds a BLOB, throwing when it holds any
+    /// other storage class.
+    /// </summary>
+    /// <remarks>
+    /// Every blob read that consumes the payload — or reports its length, which
+    /// <c>length()</c> answers for TEXT and numbers too — funnels through here, so the five
+    /// read paths cannot drift apart again. An empty blob (<c>x''</c> or <c>zeroblob(0)</c>) is
+    /// a BLOB and passes.
+    /// </remarks>
+    internal static void EnsureBlobPayload(string? storedTypeName, string id)
+    {
+        if (storedTypeName == SqliteStorageClass.Blob)
+        {
+            return;
+        }
+
+        throw new CorruptDataException(
+            $"Blob '{id}' in table '{SqlGenerator.BlobTableName}' has no readable payload: its " +
+            $"data column holds {storedTypeName ?? "an unknown storage class"}, not a blob. " +
+            "Overwrite or remove the row.",
+            id,
+            SqlGenerator.BlobTableName,
+            targetType: null,
+            storedTypeName: storedTypeName);
+    }
 
     /// <summary>
     /// Extracts the JSON path from a lambda expression.

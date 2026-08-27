@@ -19,12 +19,38 @@ public class BlobStreamingSqlTests
     }
 
     [Fact]
+    public void GenerateBlobRowIdSql_AlsoReadsTheStorageClass()
+    {
+        // Incremental blob I/O opens a TEXT value and reads its UTF-8 bytes, so the payload has
+        // to be rejected before the handle is constructed rather than by SqliteBlob refusing.
+        Assert.Contains("typeof(data)", SqlGenerator.GenerateBlobRowIdSql());
+    }
+
+    [Fact]
     public void GenerateBlobLengthSql_SelectsLengthWithoutReadingThePayload()
     {
         var sql = SqlGenerator.GenerateBlobLengthSql();
 
         Assert.Contains("length(data)", sql);
         Assert.DoesNotContain("SELECT data", sql);
+    }
+
+    [Fact]
+    public void GenerateBlobLengthSql_AlsoReadsTheStorageClass()
+    {
+        // length() counts characters on a TEXT value and digits on a number, so the length alone
+        // is a plausible byte count that is not one.
+        Assert.Contains("typeof(data)", SqlGenerator.GenerateBlobLengthSql());
+    }
+
+    [Fact]
+    public void GenerateGetBlobSql_ReadsTheStorageClassBeforeThePayload()
+    {
+        var sql = SqlGenerator.GenerateGetBlobSql();
+
+        // typeof(data) leads the projection: a reader hands back coerced bytes for a non-blob
+        // value without complaint, so the class has to be checked before ordinal 1 is read.
+        Assert.StartsWith("SELECT typeof(data), data", sql, StringComparison.Ordinal);
     }
 
     [Fact]

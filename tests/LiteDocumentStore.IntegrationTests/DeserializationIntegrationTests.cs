@@ -52,11 +52,19 @@ public class DeserializationIntegrationTests
         await store.UpsertAsync("good", new NullableDoc("Ada", "Boston"));
         await InsertNullDocumentAsync(store, "broken");
 
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(
             () => store.GetAllAsync<NullableDoc>());
 
         Assert.Contains("broken", exception.Message, StringComparison.Ordinal);
         Assert.Equal(typeof(NullableDoc), exception.TargetType);
+
+        // Identifiable without parsing the message.
+        Assert.Equal("broken", exception.Id);
+        Assert.Equal(store.GetTableName<NullableDoc>(), exception.TableName);
+
+        // A document read projects json(data), never typeof(data), so the storage class is not
+        // observed on this path.
+        Assert.Null(exception.StoredTypeName);
     }
 
     [Fact]
@@ -79,7 +87,7 @@ public class DeserializationIntegrationTests
 
         // json_extract of a JSON null yields NULL, which no '= @Value' predicate matches, so the
         // broken row has to be reached by a query that selects everything.
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(
             () => store.QueryAsync<NullableDoc>(DocumentQuery<NullableDoc>.All()));
 
         Assert.Contains("broken", exception.Message, StringComparison.Ordinal);
@@ -102,10 +110,12 @@ public class DeserializationIntegrationTests
         var store = await CreateStoreWithTableAsync();
         await InsertNullDocumentAsync(store, "broken");
 
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(
             () => store.GetAsync<NullableDoc>("broken"));
 
         Assert.Contains("broken", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("broken", exception.Id);
+        Assert.Equal(store.GetTableName<NullableDoc>(), exception.TableName);
     }
 
     [Fact]
@@ -114,7 +124,7 @@ public class DeserializationIntegrationTests
         var store = await CreateStoreWithTableAsync();
         await InsertNullDocumentAsync(store, "broken");
 
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(
             () => store.GetWithVersionAsync<NullableDoc>("broken"));
 
         Assert.Contains("broken", exception.Message, StringComparison.Ordinal);
@@ -127,7 +137,7 @@ public class DeserializationIntegrationTests
         await store.UpsertAsync("good", new NullableDoc("Ada", "Boston"));
         await InsertNullDocumentAsync(store, "broken");
 
-        var exception = await Assert.ThrowsAsync<SerializationException>(
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(
             () => store.GetManyAsync<NullableDoc>(["good", "broken"]));
 
         Assert.Contains("broken", exception.Message, StringComparison.Ordinal);
