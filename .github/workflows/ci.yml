@@ -14,17 +14,28 @@ env:
   DOTNET_VERSION: '10.0.x'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
-  # Minimum coverage the Build and Test job enforces. Baseline when the gate landed:
-  # line 92%, branch 90.7%, method 93.1% - the floors sit a couple of points under it so
-  # ordinary churn does not red-light a PR, while a real drop still fails the build.
-  MIN_LINE_COVERAGE: '90'
-  MIN_BRANCH_COVERAGE: '88'
-  MIN_METHOD_COVERAGE: '90'
+  # Minimum coverage the Build and Test job enforces. Baseline after the transaction-operation
+  # and blob-read-stream tests closed the two classes P3-2 named: line 95.3%, branch 92%,
+  # method 98.6% - the floors sit a couple of points under it so ordinary churn does not
+  # red-light a PR, while a real drop still fails the build.
+  MIN_LINE_COVERAGE: '93'
+  MIN_BRANCH_COVERAGE: '90'
+  MIN_METHOD_COVERAGE: '96'
 
 jobs:
   build-and-test:
-    name: Build and Test
-    runs-on: ubuntu-latest
+    name: Build and Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    # Three OSes on this job only: the bundled SQLite is the same everywhere (the native
+    # e_sqlite3 ships with the package), but file locking, path handling and WAL sidecar
+    # deletion are not - and the integration tests carry Windows-specific workarounds that
+    # nothing exercised while CI was Linux-only. The other jobs stay single-OS: packing,
+    # AOT publishing and CodeQL re-prove the same thing on each runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
     - name: Checkout code
@@ -52,9 +63,12 @@ jobs:
     - name: Run all examples
       run: dotnet run --project examples/Examples --configuration Release --no-build -- all
 
+    # Coverage is reported and gated on Linux only: the same tests cover the same code on every
+    # runner, so a second and third gate adds no signal, and the gate below is a Bash script the
+    # Windows runner's default shell would not parse.
     # Reported from the coverage the test runs above already collected - no second test pass.
     - name: Coverage report
-      if: always()
+      if: always() && matrix.os == 'ubuntu-latest'
       run: |
         dotnet tool install --global dotnet-reportgenerator-globaltool
         reportgenerator -reports:'**/TestResults/**/coverage.cobertura.xml' -targetdir:coverage-report -reporttypes:'Html;MarkdownSummaryGithub;TextSummary;JsonSummary'
@@ -64,6 +78,7 @@ jobs:
     # a failed test run fails the job on its own, and reporting a coverage miss on top of it
     # only buries the real failure.
     - name: Coverage gate
+      if: matrix.os == 'ubuntu-latest'
       run: |
         set -euo pipefail
         summary=coverage-report/Summary.json
@@ -97,7 +112,9 @@ jobs:
       uses: actions/upload-artifact@v7
       if: always()
       with:
-        name: test-results
+        # One artifact per runner: a shared name collides across the matrix. Only the Linux
+        # runner produces coverage-report; the other two upload their TRX files alone.
+        name: test-results-${{ matrix.os }}
         path: |
           **/TestResults/*.trx
           coverage-report
