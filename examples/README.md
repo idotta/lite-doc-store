@@ -26,10 +26,14 @@ in any order and leave nothing on disk.
 |---|---|
 | `quickstart` | Create a table, upsert, get, update, query by JSON path, delete, one transaction |
 | `hybrid` | The point of the library: document CRUD and raw SQL (joins, aggregates, views, plain relational tables) over the same data |
+| `structured-query` | `DocumentQuery<T>` filters, ordering, paging and a filtered count |
+| `patch` | `DocumentPatch<T>` field-level updates, which survive a concurrent writer's edits to other fields |
 | `indexes` | Expression indexes on a property, a nested property and a composite, plus before/after timings |
-| `virtual-columns` | Generated columns, which is how you get indexed **range** queries — `QueryAsync` is equality-only |
+| `virtual-columns` | Generated columns, which is how you get an indexed seek on a hot field |
 | `transactions` | Batched vs individual writes, `UpsertManyAsync`, rollback on throw, raw SQL enlisted in a transaction |
-| `migrations` | `MigrationRunner` with up/down SQL, applied history, rollback to a version, schema introspection |
+| `blobs` | Raw binary payloads: whole-array, streamed, and atomic with a document write |
+| `blob-metadata` | Blob content type, timestamps, listing by id prefix, and versioned (CAS) writes |
+| `migrations` | `store.MigrateAsync` with up/down SQL, applied history, rollback to a version, schema introspection |
 | `multi-database` | Several independent stores through `IDocumentStoreFactory` |
 | `multi-database-keyed` | The same, through keyed DI and typed services |
 

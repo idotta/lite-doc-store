@@ -1,24 +1,33 @@
 # LiteDocumentStore Benchmarks
 
-This project contains BenchmarkDotNet benchmarks for validating performance characteristics of the LiteDocumentStore library.
+BenchmarkDotNet benchmarks that validate the performance characteristics of the LiteDocumentStore
+library. `Program.cs` hands `args` to `BenchmarkSwitcher.FromAssembly(...)`, so every benchmark class
+in this project is discovered automatically — adding one needs no registration.
 
 ## Running Benchmarks
 
 ### Run All Benchmarks
 
 ```bash
-cd benchmarks/LiteDocumentStore.Benchmarks
-dotnet run -c Release
+dotnet run -c Release --project benchmarks/LiteDocumentStore.Benchmarks
 ```
 
-### Run Specific Benchmark
+Without arguments, the switcher prompts for which benchmarks to run.
+
+### Run Specific Benchmarks
+
+Arguments meant for BenchmarkDotNet must come after `--`, or `dotnet run` consumes them itself and
+the filter never reaches the switcher. Quote the pattern so the shell does not glob it:
 
 ```bash
-# Run comparison benchmarks (LiteDocumentStore vs Dapper vs LiteDB)
-dotnet run -c Release --filter *Comparison*
+# Comparison benchmarks (LiteDocumentStore vs Dapper vs LiteDB)
+dotnet run -c Release --project benchmarks/LiteDocumentStore.Benchmarks -- --filter '*Comparison*'
 
-# Run virtual column benchmarks
-dotnet run -c Release --filter *VirtualColumn*
+# Virtual column benchmarks
+dotnet run -c Release --project benchmarks/LiteDocumentStore.Benchmarks -- --filter '*VirtualColumn*'
+
+# Connection model benchmarks
+dotnet run -c Release --project benchmarks/LiteDocumentStore.Benchmarks -- --filter '*ConnectionModel*'
 ```
 
 ### Generate Reports
@@ -30,99 +39,82 @@ BenchmarkDotNet automatically generates reports in `BenchmarkDotNet.Artifacts/re
 
 ## Available Benchmarks
 
-### 1. Comparison Benchmark (NEW)
+### `ComparisonBenchmark`
 
-**Purpose**: Comprehensive comparison of LiteDocumentStore vs Raw Dapper vs LiteDB across all core operations.
+**Purpose**: LiteDocumentStore vs raw Dapper vs LiteDB across the core operations. Dapper and LiteDB
+are benchmark-only package references — comparison baselines, never library dependencies.
 
-**Operations Tested**:
-- **Single Insert**: Individual document upsert operations
-- **Bulk Insert**: Batch upsert of 100 documents
-- **Query By ID**: Retrieve document by primary key
-- **Full Table Scan**: Retrieve all documents
-- **Query with Filter**: Retrieve documents matching criteria (e.g., by category)
-- **Delete**: Remove document by ID
+**Operations tested**: single insert, bulk insert (100 documents), query by id, full table scan,
+query by category, delete. Scan operations run over 1,000 documents.
 
-**Test Data**:
-- Realistic document structure with nested objects, arrays, and metadata
-- 1,000 documents for scan operations
-- Multiple document sizes tested
-
-**What to Look For**:
-- LiteDocumentStore should be competitive with raw Dapper (within 5-10% overhead for abstraction)
-- Both SQLite-based solutions should significantly outperform LiteDB for bulk operations
+**What to look for**:
+- LiteDocumentStore should be competitive with raw Dapper (within 5-10% overhead for the abstraction)
+- Both SQLite-based solutions should outperform LiteDB for bulk operations
 - LiteDB may be faster for single operations due to less serialization overhead
 
-## Virtual Column Benchmark
+### `SimplifiedComparisonBenchmark`
 
-**Purpose**: Demonstrates the query performance improvements when using virtual (generated) columns with indexes on frequently queried JSON fields.
+The same LiteDocumentStore-vs-Dapper pairs with a shorter job (`RunStrategy.Throughput`, 5
+iterations, 3 warmups) for quick iteration, plus bulk-delete and update benchmarks that
+`ComparisonBenchmark` lacks. It drops the LiteDB arm. Largely redundant with `ComparisonBenchmark`;
+use it while iterating, not for numbers you intend to quote.
 
-**Scenarios Tested**:
-1. **Category Query**: Query by top-level string field (with/without virtual column)
-2. **Price Query**: Query by numeric field (with/without virtual column)
-3. **SKU Query**: Exact match query (with/without virtual column)
-4. **Nested Property Query**: Query by nested object property (with/without virtual column)
-5. **Column Creation Overhead**: Measures the cost of adding a virtual column
+### `VirtualColumnBenchmark`
 
-**Test Data**:
-- 10,000 documents per test
-- Multiple indexed fields (category, price, sku, brand)
-- Realistic product catalog structure
+**Purpose**: what indexed virtual (generated) columns do to query time on frequently queried JSON
+fields.
 
-### How Virtual Columns Work
+**Test data**: 50,000 documents in a product-catalog shape, with virtual columns over `category`,
+`sku` and the nested `metadata.brand`.
+
+**Benchmarks**:
+1. Category query — with and without a virtual column (the without arm is the baseline)
+2. SKU query — with and without
+3. Nested property (brand) query — with and without
+4. The same category and SKU queries written as raw SQL, indexed and unindexed, which separates the
+   index's contribution from the store's own overhead
+5. `AddVirtualColumn_Overhead` — the cost of adding the column and its index
+
+### `ConnectionModelBenchmark` and `StorePathBenchmark`
+
+Both live in `ConnectionModelBenchmark.cs`. `ConnectionModelBenchmark` measures the primitives — a
+held connection vs opening per operation vs renting from the store's own pool, for reads, writes and
+64 concurrent reads. `StorePathBenchmark` measures the store's real path over a file database, a
+shared-cache in-memory database and a private `:memory:` one.
+
+These two are the evidence behind the connection model documented in `CLAUDE.md`. **Re-run both
+before changing that design** — the trade-off it records (a few percent on a single file-DB read,
+3x on 64 concurrent reads) came from these numbers.
+
+## How Virtual Columns Work
 
 Virtual columns are SQLite generated columns that extract JSON fields using `json_extract()`:
 
 ```csharp
 // Add a virtual column with automatic index
 await store.AddVirtualColumnAsync<Product>(
-    p => p.Category, 
-    "category", 
+    p => p.Category,
+    "category",
     createIndex: true);
 
 // SQLite executes:
-// ALTER TABLE Product ADD COLUMN category TEXT 
+// ALTER TABLE [Product] ADD COLUMN [category] TEXT
 //   GENERATED ALWAYS AS (json_extract(data, '$.Category')) VIRTUAL
-// CREATE INDEX idx_Product_category ON Product(category)
+// CREATE INDEX IF NOT EXISTS [idx_Product_category] ON [Product] ([category])
 ```
 
 **Benefits**:
 - No storage overhead (VIRTUAL columns computed on read)
 - Indexes work on virtual columns for fast lookups
-- Transparent to application code - queries still use expressions
+- Transparent to application code — queries still use expressions
 
-### Expected Results
+### Reading the results
 
-Virtual columns with indexes should show significant query performance improvements:
-
-**String Equality Queries (Category, SKU)**:
-- **2-10x faster** for equality matches
-- Most benefit with large datasets (10K+ documents)
-- Index allows B-tree lookup instead of full table scan
-
-**Numeric Range Queries (Price)**:
-- **3-15x faster** for range queries
-- Index enables efficient range scans
-- Avoids deserializing JSON for every row
-
-**Nested Property Queries (Brand)**:
-- **5-20x faster** for nested fields
-- Greatest improvement as json_extract for nested paths is expensive
-- Index eliminates repetitive path traversal
-
-**Example Output**:
-```
-| Method                                     | Mean      | Ratio |
-|------------------------------------------- |----------:|------:|
-| Query_WithoutVirtualColumn_ByCategory      | 125.34 ms |  1.00 |
-| Query_WithVirtualColumn_ByCategory         |  15.67 ms |  0.13 | (7.6x faster)
-| Query_WithoutVirtualColumn_ByPrice         | 142.89 ms |  1.00 |
-| Query_WithVirtualColumn_ByPrice            |  12.34 ms |  0.09 | (11.5x faster)
-| Query_WithoutVirtualColumn_BySku           |  98.45 ms |  1.00 |
-| Query_WithVirtualColumn_BySku              |   8.23 ms |  0.08 | (12x faster)
-| Query_WithoutVirtualColumn_NestedProperty  | 187.23 ms |  1.00 |
-| Query_WithVirtualColumn_NestedProperty     |  14.56 ms |  0.08 | (12.8x faster)
-| AddVirtualColumn_Overhead                  |  45.12 ms |    -  |
-```
+The gain comes from replacing a full scan (which evaluates `json_extract` per row) with a B-tree
+lookup, so it grows with the dataset and with how expensive the path is to extract — a nested path
+benefits more than a top-level one. This project's numbers are the source of truth for how much;
+run it rather than quoting a figure, since the answer moves with dataset size, cardinality and
+hardware.
 
 ### When to Use Virtual Columns
 
@@ -135,19 +127,19 @@ Virtual columns with indexes should show significant query performance improveme
 ❌ **Avoid virtual columns when**:
 - Field is rarely queried
 - Dataset is small (< 100 documents)
-- Field values have low cardinality (e.g., boolean)
+- Field values have low cardinality (e.g. boolean)
 - Memory/storage is extremely constrained
 
 ### Trade-offs
 
 **Advantages**:
-- Dramatic query speed improvements
+- Large query speed improvements on selective fields
 - No storage overhead (VIRTUAL columns)
 - Transparent to application queries
 - Standard SQLite indexes
 
 **Disadvantages**:
-- Small overhead on writes (computing virtual column)
+- Small overhead on writes (computing the index entry)
 - Index storage space (though typically small)
 - Schema changes required (ALTER TABLE)
 - Not retroactive without rebuild
@@ -161,13 +153,15 @@ Virtual columns with indexes should show significant query performance improveme
 
 ## Adding New Benchmarks
 
-1. Create a new class in this project
-2. Add `[MemoryDiagnoser]` attribute to the class
-3. Create methods with `[Benchmark]` attribute
-4. Add `[GlobalSetup]` for initialization if needed
-5. Run the benchmarks
+1. Create a new class in this project — `BenchmarkSwitcher` finds it, so there is nothing to register
+2. Add `[MemoryDiagnoser]` to the class; add `[SimpleJob(...)]` if the default job is too slow
+3. Mark methods with `[Benchmark]`, and give the arm you are comparing against
+   `[Benchmark(Baseline = true)]` so BenchmarkDotNet prints a ratio column
+4. Use `Description = "..."` for readable result rows
+5. Use `[GlobalSetup]` / `[GlobalCleanup]` for fixtures — setup cost is excluded from the measurement
 
 Example:
+
 ```csharp
 [MemoryDiagnoser]
 public class MyBenchmark
@@ -178,7 +172,12 @@ public class MyBenchmark
         // Initialize test data
     }
 
-    [Benchmark]
+    [Benchmark(Baseline = true, Description = "Existing approach")]
+    public void Baseline()
+    {
+    }
+
+    [Benchmark(Description = "New approach")]
     public void MyOperation()
     {
         // Code to benchmark
@@ -188,15 +187,15 @@ public class MyBenchmark
 
 ## Continuous Performance Monitoring
 
-Consider integrating these benchmarks into your CI/CD pipeline:
+These benchmarks are not part of CI — they are far too slow for a per-push pipeline, and shared
+runners are too noisy for the numbers to mean anything. Run them locally when changing a hot path.
+If they ever do get automated, it needs a dedicated runner:
 
 ```yaml
 # Example GitHub Actions step
 - name: Run Benchmarks
-  run: |
-    cd benchmarks/LiteDocumentStore.Benchmarks
-    dotnet run -c Release --exporters json
-    
+  run: dotnet run -c Release --project benchmarks/LiteDocumentStore.Benchmarks -- --exporters json
+
 - name: Store Benchmark Results
   uses: benchmark-action/github-action-benchmark@v1
   with:
@@ -207,5 +206,5 @@ Consider integrating these benchmarks into your CI/CD pipeline:
 ## References
 
 - [BenchmarkDotNet Documentation](https://benchmarkdotnet.org/)
-- [Performance Best Practices for .NET](https://docs.microsoft.com/en-us/dotnet/core/performance/)
+- [Performance Best Practices for .NET](https://learn.microsoft.com/en-us/dotnet/core/performance/)
 - [SQLite JSON Functions](https://www.sqlite.org/json1.html)

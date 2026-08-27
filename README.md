@@ -5,60 +5,23 @@
 [![NuGet](https://img.shields.io/nuget/v/LiteDocumentStore.svg)](https://www.nuget.org/packages/LiteDocumentStore/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance, single-file application data format using C# and SQLite (Microsoft.Data.Sqlite). Objects are stored in SQLite's binary **JSONB** format and the store is Native-AOT / trim compatible.
+Turn a single SQLite `.db` file into a hybrid document + relational store. C# objects are serialized
+to JSON and stored in SQLite's binary **JSONB** format, and the same tables stay fully open to raw
+SQL, joins and indexes — this is deliberately *not* an opaque document database. Raw ADO.NET over
+`Microsoft.Data.Sqlite`, no ORM, no runtime reflection or IL generation, so the library is
+Native-AOT / trim compatible.
 
-# Core Architecture
+## Install
 
-## Primary Format
-A single SQLite .db file acting as an "Application File Format".
-
-## Data Storage Strategy
-Treat SQLite as a hybrid relational/document store. JSON data is stored in **JSONB format** (binary JSON introduced in SQLite 3.45+) for optimal storage efficiency and query performance.
-
-## Data Access Layer
-Raw ADO.NET over `Microsoft.Data.Sqlite` — parameters bound explicitly, results read by ordinal (no ORM, no runtime reflection or IL generation), so the library stays Native-AOT / trim safe.
-
-## Custom Logic
-Automatic JSON serialization/deserialization of C# objects into SQLite BLOB columns using JSONB format.
-
-## Performance Requirements
-- Minimize System Calls: The design must utilize SQLite's ability to be up to 35% faster than raw file I/O for small blobs by reducing open() and close() operations.
-- Transaction Batching: Writes should be grouped into transactions to maintain high write speed.
-- Async Operations: All database operations are async for optimal performance and scalability.
-- JSONB Format: Uses SQLite's JSONB format for binary-optimized JSON storage to eliminate repetitive parsing overhead.
-
-## Configuration
-The library defaults to WAL (Write-Ahead Logging) mode and synchronous = NORMAL for optimal balance between safety and performance.
-
-# Usage
-
-## Installation
-
-Build the project:
 ```bash
-dotnet build
+dotnet add package LiteDocumentStore
 ```
 
-## Requirements
+**Requirements:** .NET 10, and SQLite 3.45+ for JSONB — the bundled native SQLite already satisfies
+this, and every connection is checked as it opens, so an older one fails fast with
+`UnsupportedSqliteVersionException` instead of `no such function: jsonb`.
 
-- .NET 10
-- SQLite 3.45+ (for JSONB support)
-
-## Features
-
-- ✅ **Document Store API** (`IDocumentStore`): Type-safe CRUD operations with automatic table naming
-- ✅ **Async/Await**: All database operations are fully async
-- ✅ **JSONB Format**: Uses SQLite 3.45+ JSONB for binary-optimized JSON storage
-- ✅ **Virtual Columns**: Index JSON properties for up to 1,300x faster queries
-- ✅ **Transaction Support**: Batch operations for high-performance writes
-- ✅ **WAL Mode**: Automatically configured for optimal concurrency
-- ✅ **Zero SQL Injection Risk**: Table names derived from types, not user input
-- ✅ **Cross-Platform**: Works on Windows, Linux, and macOS
-- ✅ **.NET 10**: Built on the latest .NET platform
-- ✅ **Native-AOT / Trim Compatible**: `<IsAotCompatible>true</IsAotCompatible>`; serialization goes through `System.Text.Json` `JsonTypeInfo<T>`
-- ✅ **Comprehensive Tests**: Unit and integration tests with xUnit
-
-## Quick Start
+## Quick start
 
 Register the store through dependency injection and resolve `IDocumentStore`:
 
@@ -82,15 +45,61 @@ await store.CreateTableAsync<Customer>();
 await store.UpsertAsync("c1", new Customer { Name = "Ada", Email = "ada@example.com" });
 
 var customer = await store.GetAsync<Customer>("c1");
+```
 
-// Query documents by JSON path + value
+Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStoreOptions)`.
+
+## What you get
+
+- **Document CRUD** (`IDocumentStore`): type-safe, fully async, table names derived from the type
+  through a pluggable `ITableNamingConvention`.
+- **Querying**: a JSON-path equality shorthand, plus a composable `DocumentQuery<T>` builder with
+  comparison, `Like`/`Glob`, `In`, null and array-contains operators, ordering and paging.
+- **Field-level patching**: `DocumentPatch<T>` changes named fields in one statement, so a
+  concurrent writer's edits to *other* fields survive — a read-modify-write silently reverts them.
+- **Optimistic concurrency**: every row carries a `version`; `GetWithVersionAsync` plus the
+  `…WithVersionAsync` writes and deletes are compare-and-swap, and a lost race throws
+  `ConcurrencyException` carrying a `ConcurrencyConflictKind` to pick a retry strategy from.
+- **Transactions**: `BeginTransactionAsync` / `ExecuteInTransactionAsync`, deferred by default with
+  `TransactionMode.Immediate` available for read-then-write work.
+- **Blobs**: raw binary payloads with content type, timestamps, versioning, prefix listing, and
+  streaming in both directions — including a seekable read stream over SQLite's incremental blob
+  I/O, so a large payload is never materialized.
+- **Migrations**: versioned `IMigration` steps with checksummed history, applied under a write lock
+  so two processes starting together cannot both run the same migration.
+- **Indexes**: expression indexes over JSON paths, composite and unique variants, partial-index
+  filters, and virtual (generated) columns for hot query paths.
+- **Native-AOT / trim compatible**: `<IsAotCompatible>true</IsAotCompatible>`; serialization goes
+  through `System.Text.Json` `JsonTypeInfo<T>`.
+- **Cross-platform**: tested on Windows, Linux and macOS.
+
+### Querying
+
+```csharp
+// JSON path + value
 var byName = await store.QueryAsync<Customer, string>("$.Name", "Ada");
 
-// For ranges, joins, or virtual-column seeks, drop to raw SQL via the escape hatch.
-// The connection is on loan for the duration of the callback.
-// GetTableName<T>() gives the table the store uses for T, so nothing is hardcoded,
-// and DeserializeDocument<T>() reads a json(data) column back with the store's
-// own serializer options.
+// Composable, and index-aware
+var q = DocumentQuery<Customer>.Where("$.Age", QueryOperator.GreaterThanOrEqual, 30)
+                               .AndIn("$.City", ["Boston", "Denver"])
+                               .AndIsNotNull("$.Email")
+                               .OrderBy("$.Age", descending: true)
+                               .Skip(10).Take(20);
+
+var adults = await store.QueryAsync(q);
+var howMany = await store.CountAsync(q);   // predicates only; ordering and paging are ignored
+```
+
+Predicates combine with AND only. For joins, aggregates, OR groups and virtual-column seeks, drop to
+raw SQL.
+
+### Raw SQL
+
+The connection is on loan for the duration of the callback. `GetTableName<T>()` gives the table the
+store uses for `T`, so nothing is hardcoded, and `DeserializeDocument<T>()` reads a `json(data)`
+column back with the store's own serializer options.
+
+```csharp
 var table = store.GetTableName<Customer>();
 
 var adults = await store.ExecuteRawAsync(async (conn, ct) =>
@@ -114,7 +123,9 @@ var adults = await store.ExecuteRawAsync(async (conn, ct) =>
 writes, so a raw `INSERT INTO [table] (id, data, version) VALUES (@Id, jsonb(@Data), 1)` stores
 documents the store can read back. All three members are on `IDocumentTransaction` too.
 
-Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStoreOptions)`.
+Create commands with `connection.CreateCommand()` — a directly constructed `new SqliteCommand(sql,
+connection)` leaves `Transaction` null, and Microsoft.Data.Sqlite refuses to execute it while a
+transaction is pending.
 
 ### Concurrency and transactions
 
@@ -155,40 +166,61 @@ own empty database. Note that shared-cache in-memory databases lock at table gra
 overlapping write transactions fail with `SQLITE_LOCKED`, so use a file database for concurrent
 write workloads.
 
+## How it works
+
+- **Storage.** One table per document type: `id TEXT PRIMARY KEY, data BLOB NOT NULL, version
+  INTEGER NOT NULL DEFAULT 1`. Writes go through `jsonb(@Data)` with UTF-8 JSON bytes; reads come
+  back as `SELECT json(data)`. JSONB is binary, so a raw `SELECT data` is not deserializable.
+- **Safety.** All *values* are parameterized. SQL identifiers and JSON paths cannot be bound, so
+  they are interpolated — and validated first, in one place: table/index/column names must match
+  `[A-Za-z_][A-Za-z0-9_]*`, JSON paths must match `$(.member|[index])*`, and column types come from
+  a five-entry whitelist. JSON paths are interpolated *on purpose*: SQLite only matches a query
+  against an expression index when the indexed expression appears literally, so binding the path
+  would silently disable every index the store creates. `ExecuteRawAsync` is the escape hatch, and
+  SQL you write there is yours to parameterize.
+- **Connections.** The store opens and PRAGMA-configures connections once, then rents one per
+  operation from its own pool. WAL and `synchronous = NORMAL` are the defaults; an option the
+  database cannot honour (page size, WAL on an in-memory DB) is refused at open rather than
+  silently ignored.
+
 ## Dependencies
 
 - .NET 10
 - Microsoft.Data.Sqlite
+- SQLitePCLRaw.lib.e_sqlite3 — referenced directly and pinned, rather than taken transitively, to
+  keep the native SQLite on a version without known advisories
 - Microsoft.Extensions.DependencyInjection.Abstractions / Logging.Abstractions
-
-## JSONB Storage Benefits
-
-The library uses SQLite's JSONB functions introduced in version 3.45+:
-- More compact storage (binary format)
-- Faster queries on JSON data
-- Reduced parsing overhead
-- Compatible with SQLite's JSON functions
 
 ## CI/CD
 
-This project uses GitHub Actions for continuous integration and deployment:
-
-- **Continuous Integration**: Automated builds and tests on every push and PR
-- **Multi-platform Testing**: Tests run on Ubuntu, Windows, and macOS
-- **Code Quality**: Automated code analysis, formatting checks, and security scans
-- **NuGet Publishing**: Automated package publishing on GitHub releases
-- **Dependency Updates**: Dependabot keeps dependencies up to date
+- **Continuous Integration**: builds, unit + integration tests, and every example run on each push
+  and PR, with a coverage floor that fails the build
+- **Multi-platform Testing**: tests run on Ubuntu, Windows and macOS
+- **Packaging**: the package is packed and its contents asserted on every run; a Native AOT publish
+  of `examples/AotVerification` proves the AOT claim by running the binary
+- **Code Quality**: formatting and static analysis, plus a CodeQL security scan
+- **NuGet Publishing**: automated on GitHub releases, with build provenance attestation
+- **Dependency Updates**: Dependabot keeps dependencies up to date, and CI fails on a vulnerable one
 
 See [.github/WORKFLOWS.md](.github/WORKFLOWS.md) for detailed CI/CD documentation.
 
 ## Contributing
 
-Contributions are welcome! Please:
+Contributions are welcome. The solution is at the repository root, so nothing needs a path:
+
+```bash
+dotnet build --configuration Release
+dotnet test tests/LiteDocumentStore.UnitTests/LiteDocumentStore.UnitTests.csproj
+dotnet test tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.IntegrationTests.csproj
+dotnet run --project examples/Examples -- all
+```
+
+Then:
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes with tests
-4. Ensure all tests pass: `dotnet test`
+3. Make your changes, with both a unit and an integration test
+4. Make sure `dotnet test` and `dotnet format --verify-no-changes` pass
 5. Submit a pull request
 
 CI will automatically validate your changes.

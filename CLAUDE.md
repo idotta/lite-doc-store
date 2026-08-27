@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-LiteDocumentStore is a .NET library (published to NuGet as `LiteDocumentStore`) that turns a single SQLite `.db` file into a hybrid document + relational store. C# objects are serialized to JSON and stored in SQLite's **JSONB** binary format (requires SQLite 3.45+); the same tables stay fully accessible to raw SQL, joins, and indexes. The design goal is explicitly *not* an opaque document DB — users mix document-style CRUD and relational queries freely via the exposed `Connection`.
+LiteDocumentStore is a .NET library (published to NuGet as `LiteDocumentStore`) that turns a single SQLite `.db` file into a hybrid document + relational store. C# objects are serialized to JSON and stored in SQLite's **JSONB** binary format (requires SQLite 3.45+); the same tables stay fully accessible to raw SQL, joins, and indexes. The design goal is explicitly *not* an opaque document DB — users mix document-style CRUD and relational queries freely, dropping to raw SQL through `ExecuteRawAsync` (see the raw-SQL escape hatch below; the old `Connection` property is gone).
 
 Solution is `LiteDocumentStore.slnx` at the repository root. Target is `net10.0`, `LangVersion=latest` (C# 14), nullable + implicit usings on. Data access is raw ADO.NET over `Microsoft.Data.Sqlite` (no Dapper — parameters bound explicitly, results read by ordinal); serialization is `System.Text.Json`. The library is Native-AOT / trim compatible (`<IsAotCompatible>true</IsAotCompatible>`).
 
@@ -39,9 +39,13 @@ Directory.Build.props                        Deterministic + ContinuousIntegrati
 src/
   LiteDocumentStore/                         The library
     Core/            DocumentStore, DocumentOperations (shared op impls), SqliteConnectionPool
-                     + PooledConnection, DocumentStoreTransaction, IDocumentStore /
-                     IDocumentOperations / IDocumentTransaction, SqlGenerator,
-                     SqliteCommandExtensions (raw ADO helpers), DocumentStoreOptions(+Builder)
+                     + PooledConnection, DocumentStoreTransaction + TransactionMode,
+                     IDocumentStore / IDocumentOperations / IDocumentTransaction, SqlGenerator,
+                     SqliteCommandExtensions (raw ADO helpers), DocumentStoreOptions(+Builder),
+                     VersionedDocument, and the three guards the options and pool run:
+                     SqliteConnectionStringGuard, SqlitePageSizeGuard, SqliteVersionGuard
+    Blobs/           BlobInfo, BlobWriteOptions, BlobLimits, BlobIdPrefix (the prefix key
+                     range), BlobReadStream (incremental blob I/O), BlobStreamSlot
     Conventions/     ITableNamingConvention — maps type -> table name
     Query/           DocumentQuery, DocumentPatch + the predicate/ordering/patch records
     Indexing/        IndexOptions, IndexFilter (+ IndexFilterTerm) — index DDL options
@@ -51,10 +55,12 @@ src/
                      MigrationHistoryRecord, SchemaIntrospector
     Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>)
     Exceptions/      LiteDocumentStoreException + Concurrency/Serialization/TableNotFound/
-                     UnsupportedSqliteVersion (ConcurrencyException + ConcurrencyConflictKind
-                     come from Upsert/DeleteWithVersionAsync on CAS conflicts;
-                     UnsupportedSqliteVersionException from the 3.45+ guard on connection open;
-                     MigrationOutOfOrder/MigrationChecksumMismatch from MigrateAsync)
+                     UnsupportedSqliteVersion/IncompatiblePageSize (ConcurrencyException +
+                     ConcurrencyConflictKind come from the WithVersion writes and deletes on
+                     CAS conflicts; UnsupportedSqliteVersionException from the 3.45+ guard and
+                     IncompatiblePageSizeException from the page-size readback, both on
+                     connection open; MigrationOutOfOrder/MigrationChecksumMismatch from
+                     MigrateAsync)
 tests/
   LiteDocumentStore.UnitTests/               xUnit, mocked/isolated
   LiteDocumentStore.IntegrationTests/        xUnit, real SQLite (mostly :memory:)
@@ -65,15 +71,15 @@ examples/
   AotVerification/                           Native AOT gate, published + run by CI
 ```
 
-`DocumentStore` and most internals are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj. Consumers only touch the public surface: `IDocumentStore`, `DocumentStoreOptions`, the factories, and the DI extension.
+`DocumentStore`, `DocumentOperations`, `SqlGenerator`, `MigrationRunner` and the pool are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj (CI's Pack job fails if a friend name leaks into the shipped DLL). The public surface consumers touch is `IDocumentStore` / `IDocumentOperations` / `IDocumentTransaction`, `DocumentStoreOptions(+Builder)`, the factories and the DI extension, plus the value types those signatures take and return: `DocumentQuery<T>`, `DocumentPatch<T>`, `IndexOptions`/`IndexFilter`, `TransactionMode`, `VersionedDocument<T>`, `BlobInfo`/`BlobWriteOptions`, `IMigration`/`Migration`/`MigrationOptions`/`MigrationHistoryRecord`, `SchemaIntrospector` and the exceptions.
 
 > Note: the `tests/` projects were updated for the Dapper removal (tests that only covered the dropped `QueryAsync(predicate)` / `SelectAsync` APIs were removed; the rest use the raw-ADO helpers in `Core/SqliteCommandExtensions.cs`). The `benchmarks/` project intentionally keeps a `Dapper` package reference as a *comparison baseline* only — it is not a library dependency. All three projects compile and `dotnet test` passes.
 
-## Documentation is stale — trust the code
+## Documentation
 
-`README.md` and `.github/instructions/*.md` (Copilot rules) describe an older `Repository` class with a `new Repository("app.db")` constructor and a `SqliteJsonbTypeHandler`. **That API no longer exists.** The real entry point is `IDocumentStore`, obtained through DI (`services.AddLiteDocumentStore(...)`) or `IDocumentStoreFactory.Create/CreateAsync(DocumentStoreOptions)`. When those docs conflict with the source, the source wins.
+`README.md` and `.github/WORKFLOWS.md` were re-checked against the source and the workflows; the `.github/instructions/*.md` Copilot rules were deleted rather than repaired (they had no `applyTo:` frontmatter, so Copilot never applied them, and they taught `json_set`/`json_remove` against the `data` column — see the patching section for why that corrupts it). CLAUDE.md is the architecture guide; where any doc still conflicts with the source, the source wins.
 
-`examples/` is now two real projects in the `.slnx`, so samples cannot rot silently: `examples/Examples` is one console app holding every sample (`dotnet run --project examples/Examples -- all`, or a single name — CI runs `all` on every push), and `examples/AotVerification` is the Native AOT gate that CI publishes with `-warnaserror` and then runs. The nine old loose file-based `.cs` samples were rewritten against `ExecuteRawAsync` and deleted.
+`examples/` is two real projects in the `.slnx`, so samples cannot rot silently: `examples/Examples` is one console app holding every sample (`dotnet run --project examples/Examples -- all`, or a single name — CI runs `all` on every push), and `examples/AotVerification` is the Native AOT gate that CI publishes with `-warnaserror` and then runs. The nine old loose file-based `.cs` samples were rewritten against `ExecuteRawAsync` and deleted.
 
 ## Architecture
 
