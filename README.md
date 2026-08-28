@@ -135,6 +135,12 @@ transaction is pending.
 pool of SQLite connections and rents one per operation, so concurrent callers never share a
 connection handle. Size the pool with `DocumentStoreOptions.MaxPoolSize`.
 
+A transaction holds one of those connections until it is committed, rolled back or disposed —
+`await using` it. One that is never finished holds its slot until the garbage collector finalizes
+it, which logs the leak at `Error` and gives the slot back; until then, operations waiting for a
+connection fail with `TimeoutException` after `DocumentStoreOptions.PoolWaitTimeoutMs` (30 s by
+default, `Timeout.Infinite` to queue indefinitely) rather than hanging.
+
 Because each operation runs on its own connection, operations called directly on the store each
 commit on their own. To make several writes atomic, use a transaction and call the operations
 **on it**:

@@ -108,6 +108,13 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// back.
     /// </para>
     /// <para>
+    /// One that is never finished holds its slot until the garbage collector finalizes it: the
+    /// leak is logged at <c>Error</c> and the slot given back there, and until then operations
+    /// queue behind it and fail with <see cref="TimeoutException"/> after
+    /// <see cref="DocumentStoreOptions.PoolWaitTimeoutMs"/>. That is a diagnostic, not a
+    /// substitute for disposing.
+    /// </para>
+    /// <para>
     /// Starts in <see cref="TransactionMode.Deferred"/>. A unit of work that <b>reads and then
     /// writes</b> should use
     /// <see cref="BeginTransactionAsync(TransactionMode, CancellationToken)"/> with
@@ -144,7 +151,15 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// max(<see cref="DocumentStoreOptions.BusyTimeoutMs"/>, the connection's command timeout);
     /// the store aligns the second with the first — floored at one second, and skipped when the
     /// connection string states <c>Default Timeout</c> / <c>Command Timeout</c>. Reads through the
-    /// store are fine in WAL mode.
+    /// store are fine in WAL mode — as far as SQLite is concerned.
+    /// </para>
+    /// <para>
+    /// The pool is the other constraint: the callback's own transaction holds one of
+    /// <see cref="DocumentStoreOptions.MaxPoolSize"/> slots for its whole lifetime, so a store
+    /// call made inside the callback needs a <em>second</em> slot. At <c>MaxPoolSize</c> 1 even a
+    /// read waits for the connection this transaction cannot release until it returns, and fails
+    /// with <see cref="TimeoutException"/> after
+    /// <see cref="DocumentStoreOptions.PoolWaitTimeoutMs"/>.
     /// </para>
     /// <para>
     /// Runs in <see cref="TransactionMode.Deferred"/>. A callback that reads and then writes

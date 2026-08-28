@@ -193,6 +193,32 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
+    /// Sets how long an operation waits for a free pooled connection.
+    /// </summary>
+    /// <param name="timeoutMs">
+    /// Milliseconds to wait, or <see cref="Timeout.Infinite"/> (-1) to wait forever
+    /// </param>
+    /// <returns>This builder for method chaining</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="timeoutMs"/> is 0, or negative other than
+    /// <see cref="Timeout.Infinite"/>.
+    /// </exception>
+    public DocumentStoreOptionsBuilder WithPoolWaitTimeout(int timeoutMs)
+    {
+        // The property setter validates too; doing it here names the builder's own parameter.
+        if (timeoutMs is 0 or < Timeout.Infinite)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(timeoutMs),
+                timeoutMs,
+                "Pool wait timeout must be positive, or -1 to wait forever.");
+        }
+
+        _options.PoolWaitTimeoutMs = timeoutMs;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the table naming convention.
     /// </summary>
     /// <param name="convention">The table naming convention to use</param>

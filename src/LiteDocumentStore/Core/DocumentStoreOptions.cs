@@ -112,6 +112,48 @@ public sealed class DocumentStoreOptions
     } = Math.Clamp(Environment.ProcessorCount, 2, 16);
 
     /// <summary>
+    /// Gets or sets how long an operation waits for a free pooled connection before the wait is
+    /// treated as exhaustion rather than contention, in milliseconds. Default is 30000ms
+    /// (30 seconds); <see cref="Timeout.Infinite"/> (-1) waits forever.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A slot is held for one operation, or — for a transaction — until it is committed, rolled
+    /// back or disposed. A caller who leaks an <see cref="IDocumentTransaction"/> without
+    /// disposing it holds a slot until that transaction is finalized, and <see cref="MaxPoolSize"/>
+    /// such leaks would otherwise hang every later operation forever. Past this bound the rent
+    /// throws <see cref="TimeoutException"/> instead, naming the cap.
+    /// </para>
+    /// <para>
+    /// This bounds the wait for a <em>connection</em>, not for a SQLite lock — that is
+    /// <see cref="BusyTimeoutMs"/>. Raise it for a workload whose operations legitimately queue
+    /// longer than this behind <see cref="MaxPoolSize"/> concurrent ones; set it to
+    /// <see cref="Timeout.Infinite"/> to queue indefinitely, which cannot report a leak.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The value is 0, or negative other than <see cref="Timeout.Infinite"/>
+    /// </exception>
+    public int PoolWaitTimeoutMs
+    {
+        get;
+        // Validated here too, for MaxPoolSize's reason: SemaphoreSlim's own exception names
+        // "millisecondsTimeout" and never mentions which option was wrong.
+        set
+        {
+            if (value is 0 or < Timeout.Infinite)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    value,
+                    "Pool wait timeout must be positive, or -1 to wait forever.");
+            }
+
+            field = value;
+        }
+    } = 30_000;
+
+    /// <summary>
     /// Gets or sets the default table naming convention.
     /// If null, uses the simple type name as table name.
     /// </summary>
@@ -265,6 +307,14 @@ public sealed class DocumentStoreOptions
                 nameof(MaxPoolSize));
         }
 
+        if (PoolWaitTimeoutMs is 0 or < Timeout.Infinite)
+        {
+            throw new ArgumentException(
+                "Pool wait timeout must be positive, or -1 to wait forever, but was " +
+                $"{PoolWaitTimeoutMs}.",
+                nameof(PoolWaitTimeoutMs));
+        }
+
         if (AdditionalPragmas is null)
         {
             throw new ArgumentException("Additional pragmas must not be null.", nameof(AdditionalPragmas));
@@ -303,6 +353,7 @@ public sealed class DocumentStoreOptions
             BusyTimeoutMs = BusyTimeoutMs,
             EnableForeignKeys = EnableForeignKeys,
             MaxPoolSize = MaxPoolSize,
+            PoolWaitTimeoutMs = PoolWaitTimeoutMs,
             TableNamingConvention = TableNamingConvention,
             AdditionalPragmas = [.. AdditionalPragmas],
             SerializerOptions = SerializerOptions

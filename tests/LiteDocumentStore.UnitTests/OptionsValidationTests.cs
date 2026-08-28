@@ -153,6 +153,46 @@ public sealed class OptionsValidationTests
     }
 
     [Fact]
+    public void PoolWaitTimeout_DefaultsToThirtySeconds()
+    {
+        Assert.Equal(30_000, new DocumentStoreOptions("Data Source=some.db").PoolWaitTimeoutMs);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-2)]
+    public void PoolWaitTimeout_WithAnUnusableValue_ThrowsNamingTheOption(int timeoutMs)
+    {
+        // Rejected at the setter, like MaxPoolSize: SemaphoreSlim's own exception names
+        // "millisecondsTimeout" and never mentions which option was wrong. Validate() repeats the
+        // check for the same belt-and-braces reason it repeats MaxPoolSize's.
+        var options = DocumentStoreOptions.ForFile("some.db");
+
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => options.PoolWaitTimeoutMs = timeoutMs);
+        Assert.Equal(30_000, options.PoolWaitTimeoutMs);
+        Assert.Contains("-1", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_WithAnInfinitePoolWaitTimeout_DoesNotThrow()
+    {
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.PoolWaitTimeoutMs = Timeout.Infinite;
+
+        options.Validate();
+        Assert.Equal(Timeout.Infinite, options.PoolWaitTimeoutMs);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-2)]
+    public void WithPoolWaitTimeout_WithAnUnusableValue_Throws(int timeoutMs)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => DocumentStoreOptions.Builder("some.db").WithPoolWaitTimeout(timeoutMs));
+    }
+
+    [Fact]
     public void PageSizeGuard_WithTheRequestedSize_DoesNotThrow()
     {
         SqlitePageSizeGuard.Validate(4096, "4096");

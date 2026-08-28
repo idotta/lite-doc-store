@@ -13,10 +13,14 @@ namespace LiteDocumentStore.UnitTests;
 [Trait("Category", "Unit")]
 public sealed class SqliteConnectionPoolTests
 {
-    private static SqliteConnectionPool CreatePool(int maxPoolSize = 4)
+    private static SqliteConnectionPool CreatePool(int maxPoolSize = 4, int? poolWaitTimeoutMs = null)
     {
         var options = DocumentStoreOptions.ForInMemory();
         options.MaxPoolSize = maxPoolSize;
+        if (poolWaitTimeoutMs is { } timeout)
+        {
+            options.PoolWaitTimeoutMs = timeout;
+        }
 
         return new SqliteConnectionPool(options, new DefaultConnectionFactory(), NullLogger.Instance);
     }
@@ -423,6 +427,64 @@ public sealed class SqliteConnectionPoolTests
         // The timed-out rent must not have consumed the slot it never acquired.
         await using var second = await pool.RentAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(ConnectionState.Open, second.Connection.State);
+    }
+
+    [Fact]
+    public async Task RentAsync_OnASaturatedPool_ThrowsAfterThePoolWaitTimeout()
+    {
+        // The ordinary operation rent used to wait forever, so a leaked lease hung the store with
+        // no exception, no log and no metric.
+        using var pool = CreatePool(maxPoolSize: 1, poolWaitTimeoutMs: 100);
+        await using var held = await pool.RentAsync();
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var rent = pool.RentAsync().AsTask();
+
+        // The watchdog cancels rather than timing out, so a runaway wait surfaces as
+        // OperationCanceledException instead of masquerading as the TimeoutException under test.
+        var thrown = await Assert.ThrowsAsync<TimeoutException>(() => rent.WaitAsync(watchdog.Token));
+
+        Assert.Contains(nameof(DocumentStoreOptions.PoolWaitTimeoutMs), thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("100 ms", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("pool size 1", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("Dispose transactions promptly", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RentAsync_WithAnInfinitePoolWaitTimeout_QueuesUntilASlotIsFree()
+    {
+        using var pool = CreatePool(maxPoolSize: 1, poolWaitTimeoutMs: Timeout.Infinite);
+        var held = await pool.RentAsync();
+
+        var queued = pool.RentAsync().AsTask();
+        Assert.False(queued.IsCompleted);
+
+        held.Dispose();
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var second = await queued.WaitAsync(watchdog.Token);
+        Assert.Equal(ConnectionState.Open, second.Connection.State);
+    }
+
+    [Fact]
+    public async Task AbandonLease_GivesTheSlotBackWithoutClosingOrCountingTheConnection()
+    {
+        // What a leaked transaction's finalizer does: the connection is left to the provider, and
+        // only the budget is repaired.
+        using var pool = CreatePool(maxPoolSize: 1, poolWaitTimeoutMs: 100);
+        var leaked = await pool.RentAsync();
+        Assert.Equal(1, pool.ConnectionCount);
+
+        leaked.Abandon();
+
+        Assert.Equal(0, pool.ConnectionCount);
+        Assert.Equal(ConnectionState.Open, leaked.Connection.State);
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using var replacement = await pool.RentAsync().AsTask().WaitAsync(watchdog.Token);
+        Assert.Equal(ConnectionState.Open, replacement.Connection.State);
+
+        leaked.Connection.Dispose();
     }
 
     [Theory]

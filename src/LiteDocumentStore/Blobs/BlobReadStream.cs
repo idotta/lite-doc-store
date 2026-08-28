@@ -298,13 +298,20 @@ internal sealed class BlobReadStream : Stream
         {
             try
             {
-                _logger.LogError(
-                    "Blob read stream for {Id} was never disposed; its connection stayed open until finalization",
-                    _id);
-
-                // Released here too, so a leaked stream costs a handle until finalization rather
-                // than a slot forever.
-                _slot.Release();
+                try
+                {
+                    _logger.LogError(
+                        "Blob read stream for {Id} was never disposed; its connection stayed open until finalization",
+                        _id);
+                }
+                finally
+                {
+                    // Released in the finally, not after the log: a caller-supplied ILogger that
+                    // throws must not cost the slot this exists to recover. Released here at all
+                    // so a leaked stream costs a handle until finalization rather than a slot
+                    // forever.
+                    _slot.Release();
+                }
             }
             catch
             {

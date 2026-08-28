@@ -104,12 +104,30 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Rents a connection, waiting indefinitely for a free slot when the pool is saturated.
+    /// Rents a connection, waiting up to <see cref="DocumentStoreOptions.PoolWaitTimeoutMs"/> for
+    /// a free slot when the pool is saturated.
     /// </summary>
+    /// <remarks>
+    /// The wait is bounded for the reason the blob-stream budget's is
+    /// (<see cref="RentBlobStreamSlotAsync"/>): a slot is held until its lease is released, so a
+    /// caller who leaks a transaction loses one — and <see cref="MaxPoolSize"/> such leaks would
+    /// hang every later operation forever, with no exception, no log and no metric. The bound
+    /// turns that into a diagnosable failure. <see cref="Timeout.Infinite"/> restores the
+    /// unbounded wait for a caller who wants it.
+    /// </remarks>
     public async ValueTask<PooledConnection> RentAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        await _slots.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (!await _slots.WaitAsync(_options.PoolWaitTimeoutMs, cancellationToken).ConfigureAwait(false))
+        {
+            throw new TimeoutException(
+                $"Timed out after {_options.PoolWaitTimeoutMs} ms " +
+                $"({nameof(DocumentStoreOptions.PoolWaitTimeoutMs)}) waiting for a free pooled " +
+                $"connection (pool size {_options.MaxPoolSize}). Dispose transactions promptly — " +
+                "each holds a connection until it is committed, rolled back or disposed.");
+        }
+
         return await TakeOrCreateAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -366,6 +384,31 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
 
     // Safe after disposal: _slots is never disposed. See the remarks on Dispose.
     private void ReleaseSlot() => _slots.Release();
+
+    /// <summary>
+    /// Gives up a lease whose connection can no longer be touched — a transaction reached from
+    /// its finalizer — recovering the slot without closing or counting the connection.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A finalizer must not touch the provider's objects: they have their own finalizers, and the
+    /// SafeHandle behind the connection closes the database whether or not this runs. So the
+    /// connection is left to the provider and only the budget is repaired — the trade
+    /// <see cref="BlobStreamSlot"/> already makes, and the reason a leak costs a handle until
+    /// finalization rather than a slot forever.
+    /// </para>
+    /// <para>
+    /// The uncount runs first, so a waiter woken by the release does not briefly see the pool
+    /// counting a connection it no longer owns. <see cref="ConnectionCount"/> then under-reports
+    /// live handles until the provider finalizes the abandoned one, which is the same sense
+    /// <see cref="DiscardBrokenConnection"/> uses: it counts the connections the pool owns.
+    /// </para>
+    /// </remarks>
+    internal void AbandonLease()
+    {
+        Interlocked.Decrement(ref _created);
+        ReleaseSlot();
+    }
 
     /// <summary>
     /// Closes every pooled connection. Rented connections are closed when returned.
