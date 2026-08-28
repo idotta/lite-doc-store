@@ -417,9 +417,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
             throw;
         }
 
-        var count = Interlocked.Increment(ref _created);
-        _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);
-        return connection;
+        return Announce(connection);
     }
 
 
@@ -448,8 +446,35 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     {
         var connection = await OpenGuardedConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+        return Announce(connection);
+    }
+
+    /// <summary>
+    /// Counts a newly opened connection and reports it, closing it again if the report fails.
+    /// </summary>
+    /// <remarks>
+    /// The log stays loud, unlike the release paths in <see cref="QuietLog"/>: a caller is waiting
+    /// on this rent and should learn that their <see cref="ILogger"/> is broken. What must not
+    /// happen is the connection going with it — it is a local here, so a throw between opening it
+    /// and returning it abandons an open handle (and its file lock, or a shared-cache in-memory
+    /// database) until finalization, and leaves <see cref="ConnectionCount"/> counting a
+    /// connection the pool no longer has. The slot is recovered either way by the caller's
+    /// <c>catch</c>, so the failure is otherwise invisible and repeats on every retry.
+    /// </remarks>
+    private SqliteConnection Announce(SqliteConnection connection)
+    {
         var count = Interlocked.Increment(ref _created);
-        _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);
+
+        try
+        {
+            _logger.LogDebug("Opened pooled connection {Count} of {MaxPoolSize}", count, _options.MaxPoolSize);
+        }
+        catch
+        {
+            DiscardBrokenConnection(connection, "the logger failed while reporting that it was opened");
+            throw;
+        }
+
         return connection;
     }
 

@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -183,6 +184,107 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
             await command.ExecuteNonQueryAsync(cancellationToken);
             return 0;
         });
+
+    /// <summary>
+    /// Hands out real connections and keeps every one it opened, so a test can look at the ones
+    /// the pool has let go of.
+    /// </summary>
+    private sealed class RecordingConnectionFactory : IConnectionFactory
+    {
+        private readonly DefaultConnectionFactory _inner = new();
+
+        public List<SqliteConnection> Opened { get; } = [];
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options)
+        {
+            var connection = _inner.CreateConnection(options);
+            Opened.Add(connection);
+
+            return connection;
+        }
+
+        public async Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            var connection = await _inner.CreateConnectionAsync(options, cancellationToken);
+            Opened.Add(connection);
+
+            return connection;
+        }
+
+        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
+            _inner.ConfigureConnection(connection, options);
+
+        public Task ConfigureConnectionAsync(
+            SqliteConnection connection,
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) =>
+            _inner.ConfigureConnectionAsync(connection, options, cancellationToken);
+    }
+
+    private static (SqliteConnectionPool Pool, RecordingConnectionFactory Factory) CreatePool(
+        Fault fault,
+        params LogLevel[] failOn)
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 2;
+
+        var factory = new RecordingConnectionFactory();
+
+        return (new SqliteConnectionPool(options, factory, new FaultyLogger(fault, failOn)), factory);
+    }
+
+    [Fact]
+    public async Task RentAsync_WhenTheOpenedConnectionLogThrows_ClosesThatConnectionAndUncountsIt()
+    {
+        // The rent path's log is loud on purpose — a caller is waiting on it — but the connection
+        // it has just opened is still only a local, so a throw there abandons an open handle and
+        // leaves ConnectionCount reporting one the pool no longer holds. The slot is recovered by
+        // TakeOrCreateAsync's catch either way, so nothing else surfaces the loss.
+        var fault = new Fault();
+        var (pool, factory) = CreatePool(fault, LogLevel.Debug);
+        using var owned = pool;
+        await pool.InitializeAsync();
+
+        // Hold the eagerly opened connection, so the next rent has to open a second one and log.
+        await using var first = await pool.RentAsync();
+        fault.Armed = true;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await pool.RentAsync());
+
+        fault.Armed = false;
+        Assert.Equal(2, factory.Opened.Count);
+
+        var abandoned = factory.Opened[1];
+        Assert.Equal(ConnectionState.Closed, abandoned.State);
+
+        // And the count matches reality, so a retry does not push the pool past its own cap.
+        await using var second = await pool.RentAsync();
+        Assert.Equal(pool.MaxPoolSize, pool.ConnectionCount);
+    }
+
+    [Fact]
+    public void Rent_WhenTheOpenedConnectionLogThrows_ClosesThatConnectionAndUncountsIt()
+    {
+        // The synchronous twin: CreateConnection carries its own copy of the same announcement.
+        var fault = new Fault();
+        var (pool, factory) = CreatePool(fault, LogLevel.Debug);
+        using var owned = pool;
+        pool.Initialize();
+
+        using var first = pool.Rent();
+        fault.Armed = true;
+
+        Assert.Throws<InvalidOperationException>(() => pool.Rent());
+
+        fault.Armed = false;
+        Assert.Equal(2, factory.Opened.Count);
+        Assert.Equal(ConnectionState.Closed, factory.Opened[1].State);
+
+        using var second = pool.Rent();
+        Assert.Equal(pool.MaxPoolSize, pool.ConnectionCount);
+    }
 
     [Fact]
     public async Task CommitAsync_WhenTheLoggerThrows_SurfacesTheFailureAndStillReturnsTheLease()
