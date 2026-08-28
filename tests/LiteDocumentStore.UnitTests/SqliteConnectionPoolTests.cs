@@ -489,4 +489,211 @@ public sealed class SqliteConnectionPoolTests
             Assert.Equal(1234, timeout);
         }
     }
+
+    /// <summary>
+    /// A clean return that lands while the pool is being disposed must not leave the connection
+    /// open. Both racers reach the connection through the idle bag, and
+    /// <c>ConcurrentBag.TryTake</c> hands it to exactly one of them, so it is closed exactly once.
+    /// </summary>
+    /// <remarks>
+    /// A stress loop rather than a gated one: nothing between <c>ReturnCore</c>'s <c>_disposed</c>
+    /// read and its <c>_idle.Add</c> is injectable, so the interleaving can only be provoked. It
+    /// is not a rare one — before the post-add re-check this failed at 330 of 400.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Return_RacingDispose_ClosesEveryConnection(bool disposeAsync)
+    {
+        const int attempts = 400;
+        var created = 0;
+        var leftOpen = 0;
+
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            var options = DocumentStoreOptions.ForInMemory();
+            options.MaxPoolSize = 1;
+
+            var factory = new RecordingConnectionFactory();
+            var pool = new SqliteConnectionPool(options, factory, NullLogger.Instance);
+            var lease = await pool.RentAsync();
+
+            using var ready = new Barrier(2);
+            var returner = Task.Run(() =>
+            {
+                ready.SignalAndWait();
+                lease.Dispose();
+            });
+
+            var disposer = Task.Run(async () =>
+            {
+                ready.SignalAndWait();
+                if (disposeAsync)
+                {
+                    await pool.DisposeAsync();
+                }
+                else
+                {
+                    pool.Dispose();
+                }
+            });
+
+            await Task.WhenAll(returner, disposer);
+
+            foreach (var connection in factory.Opened)
+            {
+                created++;
+                if (connection.State != ConnectionState.Closed)
+                {
+                    leftOpen++;
+                    connection.Dispose();
+                }
+            }
+        }
+
+        // Guards the assertion below against passing on a run that opened nothing.
+        Assert.Equal(attempts, created);
+        Assert.Equal(0, leftOpen);
+    }
+
+    /// <summary>
+    /// The same race on the initialization path, which banks its connection the same way. Gated
+    /// rather than stressed: the factory parks inside the open until the pool has been disposed
+    /// and its drain has run, so the losing interleaving happens on every run.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Initialize_RacingDispose_ClosesTheConnectionItBanks(bool initializeAsync)
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 1;
+
+        using var creating = new ManualResetEventSlim(false);
+        using var disposalDone = new ManualResetEventSlim(false);
+
+        var factory = new GatedConnectionFactory(creating, disposalDone);
+        using var pool = new SqliteConnectionPool(options, factory, NullLogger.Instance);
+
+        var initializing = Task.Run(async () =>
+        {
+            // The pool is disposed while this call is parked in the factory. It passed
+            // ThrowIfDisposed on the way in, so it banks its connection on a disposed pool; an
+            // ordering that throws instead would be equally correct.
+            try
+            {
+                if (initializeAsync)
+                {
+                    await pool.InitializeAsync();
+                }
+                else
+                {
+                    pool.Initialize();
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        });
+
+        Assert.True(creating.Wait(TimeSpan.FromSeconds(10)), "the factory was never entered");
+        pool.Dispose();
+        disposalDone.Set();
+        await initializing;
+
+        var opened = Assert.Single(factory.Opened);
+        Assert.Equal(ConnectionState.Closed, opened.State);
+    }
+
+    /// <summary>
+    /// Hands out real connections and keeps every one it opened, so a test can assert on
+    /// connections the pool no longer refers to.
+    /// </summary>
+    private sealed class RecordingConnectionFactory : IConnectionFactory
+    {
+        private readonly DefaultConnectionFactory _inner = new();
+
+        public List<SqliteConnection> Opened { get; } = [];
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options)
+        {
+            var connection = _inner.CreateConnection(options);
+            Opened.Add(connection);
+
+            return connection;
+        }
+
+        public async Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            var connection = await _inner.CreateConnectionAsync(options, cancellationToken);
+            Opened.Add(connection);
+
+            return connection;
+        }
+
+        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
+            _inner.ConfigureConnection(connection, options);
+
+        public Task ConfigureConnectionAsync(
+            SqliteConnection connection,
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) =>
+            _inner.ConfigureConnectionAsync(connection, options, cancellationToken);
+    }
+
+    /// <summary>
+    /// A recording factory that parks inside the open, so a test can drive a disposal to
+    /// completion while a caller sits between the pool's disposal check and its idle-bag add.
+    /// </summary>
+    private sealed class GatedConnectionFactory : IConnectionFactory
+    {
+        private readonly DefaultConnectionFactory _inner = new();
+        private readonly ManualResetEventSlim _entered;
+        private readonly ManualResetEventSlim _release;
+
+        public GatedConnectionFactory(ManualResetEventSlim entered, ManualResetEventSlim release)
+        {
+            _entered = entered;
+            _release = release;
+        }
+
+        public List<SqliteConnection> Opened { get; } = [];
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options)
+        {
+            WaitForRelease();
+            var connection = _inner.CreateConnection(options);
+            Opened.Add(connection);
+
+            return connection;
+        }
+
+        public async Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            WaitForRelease();
+            var connection = await _inner.CreateConnectionAsync(options, cancellationToken);
+            Opened.Add(connection);
+
+            return connection;
+        }
+
+        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
+            _inner.ConfigureConnection(connection, options);
+
+        public Task ConfigureConnectionAsync(
+            SqliteConnection connection,
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) =>
+            _inner.ConfigureConnectionAsync(connection, options, cancellationToken);
+
+        private void WaitForRelease()
+        {
+            _entered.Set();
+            Assert.True(_release.Wait(TimeSpan.FromSeconds(10)), "the disposal never completed");
+        }
+    }
 }
