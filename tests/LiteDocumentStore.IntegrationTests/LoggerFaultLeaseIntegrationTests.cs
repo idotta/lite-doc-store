@@ -69,6 +69,12 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
     {
         public List<string> Messages { get; } = [];
 
+        /// <summary>
+        /// Counts calls before the fault fires, so a test can tell "the log threw" from "the log
+        /// was never attempted" — otherwise deleting a diagnostic leaves the test green.
+        /// </summary>
+        public int Attempts;
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
@@ -80,6 +86,8 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
+            Interlocked.Increment(ref Attempts);
+
             if (fault.Armed && Array.IndexOf(failOn, logLevel) >= 0)
             {
                 throw new InvalidOperationException("logger failed");
@@ -526,5 +534,47 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
 
         Assert.Contains("WAL checkpoint completed successfully", logger.Messages);
         Assert.False(File.Exists(path + "-wal"), "the pool was not disposed, so the WAL survived");
+    }
+
+    [Fact]
+    public async Task BlobReadStreamFinalizer_WhenTheLeakLogThrows_StillReleasesTheStreamSlot()
+    {
+        // The finalizer's own version of the rule: the slot release is in a finally, so a throwing
+        // Error log cannot shrink the blob-stream budget permanently. With one slot, losing it
+        // makes every later open wait out BlobStreamSlotTimeout.
+        var options = DocumentStoreOptions.ForFile(NewDatabasePath());
+
+        // Not WAL: the finalizer leaves the abandoned connection's read transaction open, and the
+        // dispose-time checkpoint would then block on it for the whole busy timeout.
+        options.EnableWalMode = false;
+        options.MaxPoolSize = 1;
+
+        var fault = new Fault();
+        var (store, logger) = CreateStore(options, fault, LogLevel.Error);
+        await using var owned = store;
+        await store.CreateBlobTableAsync();
+        await store.PutBlobAsync("b/1", new byte[] { 1, 2, 3 });
+
+        await AbandonABlobStreamAsync(store);
+
+        fault.Armed = true;
+        var before = Volatile.Read(ref logger.Attempts);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        fault.Armed = false;
+
+        Assert.True(Volatile.Read(ref logger.Attempts) > before, "the leak was never reported");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var stream = await store.OpenBlobReadAsync("b/1", cts.Token);
+        Assert.NotNull(stream);
+    }
+
+    // Separated so the stream is unreachable by the time the caller collects: a local in the test
+    // method would still be rooted.
+    private static async Task AbandonABlobStreamAsync(IDocumentStore store)
+    {
+        var stream = await store.OpenBlobReadAsync("b/1");
+        Assert.NotNull(stream);
     }
 }

@@ -37,6 +37,17 @@ internal readonly struct PooledConnection : IDisposable, IAsyncDisposable
     public void Discard() => _pool?.Discard(Connection);
 
     /// <summary>
+    /// Gives the slot back without touching the connection, for a lease reached from a finalizer.
+    /// </summary>
+    /// <remarks>
+    /// The connection is left to the provider's own finalizers — see
+    /// <see cref="SqliteConnectionPool.AbandonLease"/>. Never call this from a disposal path:
+    /// <see cref="Dispose"/> and <see cref="Discard"/> are the paths that actually reclaim the
+    /// connection.
+    /// </remarks>
+    public void Abandon() => _pool?.AbandonLease();
+
+    /// <summary>
     /// Returns the connection after a caller has run their own SQL against it, closing it rather
     /// than recycling it when they left transaction state behind.
     /// </summary>

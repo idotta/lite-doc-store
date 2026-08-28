@@ -86,6 +86,7 @@ public sealed class OptionsPresetTests
             BusyTimeoutMs = 1234,
             EnableForeignKeys = false,
             MaxPoolSize = 7,
+            PoolWaitTimeoutMs = 4321,
             TableNamingConvention = convention,
             AdditionalPragmas = ["PRAGMA temp_store = MEMORY"],
             SerializerOptions = serializerOptions
@@ -101,6 +102,7 @@ public sealed class OptionsPresetTests
         Assert.Equal(original.BusyTimeoutMs, clone.BusyTimeoutMs);
         Assert.Equal(original.EnableForeignKeys, clone.EnableForeignKeys);
         Assert.Equal(original.MaxPoolSize, clone.MaxPoolSize);
+        Assert.Equal(original.PoolWaitTimeoutMs, clone.PoolWaitTimeoutMs);
         Assert.Equal(original.AdditionalPragmas, clone.AdditionalPragmas);
     }
 
@@ -143,6 +145,7 @@ public sealed class OptionsPresetTests
             .WithBusyTimeout(2500)
             .WithForeignKeys(false)
             .WithMaxPoolSize(5)
+            .WithPoolWaitTimeout(7500)
             .WithTableNamingConvention(convention)
             .WithSerializerOptions(serializerOptions)
             .AddPragma("PRAGMA temp_store = MEMORY")
@@ -156,6 +159,7 @@ public sealed class OptionsPresetTests
         Assert.Equal(2500, options.BusyTimeoutMs);
         Assert.False(options.EnableForeignKeys);
         Assert.Equal(5, options.MaxPoolSize);
+        Assert.Equal(7500, options.PoolWaitTimeoutMs);
         Assert.Same(convention, options.TableNamingConvention);
         Assert.Same(serializerOptions, options.SerializerOptions);
         Assert.Equal(["PRAGMA temp_store = MEMORY"], options.AdditionalPragmas);

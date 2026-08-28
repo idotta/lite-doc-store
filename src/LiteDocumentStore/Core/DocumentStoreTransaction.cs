@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -580,6 +581,10 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     /// <summary>
     /// Rolls back an uncommitted transaction, then releases the connection.
     /// </summary>
+    [SuppressMessage(
+        "Usage",
+        "CA1816:Dispose methods should call SuppressFinalize",
+        Justification = "Release suppresses finalization, and it is the only way out of this method.")]
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -601,6 +606,10 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc cref="Dispose" />
+    [SuppressMessage(
+        "Usage",
+        "CA1816:Dispose methods should call SuppressFinalize",
+        Justification = "Release suppresses finalization, and it is the only way out of this method.")]
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -672,12 +681,23 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     /// run, <see cref="Dispose"/> is a no-op and a second commit or rollback fails with
     /// <see cref="InvalidOperationException"/>.
     /// </remarks>
+    [SuppressMessage(
+        "Usage",
+        "CA1816:Dispose methods should call SuppressFinalize",
+        Justification = "Release is the single choke point every completion path runs through — " +
+            "commit and rollback release without disposing, so suppressing in Dispose alone " +
+            "would leave those on the finalization queue.")]
     private void Release()
     {
         if (Interlocked.Exchange(ref _released, 1) != 0)
         {
             return;
         }
+
+        // The single choke point for every release path — commit and rollback release without
+        // disposing, so suppressing only in Dispose would put every completed-but-undisposed
+        // transaction on the finalization queue for a finalizer with nothing left to do.
+        GC.SuppressFinalize(this);
 
         var transaction = Interlocked.Exchange(ref _transaction, null);
 
@@ -706,6 +726,46 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
             {
                 _lease.Dispose();
             }
+        }
+    }
+
+    /// <summary>
+    /// Reports a transaction the caller never finished, and gives its pool slot back.
+    /// </summary>
+    /// <remarks>
+    /// A transaction holds one of <see cref="DocumentStoreOptions.MaxPoolSize"/> slots until it is
+    /// released, so a leaked one used to cost that slot for the lifetime of the process — and
+    /// <c>MaxPoolSize</c> leaks hung the whole store. The slot is recovered here instead, which
+    /// makes the leak cost a connection handle until the provider finalizes it.
+    /// <para>
+    /// The connection, its open transaction and its database lock are deliberately left alone: a
+    /// finalizer must not touch provider objects that have finalizers of their own. The release is
+    /// in a <c>finally</c> because <see cref="ILogger"/> is caller-supplied and a throwing one must
+    /// not cost the slot this exists to recover, and the whole body is caught because an exception
+    /// escaping a finalizer terminates the process.
+    /// </para>
+    /// </remarks>
+    ~DocumentStoreTransaction()
+    {
+        try
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                try
+                {
+                    _logger.LogError(
+                        "A transaction was never committed, rolled back or disposed; its connection " +
+                        "stayed open until finalization");
+                }
+                finally
+                {
+                    _lease.Abandon();
+                }
+            }
+        }
+        catch
+        {
+            // Nothing left to report it to.
         }
     }
 }
