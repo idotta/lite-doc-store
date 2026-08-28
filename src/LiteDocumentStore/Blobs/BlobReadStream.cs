@@ -130,6 +130,15 @@ internal sealed class BlobReadStream : Stream
         }
     }
 
+    /// <summary>
+    /// Disposes one resource of a stream that is being torn down, reporting a failure instead of
+    /// propagating it.
+    /// </summary>
+    /// <remarks>
+    /// The log goes through <see cref="QuietLog"/>: a caller-supplied <see cref="ILogger"/> that
+    /// throws would otherwise escape the teardown and replace the failure the caller actually
+    /// needs to see — the very thing the nesting here exists to prevent.
+    /// </remarks>
     private static async ValueTask DisposeQuietlyAsync(IAsyncDisposable resource, string what, ILogger logger)
     {
         try
@@ -138,9 +147,10 @@ internal sealed class BlobReadStream : Stream
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to dispose the {What} of a blob read stream", what);
+            logger.LogWarningQuietly(ex, "Failed to dispose the {What} of a blob read stream", what);
         }
     }
+
     /// <inheritdoc />
     public override bool CanRead => true;
 
@@ -348,6 +358,7 @@ internal sealed class BlobReadStream : Stream
         return _blob!;
     }
 
+    /// <inheritdoc cref="DisposeQuietlyAsync" />
     private void SafeDispose(IDisposable? resource, string what)
     {
         try
@@ -356,10 +367,11 @@ internal sealed class BlobReadStream : Stream
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to dispose the {What} of a blob read stream", what);
+            _logger.LogWarningQuietly(ex, "Failed to dispose the {What} of a blob read stream", what);
         }
     }
 
+    /// <inheritdoc cref="DisposeQuietlyAsync" />
     private async ValueTask SafeDisposeAsync(IAsyncDisposable? resource, string what)
     {
         try
@@ -371,7 +383,7 @@ internal sealed class BlobReadStream : Stream
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to dispose the {What} of a blob read stream", what);
+            _logger.LogWarningQuietly(ex, "Failed to dispose the {What} of a blob read stream", what);
         }
     }
 }
