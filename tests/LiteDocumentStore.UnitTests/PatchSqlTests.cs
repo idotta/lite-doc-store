@@ -332,4 +332,83 @@ public class PatchSqlTests
 
         Assert.Throws<ArgumentException>(() => patch.AndRemove("$.Email"));
     }
+
+    // --- The document root -------------------------------------------------------------
+    //
+    // "$" is a grammatically valid path and stays legal for queries and indexes, which only
+    // read through it. A patch is the one caller that must refuse it: jsonb_set(data, '$', v)
+    // replaces the entire document with v, reports success and bumps the version, leaving a row
+    // that no longer deserializes; jsonb_remove(data, '$') nulls the payload out and surfaces a
+    // raw SqliteException off the NOT NULL column. Both the builder and the generator reject it,
+    // so a hand-built PatchOperation cannot slip past either.
+
+    [Fact]
+    public void Set_OnTheDocumentRoot_Throws()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => DocumentPatch<Person>.Set("$", 5));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    [Fact]
+    public void AndSet_OnTheDocumentRoot_Throws()
+    {
+        var patch = DocumentPatch<Person>.Set("$.Email", "a@b.c");
+
+        var exception = Assert.Throws<ArgumentException>(() => patch.AndSet("$", 5));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    [Fact]
+    public void Remove_OnTheDocumentRoot_Throws()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => DocumentPatch<Person>.Remove("$"));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    [Fact]
+    public void AndRemove_OnTheDocumentRoot_Throws()
+    {
+        var patch = DocumentPatch<Person>.Set("$.Email", "a@b.c");
+
+        var exception = Assert.Throws<ArgumentException>(() => patch.AndRemove("$"));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    // The two generator-side checks are separate ValidateJsonPath calls — one in the jsonb_set
+    // loop, one in the jsonb_remove loop — so each needs its own test to be pinned.
+
+    [Fact]
+    public void GeneratePatchSql_WithASetOnTheDocumentRoot_Throws()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => Generate(Set("$", 5)));
+
+        Assert.Equal("operations", exception.ParamName);
+    }
+
+    [Fact]
+    public void GeneratePatchSql_WithARemoveOnTheDocumentRoot_Throws()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => Generate(Remove("$")));
+
+        Assert.Equal("operations", exception.ParamName);
+    }
+
+    // An indexer at the root reaches into the document rather than replacing it, so it stays
+    // legal — the guard is "$" exactly, not "starts with $ and is short".
+
+    [Theory]
+    [InlineData("$[0]")]
+    [InlineData("$.Email")]
+    [InlineData("$.Tags[0]")]
+    public void APathBelowTheRoot_IsStillAccepted(string jsonPath)
+    {
+        Assert.Single(DocumentPatch<Person>.Set(jsonPath, 5).Operations);
+        Assert.Single(DocumentPatch<Person>.Remove(jsonPath).Operations);
+        Assert.Contains($"'{jsonPath}'", Generate(Set(jsonPath, 5)).Sql, StringComparison.Ordinal);
+        Assert.Contains($"'{jsonPath}'", Generate(Remove(jsonPath)).Sql, StringComparison.Ordinal);
+    }
 }

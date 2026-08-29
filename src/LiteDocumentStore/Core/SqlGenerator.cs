@@ -1121,7 +1121,7 @@ internal static class SqlGenerator
                 continue;
             }
 
-            sb.Append(", '").Append(ValidateJsonPath(operation.JsonPath, nameof(operations))).Append("', ");
+            sb.Append(", '").Append(ValidateJsonPath(operation.JsonPath, nameof(operations), allowRoot: false)).Append("', ");
 
             var parameter = NextParameter(values, operation.Value);
             if (operation.AsJson)
@@ -1144,7 +1144,7 @@ internal static class SqlGenerator
             if (operations[i].Kind == PatchOperationKind.Remove)
             {
                 sb.Append(", '")
-                    .Append(ValidateJsonPath(operations[i].JsonPath, nameof(operations)))
+                    .Append(ValidateJsonPath(operations[i].JsonPath, nameof(operations), allowRoot: false))
                     .Append('\'');
             }
         }
@@ -1338,12 +1338,31 @@ internal static class SqlGenerator
     }
 
     // Grammar: $(.member|[index])*  — a ' in the path would close the SQL literal it lands in.
-    internal static string ValidateJsonPath(string jsonPath, string paramName)
+    //
+    // The bare root "$" is grammatically valid and stays accepted by default: a read path only
+    // extracts the whole document with it, which is harmless (a LIKE over the serialized text) and
+    // is what the query, index and virtual-column APIs have always allowed. A *patch* is the one
+    // caller that passes allowRoot: false, because there the root is destructive rather than
+    // useless — measured against real SQLite, jsonb_set(data, '$', 5) replaces the entire document
+    // with the scalar 5, reports success and bumps the version, after which every read of that row
+    // throws DocumentSerializationException; jsonb_remove(data, '$') yields NULL and surfaces a raw
+    // SqliteException off the data BLOB NOT NULL column, the one shape in the patch API that leaks
+    // a provider error instead of validating up front. An indexer at the root ("$[0]") reaches
+    // *into* the document and stays legal on every path.
+    internal static string ValidateJsonPath(string jsonPath, string paramName, bool allowRoot = true)
     {
         if (string.IsNullOrEmpty(jsonPath) || jsonPath[0] != '$')
         {
             throw new ArgumentException(
                 $"Invalid JSON path '{jsonPath}': it must start with '$'.",
+                paramName);
+        }
+
+        if (!allowRoot && jsonPath.Length == 1)
+        {
+            throw new ArgumentException(
+                "A patch must target a field or array element below the document root; replacing " +
+                "or removing the whole stored JSON value is not supported.",
                 paramName);
         }
 

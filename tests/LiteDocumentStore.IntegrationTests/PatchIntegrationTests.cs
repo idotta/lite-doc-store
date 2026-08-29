@@ -335,4 +335,53 @@ public sealed class PatchIntegrationTests : IAsyncLifetime
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => _store.PatchAsync("g1", DocumentPatch<Gadget>.Set("$.Name", "Bolt"), cancellation.Token));
     }
+
+    // --- The document root ---------------------------------------------------------------
+    //
+    // Measured against real SQLite before the guard existed: jsonb_set(data, '$', 5) replaced
+    // the whole document with the scalar 5, returned version 2 and left every later read of the
+    // row throwing DocumentSerializationException. jsonb_remove(data, '$') produced SQL NULL and
+    // failed with a raw "NOT NULL constraint failed: Gadget.data" — the store's own DDL is what
+    // caught it, so a consumer-made table without the constraint would have nulled the row out.
+    //
+    // ParamName is asserted deliberately: the generator rejects the root too, before any I/O, so
+    // a bare ThrowsAsync<ArgumentException> would still pass with the builder-side guard removed.
+
+    [Fact]
+    public async Task PatchAsync_SettingTheDocumentRoot_ThrowsAtTheCallSiteAndLeavesTheDocumentIntact()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => DocumentPatch<Gadget>.Set("$", 5));
+        Assert.Equal("jsonPath", exception.ParamName);
+
+        var stored = await _store.GetWithVersionAsync<Gadget>("g1");
+        Assert.Equal(Seed, stored!.Data);
+        Assert.Equal(1, stored.Version);
+    }
+
+    [Fact]
+    public async Task PatchAsync_RemovingTheDocumentRoot_ThrowsAtTheCallSiteAndLeavesTheDocumentIntact()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => DocumentPatch<Gadget>.Remove("$"));
+        Assert.Equal("jsonPath", exception.ParamName);
+
+        var stored = await _store.GetWithVersionAsync<Gadget>("g1");
+        Assert.Equal(Seed, stored!.Data);
+        Assert.Equal(1, stored.Version);
+    }
+
+    [Fact]
+    public async Task PatchAsync_OnAnIndexerAtTheRoot_StillReachesIntoTheDocument()
+    {
+        // The guard is the bare "$", not "a short path starting with $": an indexer addresses an
+        // element of the document rather than replacing it. Seeded through raw SQL, since the
+        // store's own documents are objects.
+        var table = _store.GetTableName<Gadget>();
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            $"INSERT INTO [{table}] (id, data, version) VALUES ('arr', jsonb('[1,2,3]'), 1)", ct));
+
+        var version = await _store.PatchAsync("arr", DocumentPatch<Gadget>.Set("$[0]", 9));
+
+        Assert.Equal(2, version);
+        Assert.Equal("[9,2,3]", await RawJsonAsync("arr"));
+    }
 }

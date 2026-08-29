@@ -33,6 +33,14 @@ namespace LiteDocumentStore;
 /// type or a path touched twice throws at the call site rather than at execution time.
 /// </para>
 /// <para>
+/// A path must reach <i>below</i> the document root: the bare <c>$</c> is rejected, because
+/// setting it replaces the whole stored document with the value — leaving a row that no longer
+/// deserializes, having reported success and bumped the version — and removing it nulls the
+/// payload out. An indexer at the root (<c>$[0]</c>) reaches into the document and is fine.
+/// The root stays valid for <see cref="DocumentQuery{T}"/> and the indexing APIs, which only
+/// read through it.
+/// </para>
+/// <para>
 /// Only an exactly repeated path is rejected, and SQLite applies the paths in call order, each
 /// seeing the document as the previous ones left it. <i>Related</i> paths therefore compose:
 /// removing <c>$.Items[0]</c> before <c>$.Items[1]</c> shifts the array under the second path,
@@ -67,7 +75,8 @@ public sealed class DocumentPatch<T>
     /// </param>
     /// <returns>A new patch carrying the operation</returns>
     /// <exception cref="ArgumentException">
-    /// Thrown when the path is null, empty or malformed, or when the value's type cannot be stored
+    /// Thrown when the path is null, empty or malformed, when it is the bare document root
+    /// <c>$</c>, or when the value's type cannot be stored
     /// </exception>
     public static DocumentPatch<T> Set(string jsonPath, object? value) =>
         Empty.AndSet(jsonPath, value);
@@ -82,8 +91,9 @@ public sealed class DocumentPatch<T>
     /// </param>
     /// <returns>A new patch carrying the added operation</returns>
     /// <exception cref="ArgumentException">
-    /// Thrown when the path is null, empty or malformed, when the value's type cannot be stored,
-    /// or when the patch already touches that path
+    /// Thrown when the path is null, empty or malformed, when it is the bare document root
+    /// <c>$</c>, when the value's type cannot be stored, or when the patch already touches
+    /// that path
     /// </exception>
     public DocumentPatch<T> AndSet(string jsonPath, object? value) =>
         WithOperation(CreateSet(jsonPath, value));
@@ -93,7 +103,9 @@ public sealed class DocumentPatch<T>
     /// </summary>
     /// <param name="jsonPath">The JSON path to remove, e.g. <c>$.Nickname</c></param>
     /// <returns>A new patch carrying the operation</returns>
-    /// <exception cref="ArgumentException">Thrown when the path is null, empty or malformed</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the path is null, empty or malformed, or when it is the bare document root <c>$</c>
+    /// </exception>
     public static DocumentPatch<T> Remove(string jsonPath) => Empty.AndRemove(jsonPath);
 
     /// <summary>
@@ -102,11 +114,12 @@ public sealed class DocumentPatch<T>
     /// <param name="jsonPath">The JSON path to remove, e.g. <c>$.Nickname</c></param>
     /// <returns>A new patch carrying the added operation</returns>
     /// <exception cref="ArgumentException">
-    /// Thrown when the path is null, empty or malformed, or when the patch already touches that path
+    /// Thrown when the path is null, empty or malformed, when it is the bare document root <c>$</c>,
+    /// or when the patch already touches that path
     /// </exception>
     public DocumentPatch<T> AndRemove(string jsonPath) =>
         WithOperation(new PatchOperation(
-            DocumentQuery<T>.NormalizePath(jsonPath), PatchOperationKind.Remove, null, AsJson: false));
+            DocumentQuery<T>.NormalizePath(jsonPath, allowRoot: false), PatchOperationKind.Remove, null, AsJson: false));
 
     // Touching one path twice is a caller bug — a Set plus a Remove of the same path has no
     // defensible meaning, and two Sets silently drop one. UpsertManyAsync rejects duplicate
@@ -129,7 +142,7 @@ public sealed class DocumentPatch<T>
 
     private static PatchOperation CreateSet(string jsonPath, object? value)
     {
-        var path = DocumentQuery<T>.NormalizePath(jsonPath);
+        var path = DocumentQuery<T>.NormalizePath(jsonPath, allowRoot: false);
 
         // SQL NULL reaches jsonb_set as JSON null, so an explicit null needs no conversion —
         // only a way past the non-null value validation below.

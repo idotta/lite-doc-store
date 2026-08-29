@@ -118,4 +118,32 @@ public class SqlGeneratorValidationTests
         Assert.Throws<ArgumentException>(
             () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "email", "$.Email", columnType));
     }
+
+    // The bare root is grammatically valid and stays accepted by default — a read path only
+    // extracts the whole document through it. Only a patch opts out, since there the root
+    // rewrites or deletes the document instead of reading it.
+
+    [Fact]
+    public void TheDocumentRoot_IsAcceptedWhenRootIsAllowed()
+    {
+        Assert.Equal("$", SqlGenerator.ValidateJsonPath("$", "jsonPath"));
+    }
+
+    [Fact]
+    public void TheDocumentRoot_IsRejectedWhenRootIsNotAllowed()
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => SqlGenerator.ValidateJsonPath("$", "jsonPath", allowRoot: false));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData("$[0]")]
+    [InlineData("$.Email")]
+    public void APathBelowTheRoot_IsAcceptedEitherWay(string jsonPath)
+    {
+        Assert.Equal(jsonPath, SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)));
+        Assert.Equal(jsonPath, SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false));
+    }
 }
