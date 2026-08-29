@@ -463,6 +463,25 @@ public class DocumentQueryTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => DocumentQuery<QueryDocument>.All().Take(0));
     }
+
+    // The patch guard passes allowRoot: false through the shared NormalizePath; a query must
+    // not have picked it up. Extracting the whole document is a legitimate, if blunt, filter.
+
+    [Fact]
+    public void Where_OnTheDocumentRoot_IsStillAccepted()
+    {
+        var query = DocumentQuery<QueryDocument>.Where("$", QueryOperator.Like, "%Ada%");
+
+        Assert.Equal("$", Assert.Single(query.Predicates).JsonPath);
+    }
+
+    [Fact]
+    public void OrderBy_OnTheDocumentRoot_IsStillAccepted()
+    {
+        var query = DocumentQuery<QueryDocument>.Where(Path, QueryOperator.IsNotNull, null).OrderBy("$");
+
+        Assert.Equal("$", Assert.Single(query.Orderings).JsonPath);
+    }
 }
 
 /// <summary>A type marker for the queries under test; nothing reflects over it.</summary>

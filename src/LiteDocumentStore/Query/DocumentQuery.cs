@@ -302,15 +302,17 @@ public sealed class DocumentQuery<T>
 
     // The path grammar lives in SqlGenerator.ValidateJsonPath, the single boundary guarding
     // interpolated paths. Calling it here only moves the failure forward to the call site.
-    // Internal so DocumentPatch<T> validates paths through the same rule.
-    internal static string NormalizePath(string jsonPath)
+    // Internal so DocumentPatch<T> validates paths through the same rule — it is the one caller
+    // that passes allowRoot: false, since a patch at the bare root rewrites or deletes the whole
+    // stored document rather than merely extracting it. A query never does.
+    internal static string NormalizePath(string jsonPath, bool allowRoot = true)
     {
         if (string.IsNullOrWhiteSpace(jsonPath))
         {
             throw new ArgumentException("JSON path cannot be null or empty.", nameof(jsonPath));
         }
 
-        return SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath));
+        return SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot);
     }
 
     // Only types Microsoft.Data.Sqlite binds directly. Anything else would either throw deep
