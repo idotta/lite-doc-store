@@ -25,7 +25,7 @@
     <!-- The managed layer Microsoft.Data.Sqlite 10.0.11 itself depends on. Referenced directly
          because the pool calls sqlite3_get_autocommit to decide whether a returned connection
          still carries a transaction; see SqliteSessionState. -->
-    <PackageVersion Include="SQLitePCLRaw.core" Version="2.1.12" />
+    <PackageVersion Include="SQLitePCLRaw.core" Version="3.0.5" />
   </ItemGroup>
 
   <!-- DI / logging -->
