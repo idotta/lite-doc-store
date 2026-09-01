@@ -119,9 +119,10 @@ public class SqlGeneratorValidationTests
             () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "email", "$.Email", columnType));
     }
 
-    // The bare root is grammatically valid and stays accepted by default — a read path only
-    // extracts the whole document through it. Only a patch opts out, since there the root
-    // rewrites or deletes the document instead of reading it.
+    // The bare root is grammatically valid, and the split is by what the caller does with the
+    // value: a read path (query predicate, ordering, partial-index filter) only extracts the
+    // whole document through it and keeps accepting it, while a patch rewrites or deletes the
+    // document and the projecting DDL duplicates or keys on it — both opt out.
 
     [Fact]
     public void TheDocumentRoot_IsAcceptedWhenRootIsAllowed()
@@ -145,5 +146,79 @@ public class SqlGeneratorValidationTests
     {
         Assert.Equal(jsonPath, SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)));
         Assert.Equal(jsonPath, SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false));
+    }
+
+    // --- The document root in the projecting DDL -----------------------------------------
+
+    [Fact]
+    public void GenerateCreateJsonIndexSql_WithTheDocumentRoot_Throws()
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateJsonIndexSql("Person", "idx_whole_document", "$"));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    [Fact]
+    public void GenerateCreateCompositeJsonIndexSql_WithTheDocumentRoot_Throws()
+    {
+        // The root sits second, so this fails only if every component is validated.
+        var exception = Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateCompositeJsonIndexSql("Person", "idx", ["$.Email", "$"]));
+
+        Assert.Equal("jsonPaths", exception.ParamName);
+    }
+
+    [Fact]
+    public void GenerateAddVirtualColumnSql_WithTheDocumentRoot_Throws()
+    {
+        var exception = Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "whole", "$"));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+    }
+
+    [Fact]
+    public void TheProjectingDdl_StillAcceptsAnIndexerAtTheRoot()
+    {
+        Assert.Contains(
+            "json_extract(data, '$[0]')",
+            SqlGenerator.GenerateCreateJsonIndexSql("Person", "idx_first", "$[0]"),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "json_extract(data, '$[0]')",
+            SqlGenerator.GenerateCreateCompositeJsonIndexSql("Person", "idx_first", ["$.Email", "$[0]"]),
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "json_extract(data, '$[0]')",
+            SqlGenerator.GenerateAddVirtualColumnSql("Person", "first", "$[0]"),
+            StringComparison.Ordinal);
+    }
+
+    // The reading paths keep the root: they extract the whole serialized document and compare
+    // or order by it, which is blunt but not destructive and not a duplicated projection.
+
+    [Fact]
+    public void TheReadingPaths_StillAcceptTheDocumentRoot()
+    {
+        Assert.Contains(
+            "json_extract(data, '$')",
+            SqlGenerator.GenerateQueryByJsonPathSql("Person", "$"),
+            StringComparison.Ordinal);
+
+        var query = SqlGenerator.GenerateQuerySql(
+            "Person",
+            [new QueryPredicate("$", QueryOperator.Equal, "x", [])],
+            [new QueryOrdering("$", false)],
+            null,
+            null);
+        Assert.Contains("json_extract(data, '$')", query.Sql, StringComparison.Ordinal);
+
+        var filtered = SqlGenerator.GenerateCreateJsonIndexSql(
+            "Person",
+            "idx_email",
+            "$.Email",
+            new IndexOptions { Filter = IndexFilter.IsNotNull("$") });
+        Assert.Contains("json_extract(data, '$') IS NOT NULL", filtered, StringComparison.Ordinal);
     }
 }

@@ -767,8 +767,10 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
 
         // Validated before the name is derived from it: a bad path otherwise reaches the
-        // generator inside the derived index name and is reported against indexName.
-        var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath));
+        // generator inside the derived index name and is reported against indexName. The root
+        // is rejected here rather than only in the generator for the same reason — auto-naming
+        // would otherwise turn it into "idx_T_$" and blame indexName.
+        var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 
         string finalIndexName;
         if (indexName is null)
@@ -843,7 +845,7 @@ internal readonly struct DocumentOperations
         foreach (var path in jsonPaths)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(path, nameof(jsonPaths));
-            pathStrings.Add(SqlGenerator.ValidateJsonPath(path, nameof(jsonPaths)));
+            pathStrings.Add(SqlGenerator.ValidateJsonPath(path, nameof(jsonPaths), allowRoot: false));
         }
 
         string finalIndexName;
@@ -913,7 +915,10 @@ internal readonly struct DocumentOperations
         }
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath));
+
+        // Validated here and not only in the generator: an existing column short-circuits past
+        // the generator entirely, so the root would be accepted or rejected by database state.
+        var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 
         // Check if column already exists using SchemaIntrospector
         var introspector = new SchemaIntrospector(_connection);
