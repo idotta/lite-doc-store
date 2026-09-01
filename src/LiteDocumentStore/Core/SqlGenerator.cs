@@ -643,7 +643,7 @@ internal static class SqlGenerator
     /// </summary>
     /// <param name="tableName">The table name</param>
     /// <param name="indexName">The index name</param>
-    /// <param name="jsonPath">The JSON path to index (e.g., '$.email')</param>
+    /// <param name="jsonPath">The JSON path to index (e.g., '$.email'), below the document root</param>
     /// <param name="options">Uniqueness, collation, direction and partial filter, or null for none</param>
     public static string GenerateCreateJsonIndexSql(
         string tableName,
@@ -653,7 +653,7 @@ internal static class SqlGenerator
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
-        ValidateJsonPath(jsonPath, nameof(jsonPath));
+        ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 
         return BuildCreateIndexSql(tableName, indexName, [jsonPath], options);
     }
@@ -670,7 +670,7 @@ internal static class SqlGenerator
     /// </summary>
     /// <param name="tableName">The table name</param>
     /// <param name="indexName">The index name</param>
-    /// <param name="jsonPaths">The JSON paths to index</param>
+    /// <param name="jsonPaths">The JSON paths to index, each below the document root</param>
     /// <param name="options">
     /// Uniqueness, collation, direction and partial filter, or null for none. Collation and
     /// direction apply to every indexed column.
@@ -684,7 +684,7 @@ internal static class SqlGenerator
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
 
-        var paths = jsonPaths.Select(p => ValidateJsonPath(p, nameof(jsonPaths))).ToList();
+        var paths = jsonPaths.Select(p => ValidateJsonPath(p, nameof(jsonPaths), allowRoot: false)).ToList();
         return BuildCreateIndexSql(tableName, indexName, paths, options);
     }
 
@@ -869,7 +869,7 @@ internal static class SqlGenerator
     /// </summary>
     /// <param name="tableName">The table name</param>
     /// <param name="columnName">The name for the new virtual column</param>
-    /// <param name="jsonPath">The JSON path expression (e.g., '$.email')</param>
+    /// <param name="jsonPath">The JSON path expression (e.g., '$.email'), below the document root</param>
     /// <param name="columnType">The SQLite column type for the virtual column (e.g., TEXT, INTEGER)</param>
     public static string GenerateAddVirtualColumnSql(
         string tableName,
@@ -879,7 +879,7 @@ internal static class SqlGenerator
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(columnName, nameof(columnName));
-        ValidateJsonPath(jsonPath, nameof(jsonPath));
+        ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
         var validatedType = ValidateColumnType(columnType);
 
         // VIRTUAL columns are computed on read and don't take up storage space
@@ -1339,16 +1339,29 @@ internal static class SqlGenerator
 
     // Grammar: $(.member|[index])*  — a ' in the path would close the SQL literal it lands in.
     //
-    // The bare root "$" is grammatically valid and stays accepted by default: a read path only
-    // extracts the whole document with it, which is harmless (a LIKE over the serialized text) and
-    // is what the query, index and virtual-column APIs have always allowed. A *patch* is the one
-    // caller that passes allowRoot: false, because there the root is destructive rather than
-    // useless — measured against real SQLite, jsonb_set(data, '$', 5) replaces the entire document
-    // with the scalar 5, reports success and bumps the version, after which every read of that row
-    // throws DocumentSerializationException; jsonb_remove(data, '$') yields NULL and surfaces a raw
-    // SqliteException off the data BLOB NOT NULL column, the one shape in the patch API that leaks
-    // a provider error instead of validating up front. An indexer at the root ("$[0]") reaches
-    // *into* the document and stays legal on every path.
+    // The bare root "$" is grammatically valid; whether it is *usable* splits by what the caller
+    // does with the value it extracts, which is what allowRoot selects:
+    //
+    //   accepted — DocumentQuery predicates, ordering, and IndexFilter terms. Each only reads
+    //     through the path, so json_extract(data, '$') over the whole serialized document is a
+    //     blunt but legitimate filter.
+    //   rejected — the patch targets, and the DDL that projects or indexes a path
+    //     (CreateIndexAsync, CreateCompositeIndexAsync, AddVirtualColumnAsync).
+    //
+    // A patch is destructive at the root — measured against real SQLite, jsonb_set(data, '$', 5)
+    // replaces the entire document with the scalar 5, reports success and bumps the version, after
+    // which every read of that row throws DocumentSerializationException; jsonb_remove(data, '$')
+    // yields NULL and surfaces a raw SqliteException off the data BLOB NOT NULL column, the one
+    // shape in the patch API that leaks a provider error instead of validating up front.
+    //
+    // The DDL is not destructive but projects the whole document: the virtual column duplicates
+    // every document on read, and the index keys on its serialized text. The auto-named index
+    // forms already failed, but for the wrong reason — the derived name "idx_T_$" was rejected by
+    // ValidateIdentifier and reported against an indexName the caller never passed — while the
+    // explicitly named ones and the virtual column succeeded. Rejecting the root here makes all of
+    // them fail the same way, against the path parameter that actually carries it.
+    //
+    // An indexer at the root ("$[0]") reaches *into* the document and stays legal on every path.
     internal static string ValidateJsonPath(string jsonPath, string paramName, bool allowRoot = true)
     {
         if (string.IsNullOrEmpty(jsonPath) || jsonPath[0] != '$')
@@ -1361,8 +1374,8 @@ internal static class SqlGenerator
         if (!allowRoot && jsonPath.Length == 1)
         {
             throw new ArgumentException(
-                "A patch must target a field or array element below the document root; replacing " +
-                "or removing the whole stored JSON value is not supported.",
+                "The document root '$' addresses the whole stored JSON value, which this operation " +
+                "does not support: target a field or array element below it.",
                 paramName);
         }
 

@@ -367,7 +367,8 @@ public interface IDocumentOperations
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="jsonPath"/> is null, empty, whitespace or not a valid JSON path
+    /// Thrown when <paramref name="jsonPath"/> is null, empty, whitespace, not a valid JSON path,
+    /// or the bare document root <c>$</c>, which would index the whole serialized document
     /// </exception>
     Task CreateIndexAsync<T>(
         string jsonPath,
@@ -414,7 +415,8 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="jsonPath"/> is not a valid JSON path, or when
+    /// Thrown when <paramref name="jsonPath"/> is not a valid JSON path or is the bare document
+    /// root <c>$</c>, which would index the whole serialized document, or when
     /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
     /// </exception>
     Task CreateIndexAsync<T>(
@@ -447,7 +449,8 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="jsonPaths"/> is empty or holds a path that is null, empty,
-    /// whitespace or not a valid JSON path
+    /// whitespace, not a valid JSON path, or the bare document root <c>$</c>, which would index
+    /// the whole serialized document
     /// </exception>
     Task CreateCompositeIndexAsync<T>(
         string[] jsonPaths,
@@ -495,7 +498,8 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
     /// <exception cref="ArgumentException">
-    /// Thrown when <paramref name="jsonPaths"/> is empty or holds an invalid path, or when
+    /// Thrown when <paramref name="jsonPaths"/> is empty or holds an invalid path or the bare
+    /// document root <c>$</c>, which would index the whole serialized document, or when
     /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
     /// </exception>
     Task CreateCompositeIndexAsync<T>(
@@ -533,8 +537,9 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="jsonPath"/> or <paramref name="columnName"/> is null, empty or
-    /// whitespace, when the path is not a valid JSON path, or when <paramref name="columnType"/>
-    /// is not a SQLite storage class
+    /// whitespace, when the path is not a valid JSON path or is the bare document root <c>$</c>,
+    /// which would duplicate the whole serialized document into the column, or when
+    /// <paramref name="columnType"/> is not a SQLite storage class
     /// </exception>
     Task AddVirtualColumnAsync<T>(
         string jsonPath,
