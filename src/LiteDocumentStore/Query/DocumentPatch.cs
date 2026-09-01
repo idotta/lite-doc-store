@@ -37,8 +37,9 @@ namespace LiteDocumentStore;
 /// setting it replaces the whole stored document with the value — leaving a row that no longer
 /// deserializes, having reported success and bumped the version — and removing it nulls the
 /// payload out. An indexer at the root (<c>$[0]</c>) reaches into the document and is fine.
-/// The root stays valid for <see cref="DocumentQuery{T}"/> and the indexing APIs, which only
-/// read through it.
+/// The root stays valid for the paths that only read through it — <see cref="DocumentQuery{T}"/>
+/// predicates, ordering and <see cref="IndexFilter"/> terms — but not for the index and
+/// virtual-column DDL, which would key on or duplicate the whole serialized document.
 /// </para>
 /// <para>
 /// Only an exactly repeated path is rejected, and SQLite applies the paths in call order, each
