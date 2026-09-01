@@ -122,6 +122,9 @@ public sealed class OptionsValidationTests
     [InlineData("Data Source=file:lds-shared?mode=memory;Cache=Shared")]
     // A percent-escape that decodes to a real filename stays a real filename.
     [InlineData("Data Source=file:a%20?mode=memory&cache=shared")]
+    // "%23" is data, not a fragment boundary: the split happens on the raw string, before any
+    // decoding. Measured, this opens shared in-memory under the filename "lds-hash#b".
+    [InlineData("Data Source=file:lds-hash%23b?mode=memory&cache=shared")]
     // SQLite decodes query keys and values alike.
     [InlineData("Data Source=file:lds-shared?mode=memory&cach%65=shared")]
     [InlineData("Data Source=file:lds-shared?mode=memory&cache=shar%65d")]
@@ -144,6 +147,9 @@ public sealed class OptionsValidationTests
     [InlineData("Data Source=file:lds-plus?mode=memory&cache=shared+")]
     [InlineData("Data Source=file:lds-plus?mode=memory&cache=+shared")]
     [InlineData("Data Source=file:lds-malformed?mode=memory&cache=shar%zzd")]
+    // The other half of "%23 is data": decoded into a value it stays a character, and SQLite then
+    // fails with "no such cache mode: shar#ed" — so the guard refuses it as private first.
+    [InlineData("Data Source=file:lds-hash?mode=memory&cache=shar%23ed")]
     public void Validate_WithACacheModeSqliteWouldNotRead_ThrowsAsPrivate(string connectionString)
     {
         var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
@@ -158,6 +164,9 @@ public sealed class OptionsValidationTests
     [InlineData("Data Source=file::memory:?cache=shared")]
     // The Mode= keyword fills in what the query omits: measured, this opens shared in-memory.
     [InlineData("Data Source=file:lds-wal-memory?cache=shared;Mode=Memory")]
+    // Still in-memory with a "%23" in the filename — decoding before the fragment split would
+    // swallow the query and lose that.
+    [InlineData("Data Source=file:lds-wal%23memory?mode=memory&cache=shared")]
     public void Validate_WithWalModeOnAnInMemoryDatabase_Throws(string connectionString)
     {
         // SQLite answers PRAGMA journal_mode = WAL with "memory" here: not an error, not honoured.
