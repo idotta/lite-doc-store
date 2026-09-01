@@ -65,3 +65,6 @@ aot-out/
 
 # Local audit working notes — deliberately untracked.
 AUDIT*.md
+
+# Machine-local Claude Code instructions (Herdr pane routing) — deliberately untracked.
+CLAUDE.local.md

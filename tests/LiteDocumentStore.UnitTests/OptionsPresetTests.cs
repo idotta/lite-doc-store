@@ -64,6 +64,35 @@ public sealed class OptionsPresetTests
             StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    // Measured: this appends a second Data Source keyword, the last one wins, and an on-disk file
+    // is created with WAL honoured while the guard stays silent.
+    [InlineData("x;Data Source=evil.db")]
+    [InlineData("x;Cache=Private")]
+    // A "?" or "&" ends the filename and starts writing the store's own query parameters.
+    [InlineData("x?mode=memory&cache=private")]
+    [InlineData("x&cache=private")]
+    // Measured: a "#" fragment turns the in-memory store into an on-disk one (journal_mode=delete).
+    [InlineData("x#h")]
+    public void ForSharedInMemory_WithANameThatWouldChangeWhatIsOpened_ThrowsNamingTheName(string cacheName)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => DocumentStoreOptions.ForSharedInMemory(cacheName));
+
+        Assert.Equal("cacheName", ex.ParamName);
+    }
+
+    [Fact]
+    public void UseSharedInMemory_RejectsTheSameNames()
+    {
+        // The builder delegates to the preset, so the one validation covers both entry points.
+        var ex = Assert.Throws<ArgumentException>(
+            () => DocumentStoreOptions.Builder().UseSharedInMemory("x;Data Source=evil.db"));
+
+        Assert.Equal("cacheName", ex.ParamName);
+    }
+
     [Fact]
     public void EveryPreset_PassesValidation()
     {

@@ -168,9 +168,14 @@ can see or roll back the other's writes.
 ### In-memory databases
 
 Use `DocumentStoreOptions.ForInMemory()` for a private in-memory database, or
-`ForSharedInMemory(name)` to share one between stores. A bare `Data Source=:memory:` is
-rejected: it belongs to a single connection, so a pooled store would hand every operation its
-own empty database. Note that shared-cache in-memory databases lock at table granularity —
+`ForSharedInMemory(name)` to share one between stores. A connection string naming a private
+in-memory database is rejected: it belongs to a single connection, so a pooled store would hand
+every operation its own empty database. That covers `Data Source=:memory:` and `file::memory:`
+(with or without `Cache=Shared`), `Mode=Memory` without a shared cache, and an in-memory URI
+whose filename is empty — the data source is parsed the way SQLite parses it rather than matched
+by spelling. `ForSharedInMemory(name)` rejects a blank name, or one containing `;`, `?`, `&` or
+`#`, since the name becomes a URI filename. Note that shared-cache in-memory databases lock at
+table granularity —
 overlapping write transactions fail with `SQLITE_LOCKED`, so use a file database for concurrent
 write workloads.
 

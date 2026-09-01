@@ -204,6 +204,91 @@ public sealed class OptionsPragmaIntegrationTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData("Data Source=file::memory:")]
+    [InlineData("Data Source=file:?mode=memory&cache=shared")]
+    [InlineData("Mode=Memory;Cache=Shared")]
+    [InlineData("Data Source=file:lds-c08-last-wins?mode=memory&cache=shared&cache=private")]
+    [InlineData("Data Source=file:%00x?mode=memory&cache=shared")]
+    public void PrivateInMemorySpellings_AreRejectedBeforeAConnectionOpens(string connectionString)
+    {
+        // Validate() is the "before anything opens" half: the factory calls it, so a store built
+        // from any of these never reaches the pool. Each spelling passed the old substring guard.
+        var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
+
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Contains("private in-memory database", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FileMemoryUriWithASharedCache_IsOneDatabaseAcrossConnections()
+    {
+        // The premise behind accepting "file::memory:?cache=shared": SQLite really does share it,
+        // unlike the bare ":memory:" spelling the test above rejects. Raw connections, because
+        // this is SQLite's classification and not the store's.
+        const string connectionString = "Data Source=file::memory:?cache=shared";
+
+        await using var keepAlive = new Microsoft.Data.Sqlite.SqliteConnection(connectionString);
+        await keepAlive.OpenAsync();
+        await using (var create = keepAlive.CreateCommand())
+        {
+            create.CommandText = "CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);";
+            await create.ExecuteNonQueryAsync();
+        }
+
+        await using var second = new Microsoft.Data.Sqlite.SqliteConnection(connectionString);
+        await second.OpenAsync();
+        await using var read = second.CreateCommand();
+        read.CommandText = "SELECT COUNT(*) FROM t;";
+
+        Assert.Equal(1L, await read.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task FileMemoryUriWithASharedCache_IsVisibleAcrossThePool()
+    {
+        // And the store half: the accepted spelling survives being pooled, which is the whole
+        // reason the private spellings are refused.
+        var options = new DocumentStoreOptions(
+            $"Data Source=file:lds-c08-{Guid.NewGuid():N}?cache=shared&mode=memory")
+        {
+            EnableWalMode = false,
+            MaxPoolSize = 3,
+        };
+
+        var store = await CreateStoreAsync(options);
+        await store.CreateTableAsync<Doc>();
+        await store.UpsertAsync("a", new Doc("first", 1));
+
+        await using var transaction = await store.BeginTransactionAsync();
+        Assert.Equal("first", (await transaction.GetAsync<Doc>("a"))!.Name);
+    }
+
+    [Fact]
+    public async Task InMemoryUriWithAFragmentBeforeSharedCache_IsRejectedAsPrivate()
+    {
+        var connectionString =
+            $"Data Source=file:lds-c08-fragment-{Guid.NewGuid():N}?mode=memory#ignored&cache=shared";
+
+        await using var first = new Microsoft.Data.Sqlite.SqliteConnection(connectionString);
+        await first.OpenAsync();
+        await using (var create = first.CreateCommand())
+        {
+            create.CommandText = "CREATE TABLE t (v INTEGER);";
+            await create.ExecuteNonQueryAsync();
+        }
+
+        await using var second = new Microsoft.Data.Sqlite.SqliteConnection(connectionString);
+        await second.OpenAsync();
+        await using var read = second.CreateCommand();
+        read.CommandText = "SELECT COUNT(*) FROM t;";
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(read.ExecuteScalarAsync);
+
+        var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Contains("private in-memory database", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task OptimizeForPerformance_AppliesEveryPragmaItSets()
     {

@@ -8,6 +8,15 @@ namespace LiteDocumentStore;
 /// an in-memory database, where <c>PRAGMA journal_mode = WAL</c> silently reports back
 /// <c>memory</c>.
 /// </summary>
+/// <remarks>
+/// Classification is structural rather than spelling-based: a URI data source is split at its
+/// first <c>?</c> and its query parsed the way SQLite parses it — percent-decoded keys and values,
+/// the last occurrence of a repeated parameter winning, and the <c>Mode=</c>/<c>Cache=</c>
+/// keywords filling in only what the query omits. It is case-sensitive because SQLite is:
+/// measured, <c>FILE::memory:</c> and <c>mode=MEMORY</c> do not name an in-memory database at all,
+/// they fail to open with SQLite Error 14, so rejecting them here would blame the store for a
+/// string SQLite never accepts.
+/// </remarks>
 internal static class SqliteConnectionStringGuard
 {
     /// <summary>
@@ -28,16 +37,19 @@ internal static class SqliteConnectionStringGuard
         }
 
         var builder = new SqliteConnectionStringBuilder(options.ConnectionString);
+        var shape = Classify(builder);
 
         // A private in-memory database belongs to a single connection, so a pool of them would
         // give every operation its own empty database. Refuse it rather than silently losing
         // writes; a uniquely named shared-cache database has the same "private" semantics and
-        // works across connections.
-        if (IsPrivateInMemory(builder))
+        // works across connections. An empty filename is the same failure spelled differently:
+        // SQLite gives every connection its own database however shared the cache says it is.
+        if (shape.InMemory && (!shape.Shared || shape.EmptyName))
         {
             throw new ArgumentException(
-                "A private in-memory database (\"Data Source=:memory:\", with or without " +
-                "Cache=Shared, or Mode=Memory without Cache=Shared) cannot be used by a document " +
+                "A private in-memory database (\":memory:\" or \"file::memory:\", with or without " +
+                "Cache=Shared; Mode=Memory without Cache=Shared; or an in-memory URI whose filename " +
+                "is empty, as in \"file:?mode=memory&cache=shared\") cannot be used by a document " +
                 "store, because the store pools connections and each connection would get its own " +
                 "empty database. Use " +
                 $"{nameof(DocumentStoreOptions)}.{nameof(DocumentStoreOptions.ForInMemory)}() for a " +
@@ -49,7 +61,7 @@ internal static class SqliteConnectionStringGuard
         // SQLite answers PRAGMA journal_mode = WAL with "memory" on an in-memory database: the
         // request is not an error and not honoured either. Left alone it would also make the
         // store run its dispose-time WAL checkpoint against a database that has no WAL.
-        if (options.EnableWalMode && IsInMemory(builder))
+        if (options.EnableWalMode && shape.InMemory)
         {
             throw new ArgumentException(
                 "An in-memory database cannot use WAL mode: SQLite keeps its journal in memory and " +
@@ -99,43 +111,91 @@ internal static class SqliteConnectionStringGuard
             || keys.ContainsKey("CommandTimeout");
     }
 
-    private static bool IsPrivateInMemory(SqliteConnectionStringBuilder builder)
+    /// <summary>What the data source names, once parsed the way SQLite parses it.</summary>
+    private readonly record struct ConnectionShape(bool InMemory, bool Shared, bool EmptyName);
+
+    private static ConnectionShape Classify(SqliteConnectionStringBuilder builder)
     {
-        if (!IsInMemory(builder))
-        {
-            return false;
-        }
-
-        // An unadorned ":memory:" is private to its connection whatever the cache setting: SQLite
-        // shares an in-memory database only through a URI filename. Measured against
-        // Microsoft.Data.Sqlite — "Data Source=:memory:;Cache=Shared" gives a second connection an
-        // empty database, while "Mode=Memory;Cache=Shared" and "file:name?mode=memory&cache=shared"
-        // (which the provider turns into URI filenames) share one.
-        if (builder.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return !IsSharedCache(builder);
-    }
-
-    private static bool IsInMemory(SqliteConnectionStringBuilder builder)
-    {
-        if (builder.Mode == SqliteOpenMode.Memory)
-        {
-            return true;
-        }
-
+        const string uriPrefix = "file:";
         var dataSource = builder.DataSource;
-        return dataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase)
-            || (dataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
-                && dataSource.Contains("mode=memory", StringComparison.OrdinalIgnoreCase));
-    }
 
-    private static bool IsSharedCache(SqliteConnectionStringBuilder builder)
-    {
-        return builder.Cache == SqliteCacheMode.Shared
-            || (builder.DataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
-                && builder.DataSource.Contains("cache=shared", StringComparison.OrdinalIgnoreCase));
+        if (!dataSource.StartsWith(uriPrefix, StringComparison.Ordinal))
+        {
+            // An unadorned ":memory:" is private to its connection whatever the cache setting:
+            // SQLite shares an in-memory database only through a URI filename. Measured against
+            // Microsoft.Data.Sqlite — "Data Source=:memory:;Cache=Shared" gives a second
+            // connection an empty database, while "Data Source=x;Mode=Memory;Cache=Shared" shares
+            // one and a missing Data Source leaves the filename empty, which does not.
+            var bareMemory = string.Equals(dataSource, ":memory:", StringComparison.Ordinal);
+            return new ConnectionShape(
+                InMemory: bareMemory || builder.Mode == SqliteOpenMode.Memory,
+                Shared: !bareMemory && builder.Cache == SqliteCacheMode.Shared,
+                EmptyName: dataSource.Length == 0);
+        }
+
+        var uri = dataSource[uriPrefix.Length..];
+
+        // A "#" starts a fragment, and SQLite discards it along with everything after — measured,
+        // "file:x?mode=memory#ignored&cache=shared" opens private in-memory, so reading the query
+        // past the "#" would see a cache=shared that SQLite never does.
+        var fragmentStart = uri.IndexOf('#');
+        if (fragmentStart >= 0)
+        {
+            uri = uri[..fragmentStart];
+        }
+
+        var queryStart = uri.IndexOf('?');
+        var path = queryStart < 0 ? uri : uri[..queryStart];
+        var query = queryStart < 0 ? string.Empty : uri[(queryStart + 1)..];
+
+        string? mode = null;
+        string? cache = null;
+        foreach (var parameter in query.Split('&'))
+        {
+            var separator = parameter.IndexOf('=');
+            if (separator < 0)
+            {
+                continue;
+            }
+
+            // SQLite percent-decodes keys and values alike, and takes "+" and a malformed escape
+            // literally: measured, "cach%65=shared" and "cache=shar%65d" both share, while
+            // "cache=shared+" fails with "no such cache mode: shared+". Uri.UnescapeDataString
+            // matches on every one of those, and never throws.
+            var key = Uri.UnescapeDataString(parameter[..separator]);
+            var value = Uri.UnescapeDataString(parameter[(separator + 1)..]);
+
+            // A repeated parameter takes its last value: measured,
+            // "file:x?mode=memory&cache=shared&cache=private" opens private.
+            if (string.Equals(key, "mode", StringComparison.Ordinal))
+            {
+                mode = value;
+            }
+            else if (string.Equals(key, "cache", StringComparison.Ordinal))
+            {
+                cache = value;
+            }
+        }
+
+        // Where the query states a parameter it beats the keyword, and where it omits one the
+        // keyword fills in: measured, "file:x?mode=memory&cache=private;Cache=Shared" opens
+        // private while "file:x?mode=memory;Cache=Shared" opens shared.
+        var inMemory = string.Equals(path, ":memory:", StringComparison.Ordinal)
+            || (mode is null
+                ? builder.Mode == SqliteOpenMode.Memory
+                : string.Equals(mode, "memory", StringComparison.Ordinal));
+
+        var shared = cache is null
+            ? builder.Cache == SqliteCacheMode.Shared
+            : string.Equals(cache, "shared", StringComparison.Ordinal);
+
+        // A non-empty raw path can still decode to an empty filename, and SQLite then opens a
+        // database private to the connection: measured, both "file:%00?mode=memory&cache=shared"
+        // and "file:%00x?mode=memory&cache=shared" leave a second connection with no such table.
+        var name = Uri.UnescapeDataString(path);
+        var nul = name.IndexOf('\0');
+        var truncated = nul < 0 ? name : name[..nul];
+
+        return new ConnectionShape(inMemory, shared, truncated.Length == 0);
     }
 }
