@@ -193,9 +193,10 @@ write workloads.
   Never hardcode a table name — ask the store: `store.GetTableName<T>()`, on a transaction too.
   The fold is deliberately collision-resistant rather than injective, so a store additionally
   **refuses to serve two different types that resolve to one table name** (which would otherwise
-  make each type's writes overwrite the other's rows silently). Types the default cannot name —
-  open generics, arrays, types nested in a generic, non-ASCII names — throw `NotSupportedException`
-  naming the type. Supply your own convention through `DocumentStoreOptions.TableNamingConvention`
+  make each type's writes overwrite the other's rows silently; names differing only in ASCII case
+  count as one, since SQLite reads them as one table). Types the default cannot name — open generic
+  definitions, generic parameters, arrays, pointers, by-ref types, types nested in a generic, and
+  non-ASCII names — throw `NotSupportedException` naming the type. Supply your own convention through `DocumentStoreOptions.TableNamingConvention`
   or `WithTableNamingConvention`; to keep names an earlier version wrote, that is five lines:
 
   ```csharp

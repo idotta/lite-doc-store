@@ -27,6 +27,14 @@ public class TableNameCollisionGuardTests
         public string GetTableName(Type type) => "OneTable";
     }
 
+    /// <summary>Names that differ only in ASCII case, which SQLite reads as one table.</summary>
+    private sealed class CaseCollidingConvention : ITableNamingConvention
+    {
+        public string GetTableName<T>() => GetTableName(typeof(T));
+
+        public string GetTableName(Type type) => type == typeof(First) ? "OneTable" : "onetable";
+    }
+
     private static TableNameCollisionGuard Guard(ITableNamingConvention inner) => new(inner);
 
     [Fact]
@@ -77,6 +85,20 @@ public class TableNameCollisionGuardTests
         guard.GetTableName<Naming_.B>();
 
         Assert.Throws<InvalidOperationException>(() => guard.GetTableName<Naming._B>());
+    }
+
+    /// <summary>
+    /// SQLite folds ASCII case in identifiers, so two names differing only in case are one table —
+    /// measured: the second type's write landed in the first type's table and the first type then read
+    /// back a fabricated document.
+    /// </summary>
+    [Fact]
+    public void GetTableName_ForANameDifferingOnlyInCase_Throws()
+    {
+        var guard = Guard(new CaseCollidingConvention());
+        guard.GetTableName<First>();
+
+        Assert.Throws<InvalidOperationException>(() => guard.GetTableName<Second>());
     }
 
     [Fact]

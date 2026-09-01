@@ -617,9 +617,10 @@ public class DocumentStoreIntegrationTests : IDisposable
         // Act
         await _store.CreateIndexAsync<Person>(p => p.Name);
 
-        // Assert - check that an index was created (name is auto-generated)
+        // Assert - the derived name is idx_{table}_{path}; matched exactly, since LIKE reads the
+        // table name's underscores as wildcards.
         var checkSql = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' " +
-            $"AND name LIKE 'idx_{_store.GetTableName<Person>()}_name%'";
+            $"AND name = 'idx_{_store.GetTableName<Person>()}_Name'";
         var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
@@ -690,9 +691,10 @@ public class DocumentStoreIntegrationTests : IDisposable
                 p => p.Email
             });
 
-        // Assert - check that a composite index was created
+        // Assert - the derived name joins both paths; matched exactly, since LIKE reads the table
+        // name's underscores as wildcards.
         var checkSql = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' " +
-            $"AND name LIKE 'idx_{_store.GetTableName<Person>()}_composite_%'";
+            $"AND name = 'idx_{_store.GetTableName<Person>()}_composite_Name_Email'";
         var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }

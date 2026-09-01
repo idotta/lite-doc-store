@@ -86,11 +86,32 @@ public sealed class TableNamingIntegrationTests : IAsyncLifetime
         Assert.Equal(new NamingA.Customer("k1", "ada@example.com"), await store.GetAsync<NamingA.Customer>("k1"));
     }
 
+    [Fact]
+    public async Task AConventionThatCollidesOnlyByCase_IsRefusedRatherThanServed()
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+        options.TableNamingConvention = new CaseCollidingConvention();
+        await using var store = await new DocumentStoreFactory().CreateAsync(options);
+
+        await store.CreateTableAsync<NamingA.Customer>();
+        await store.UpsertAsync("k1", new NamingA.Customer("k1", "ada@example.com"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.UpsertAsync("k1", new NamingB.Customer("k1", 42)));
+    }
+
     private sealed class OneTableConvention : ITableNamingConvention
     {
         public string GetTableName<T>() => "Shared";
 
         public string GetTableName(Type type) => "Shared";
+    }
+
+    private sealed class CaseCollidingConvention : ITableNamingConvention
+    {
+        public string GetTableName<T>() => GetTableName(typeof(T));
+
+        public string GetTableName(Type type) => type == typeof(NamingA.Customer) ? "Shared" : "shared";
     }
 
     private Task<int> TableCountAsync(params string[] names) =>

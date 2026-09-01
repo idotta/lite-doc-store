@@ -15,6 +15,11 @@ namespace LiteDocumentStore;
 /// exception anywhere. The guard turns that into a throw on the second type's first operation.
 /// </para>
 /// <para>
+/// Claims are compared case-insensitively, because SQLite folds ASCII case in identifiers: two names
+/// differing only in case address one table, so an ordinal comparison would let the second type
+/// through into exactly the overwriting described above.
+/// </para>
+/// <para>
 /// It exists because <see cref="DefaultTableNamingConvention"/>'s fold is deliberately
 /// collision-resistant rather than injective, and because a caller-supplied convention can collide in
 /// ways no encoding in this library could prevent. The check is per store instance and in process: two
@@ -29,7 +34,10 @@ namespace LiteDocumentStore;
 internal sealed class TableNameCollisionGuard(ITableNamingConvention inner) : ITableNamingConvention
 {
     private readonly ITableNamingConvention _inner = inner;
-    private readonly ConcurrentDictionary<string, Type> _claims = new(StringComparer.Ordinal);
+    // SQLite folds ASCII case in identifiers, so [Order] and [order] are one table. Measured: two
+    // types whose names differ only in case shared a table, and the first type read back a fabricated
+    // document — the very shape this guard exists to refuse. Ordinal comparison missed it.
+    private readonly ConcurrentDictionary<string, Type> _claims = new(StringComparer.OrdinalIgnoreCase);
 
     /// <inheritdoc/>
     public string GetTableName<T>() => Claim(_inner.GetTableName<T>(), typeof(T));
@@ -49,7 +57,9 @@ internal sealed class TableNameCollisionGuard(ITableNamingConvention inner) : IT
         {
             throw new InvalidOperationException(
                 $"Table '{tableName}' is already mapped to '{owner}', so '{type}' cannot use it. " +
-                $"Two types sharing one table overwrite each other's documents silently. " +
+                $"Two types sharing one table overwrite each other's documents silently, and SQLite " +
+                $"compares table names without regard to ASCII case, so two names differing only in " +
+                $"case are one table. " +
                 $"Supply an {nameof(ITableNamingConvention)} that gives them distinct names.");
         }
 
