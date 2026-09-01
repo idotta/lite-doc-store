@@ -42,7 +42,7 @@ public sealed class DocumentStoreFactory : IDocumentStoreFactory
         ILoggerFactory? loggerFactory)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
-        _tableNamingConvention = tableNamingConvention ?? new DefaultTableNamingConvention();
+        _tableNamingConvention = tableNamingConvention ?? DefaultTableNamingConvention.Instance;
         _loggerFactory = loggerFactory;
     }
 

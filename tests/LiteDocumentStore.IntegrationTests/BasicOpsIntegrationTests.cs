@@ -14,8 +14,10 @@ public class BasicOpsIntegrationTests
 {
     private const int ChunkSize = SqlGenerator.MaxBatchItemsPerStatement;
 
+    private static readonly string TableName = DefaultTableNamingConvention.Instance.GetTableName<BasicDoc>();
+
     // CreateIndexAsync auto-names an index idx_{table}_{json path with the leading "$." stripped}.
-    private const string AutoIndexName = "idx_BasicDoc_Email";
+    private static readonly string AutoIndexName = $"idx_{TableName}_Email";
 
     private readonly LiteDocumentStoreTestFixture _fixture;
 
@@ -223,7 +225,7 @@ public class BasicOpsIntegrationTests
         var reloaded = await store.GetAsync<BasicDoc>("after");
         Assert.Equal(new BasicDoc("After", 42, "after@example.com"), reloaded);
         Assert.Equal(1, await store.CountAsync<BasicDoc>());
-        Assert.True(await IntrospectAsync(store, introspector => introspector.TableExistsAsync("BasicDoc")));
+        Assert.True(await IntrospectAsync(store, introspector => introspector.TableExistsAsync(TableName)));
     }
 
     // --------------------------------------------------------------- DropTableAsync
@@ -236,7 +238,7 @@ public class BasicOpsIntegrationTests
 
         await store.DropTableAsync<BasicDoc>();
 
-        Assert.False(await IntrospectAsync(store, introspector => introspector.TableExistsAsync("BasicDoc")));
+        Assert.False(await IntrospectAsync(store, introspector => introspector.TableExistsAsync(TableName)));
     }
 
     [Fact]
@@ -262,7 +264,7 @@ public class BasicOpsIntegrationTests
         await store.DropTableAsync<BasicDoc>();
         await store.DropTableAsync<BasicDoc>();
 
-        Assert.False(await IntrospectAsync(store, introspector => introspector.TableExistsAsync("BasicDoc")));
+        Assert.False(await IntrospectAsync(store, introspector => introspector.TableExistsAsync(TableName)));
     }
 
     [Fact]
@@ -291,7 +293,7 @@ public class BasicOpsIntegrationTests
 
         Assert.False(await IntrospectAsync(store,
             introspector => introspector.IndexExistsAsync("idx_basicdoc_email_explicit")));
-        Assert.Empty(await IntrospectAsync(store, introspector => introspector.GetIndexesAsync("BasicDoc")));
+        Assert.Empty(await IntrospectAsync(store, introspector => introspector.GetIndexesAsync(TableName)));
     }
 
     [Fact]
@@ -299,13 +301,13 @@ public class BasicOpsIntegrationTests
     {
         var store = await CreateStoreWithTableAsync();
         await store.CreateIndexAsync<BasicDoc>(d => d.Email);
-        var created = (await IntrospectAsync(store, introspector => introspector.GetIndexesAsync("BasicDoc"))).ToList();
+        var created = (await IntrospectAsync(store, introspector => introspector.GetIndexesAsync(TableName))).ToList();
         Assert.Single(created);
         Assert.Equal(AutoIndexName, created[0].Name);
 
         await store.DropIndexAsync<BasicDoc>(d => d.Email);
 
-        Assert.Empty(await IntrospectAsync(store, introspector => introspector.GetIndexesAsync("BasicDoc")));
+        Assert.Empty(await IntrospectAsync(store, introspector => introspector.GetIndexesAsync(TableName)));
         Assert.False(await IntrospectAsync(store, introspector => introspector.IndexExistsAsync(AutoIndexName)));
     }
 
@@ -333,7 +335,7 @@ public class BasicOpsIntegrationTests
         await store.DropIndexAsync<BasicDoc>(d => d.Email);
         await store.DropIndexAsync("idx_basicdoc_never_created");
 
-        Assert.Empty(await IntrospectAsync(store, introspector => introspector.GetIndexesAsync("BasicDoc")));
+        Assert.Empty(await IntrospectAsync(store, introspector => introspector.GetIndexesAsync(TableName)));
     }
 
     [Fact]

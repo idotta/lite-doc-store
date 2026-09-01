@@ -136,7 +136,7 @@ public sealed class IndexOptionsIntegrationTests : IAsyncLifetime
 
         var ddl = await IndexDdlAsync("idx_members_email_all");
         Assert.Equal(
-            "CREATE UNIQUE INDEX [idx_members_email_all] ON [Member] " +
+            $"CREATE UNIQUE INDEX [idx_members_email_all] ON [{_store.GetTableName<Member>()}] " +
             "(json_extract(data, '$.Email') COLLATE NOCASE DESC) " +
             "WHERE json_extract(data, '$.Email') IS NOT NULL",
             ddl);
@@ -151,7 +151,8 @@ public sealed class IndexOptionsIntegrationTests : IAsyncLifetime
         {
             await using var command = connection.CreateCommand();
             command.CommandText =
-                "EXPLAIN QUERY PLAN SELECT id FROM [Member] ORDER BY json_extract(data, '$.Age') DESC";
+                $"EXPLAIN QUERY PLAN SELECT id FROM [{_store.GetTableName<Member>()}] " +
+                "ORDER BY json_extract(data, '$.Age') DESC";
 
             await using var reader = await command.ExecuteReaderAsync(ct);
             var rows = new List<string>();

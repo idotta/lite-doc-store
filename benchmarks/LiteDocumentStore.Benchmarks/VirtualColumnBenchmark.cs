@@ -14,6 +14,10 @@ namespace LiteDocumentStore.Benchmarks;
 [SimpleJob(RunStrategy.Throughput, iterationCount: 15)]
 public class VirtualColumnBenchmark
 {
+    // The default convention folds the namespace into the table name, so raw SQL against a
+    // store-created table cannot spell it as the type name.
+    private static readonly string ProductTable = DefaultTableNamingConvention.Instance.GetTableName<Product>();
+
     private IDocumentStore _storeWithVirtual = null!;
     private IDocumentStore _storeWithoutVirtual = null!;
     private ServiceProvider _serviceProviderWithVirtual = null!;
@@ -172,7 +176,7 @@ public class VirtualColumnBenchmark
         var results = await _storeWithVirtual.ExecuteRawAsync(
             (connection, cancellationToken) => QueryBlobsAsync(
                 connection,
-                "SELECT data FROM Product WHERE category = 'Category 25'",
+                $"SELECT data FROM [{ProductTable}] WHERE category = 'Category 25'",
                 cancellationToken));
         return results.Count;
     }
@@ -183,7 +187,7 @@ public class VirtualColumnBenchmark
         var results = await _storeWithoutVirtual.ExecuteRawAsync(
             (connection, cancellationToken) => QueryBlobsAsync(
                 connection,
-                "SELECT data FROM Product WHERE json_extract(data, '$.Category') = 'Category 25'",
+                $"SELECT data FROM [{ProductTable}] WHERE json_extract(data, '$.Category') = 'Category 25'",
                 cancellationToken));
         return results.Count;
     }
@@ -194,7 +198,7 @@ public class VirtualColumnBenchmark
         var results = await _storeWithVirtual.ExecuteRawAsync(
             (connection, cancellationToken) => QueryBlobsAsync(
                 connection,
-                "SELECT data FROM Product WHERE sku = 'SKU-025000'",
+                $"SELECT data FROM [{ProductTable}] WHERE sku = 'SKU-025000'",
                 cancellationToken));
         return results.Count;
     }
@@ -205,7 +209,7 @@ public class VirtualColumnBenchmark
         var results = await _storeWithoutVirtual.ExecuteRawAsync(
             (connection, cancellationToken) => QueryBlobsAsync(
                 connection,
-                "SELECT data FROM Product WHERE json_extract(data, '$.Sku') = 'SKU-025000'",
+                $"SELECT data FROM [{ProductTable}] WHERE json_extract(data, '$.Sku') = 'SKU-025000'",
                 cancellationToken));
         return results.Count;
     }

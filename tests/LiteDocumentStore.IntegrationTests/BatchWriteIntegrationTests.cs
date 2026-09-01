@@ -147,7 +147,8 @@ public class BatchWriteIntegrationTests
         {
             await using var command = connection.CreateCommand();
             command.CommandText =
-                "CREATE UNIQUE INDEX ux_batchdoc_index ON [BatchDoc] (json_extract(data, '$.Index'))";
+                $"CREATE UNIQUE INDEX ux_batchdoc_index ON [{store.GetTableName<BatchDoc>()}] " +
+                "(json_extract(data, '$.Index'))";
             return await command.ExecuteNonQueryAsync(ct);
         });
 

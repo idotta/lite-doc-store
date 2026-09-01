@@ -199,7 +199,7 @@ public class DatabaseSeederExamples
         // load each matching document through the public GetAsync.
         var youngIds = await store.ExecuteRawAsync((connection, ct) =>
             connection.QueryStringsAsync(
-                "SELECT id FROM [PersonEntity] WHERE age < @Age",
+                $"SELECT id FROM [{store.GetTableName<PersonEntity>()}] WHERE age < @Age",
                 ct,
                 ("Age", 30)));
 
