@@ -90,7 +90,61 @@ public sealed class OptionsValidationTests
     // SQLite shares an in-memory database only through a URI filename. Cache=Shared does not make
     // an unadorned ":memory:" shared.
     [InlineData("Data Source=:memory:;Cache=Shared")]
+    // The URI spelling of ":memory:", which substring matching read as a file database.
+    [InlineData("Data Source=file::memory:")]
+    // An empty URI filename: private per connection however shared the cache claims to be.
+    [InlineData("Data Source=file:?mode=memory&cache=shared")]
+    // No Data Source at all leaves the same empty filename behind the keyword form.
+    [InlineData("Mode=Memory;Cache=Shared")]
+    // A repeated query parameter takes its last value, so this one opens private.
+    [InlineData("Data Source=file:lds-last-wins?mode=memory&cache=shared&cache=private")]
+    // The query beats the keyword where it states the parameter.
+    [InlineData("Data Source=file:lds-query-wins?mode=memory&cache=private;Cache=Shared")]
+    // A raw path that is not empty but decodes to one: SQLite truncates the filename at the NUL.
+    [InlineData("Data Source=file:%00?mode=memory&cache=shared")]
+    [InlineData("Data Source=file:%00x?mode=memory&cache=shared")]
+    // SQLite discards the fragment and everything after it, so this cache=shared is never read.
+    [InlineData("Data Source=file:lds-fragment?mode=memory#ignored&cache=shared")]
     public void Validate_WithAPrivateInMemoryDatabase_Throws(string connectionString)
+    {
+        var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
+
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Contains("private in-memory database", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // A named URI filename with a shared cache, in each spelling SQLite honours.
+    [InlineData("Data Source=file:lds-shared?mode=memory&cache=shared")]
+    [InlineData("Data Source=file::memory:?cache=shared")]
+    [InlineData("Data Source=lds-shared;Mode=Memory;Cache=Shared")]
+    // The keyword fills in what the query omits.
+    [InlineData("Data Source=file:lds-shared?mode=memory;Cache=Shared")]
+    // A percent-escape that decodes to a real filename stays a real filename.
+    [InlineData("Data Source=file:a%20?mode=memory&cache=shared")]
+    // SQLite decodes query keys and values alike.
+    [InlineData("Data Source=file:lds-shared?mode=memory&cach%65=shared")]
+    [InlineData("Data Source=file:lds-shared?mode=memory&cache=shar%65d")]
+    // Not in-memory at all: SQLite is case-sensitive here and fails to open these with Error 14,
+    // so the guard leaves them to SQLite rather than blaming the store's own options.
+    [InlineData("Data Source=FILE::MEMORY:")]
+    [InlineData("Data Source=:MEMORY:")]
+    [InlineData("Data Source=file:lds-upper?mode=MEMORY")]
+    // Measured: an uppercase prefix is not a URI at all — Windows opened a file called "FILE" —
+    // so the query behind it names nothing, empty filename included.
+    [InlineData("Data Source=FILE:?mode=memory&cache=shared")]
+    public void Validate_WithADatabaseTheStoreCanPool_DoesNotThrow(string connectionString)
+    {
+        new DocumentStoreOptions(connectionString) { EnableWalMode = false }.Validate();
+    }
+
+    [Theory]
+    // "+" and a malformed escape are literal to SQLite, so neither names the shared cache mode —
+    // measured, both fail with "no such cache mode". They are private in-memory to the guard.
+    [InlineData("Data Source=file:lds-plus?mode=memory&cache=shared+")]
+    [InlineData("Data Source=file:lds-plus?mode=memory&cache=+shared")]
+    [InlineData("Data Source=file:lds-malformed?mode=memory&cache=shar%zzd")]
+    public void Validate_WithACacheModeSqliteWouldNotRead_ThrowsAsPrivate(string connectionString)
     {
         var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
 
@@ -101,6 +155,9 @@ public sealed class OptionsValidationTests
     [Theory]
     [InlineData("Data Source=lds-wal-memory;Mode=Memory;Cache=Shared")]
     [InlineData("Data Source=file:lds-wal-memory?mode=memory&cache=shared")]
+    [InlineData("Data Source=file::memory:?cache=shared")]
+    // The Mode= keyword fills in what the query omits: measured, this opens shared in-memory.
+    [InlineData("Data Source=file:lds-wal-memory?cache=shared;Mode=Memory")]
     public void Validate_WithWalModeOnAnInMemoryDatabase_Throws(string connectionString)
     {
         // SQLite answers PRAGMA journal_mode = WAL with "memory" here: not an error, not honoured.

@@ -73,9 +73,14 @@ public sealed class DocumentStoreOptionsBuilder
     /// </summary>
     /// <param name="cacheName">Optional name for the shared cache (default: "shared")</param>
     /// <returns>This builder for method chaining</returns>
+    /// <exception cref="ArgumentException">
+    /// The name is blank or carries a character that would end the URI filename or the connection
+    /// string. See <see cref="DocumentStoreOptions.ForSharedInMemory(string)"/>.
+    /// </exception>
     public DocumentStoreOptionsBuilder UseSharedInMemory(string cacheName = "shared")
     {
-        _options.ConnectionString = $"Data Source=file:{cacheName}?mode=memory&cache=shared";
+        var shared = DocumentStoreOptions.ForSharedInMemory(cacheName);
+        _options.ConnectionString = shared.ConnectionString;
         _options.EnableWalMode = false; // WAL not supported for in-memory
         _options.SynchronousMode = SynchronousMode.Off;
         return this;

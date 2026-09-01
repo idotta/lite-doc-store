@@ -260,8 +260,26 @@ public sealed class DocumentStoreOptions
     /// </summary>
     /// <param name="cacheName">Optional name for the shared cache (default: "shared")</param>
     /// <returns>DocumentStoreOptions configured for shared in-memory storage</returns>
+    /// <exception cref="ArgumentException">
+    /// The name is blank, or carries a character that would end the URI filename or the connection
+    /// string itself: <c>;</c>, <c>?</c>, <c>&amp;</c> or <c>#</c>.
+    /// </exception>
     public static DocumentStoreOptions ForSharedInMemory(string cacheName = "shared")
     {
+        // The name is interpolated into a URI filename inside a connection string, so a character
+        // that terminates either one silently changes what is opened. Measured:
+        // ForSharedInMemory("x;Data Source=evil.db") appended a second Data Source keyword — the
+        // last one wins — and created an on-disk file with WAL honoured, and a "#" fragment
+        // likewise opened a file database. A blank name leaves the filename empty, which SQLite
+        // opens as a database private to each connection.
+        if (string.IsNullOrWhiteSpace(cacheName) || cacheName.AsSpan().IndexOfAny(";?&#") >= 0)
+        {
+            throw new ArgumentException(
+                "The shared in-memory cache name must be non-blank and must not contain ';', '?', " +
+                $"'&' or '#', because it is used as a URI filename, but was \"{cacheName}\".",
+                nameof(cacheName));
+        }
+
         return new DocumentStoreOptions
         {
             ConnectionString = $"Data Source=file:{cacheName}?mode=memory&cache=shared",
