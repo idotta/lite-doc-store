@@ -47,7 +47,7 @@ public class ConcurrencyIntegrationTests
             () => store.UpsertWithVersionAsync("p1", new VersionedPerson("Grace"), expectedVersion: 0));
 
         Assert.Equal("p1", ex.DocumentId);
-        Assert.Equal(nameof(VersionedPerson), ex.TableName);
+        Assert.Equal(store.GetTableName<VersionedPerson>(), ex.TableName);
     }
 
     [Fact]

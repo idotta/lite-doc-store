@@ -35,7 +35,7 @@ public sealed class RootPathDdlIntegrationTests : IAsyncLifetime
 
     private Task<int> ColumnCountAsync() =>
         _store.ExecuteRawAsync((connection, ct) => connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM pragma_table_xinfo('Member')", ct));
+            $"SELECT COUNT(*) FROM pragma_table_xinfo('{_store.GetTableName<Member>()}')", ct));
 
     // --- Single-path index ------------------------------------------------------------------
 
@@ -154,7 +154,8 @@ public sealed class RootPathDdlIntegrationTests : IAsyncLifetime
         await _store.AddVirtualColumnAsync<Member>("$[0]", "vc_first");
 
         var exists = await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM pragma_table_xinfo('Member') WHERE name = 'vc_first'", ct));
+            $"SELECT COUNT(*) FROM pragma_table_xinfo('{_store.GetTableName<Member>()}') " +
+            "WHERE name = 'vc_first'", ct));
 
         Assert.Equal(1, exists);
     }

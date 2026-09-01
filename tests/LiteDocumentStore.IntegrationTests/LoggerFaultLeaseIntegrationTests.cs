@@ -497,7 +497,8 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
         using var verification = new SqliteConnection($"Data Source={path}");
         verification.Open();
         using var command = verification.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM Doc";
+        // The store is already disposed here, so resolve the table through the convention itself.
+        command.CommandText = $"SELECT COUNT(*) FROM [{DefaultTableNamingConvention.Instance.GetTableName<Doc>()}]";
         Assert.Equal(2L, Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture));
     }
 

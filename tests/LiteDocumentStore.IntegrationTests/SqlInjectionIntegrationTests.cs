@@ -44,7 +44,8 @@ public sealed class SqlInjectionIntegrationTests : IDisposable
         {
             await using var command = connection.CreateCommand();
             command.CommandText =
-                "EXPLAIN QUERY PLAN SELECT json(data) FROM [Person] WHERE json_extract(data, '$.Email') = @Value";
+                $"EXPLAIN QUERY PLAN SELECT json(data) FROM [{_store.GetTableName<Person>()}] " +
+                "WHERE json_extract(data, '$.Email') = @Value";
             command.Parameters.AddWithValue("@Value", "ada@example.com");
 
             await using var reader = await command.ExecuteReaderAsync(ct);

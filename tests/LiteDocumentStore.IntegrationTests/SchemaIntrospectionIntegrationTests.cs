@@ -4,6 +4,9 @@ namespace LiteDocumentStore.IntegrationTests;
 
 public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
 {
+    private static readonly string CustomerTable = DefaultTableNamingConvention.Instance.GetTableName<Customer>();
+    private static readonly string OrderTable = DefaultTableNamingConvention.Instance.GetTableName<Order>();
+
     private IDocumentStore _store = null!;
 
     public async Task InitializeAsync()
@@ -43,8 +46,8 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
 
         // Assert
         Assert.True(tables.Count >= 2);
-        Assert.Contains(tables, t => t.Name == "Customer");
-        Assert.Contains(tables, t => t.Name == "Order");
+        Assert.Contains(tables, t => t.Name == CustomerTable);
+        Assert.Contains(tables, t => t.Name == OrderTable);
     }
 
     [Fact]
@@ -70,7 +73,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Customer>();
 
         // Act
-        var exists = await IntrospectAsync(introspector => introspector.TableExistsAsync("Customer"));
+        var exists = await IntrospectAsync(introspector => introspector.TableExistsAsync(CustomerTable));
 
         // Assert
         Assert.True(exists);
@@ -93,7 +96,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Customer>();
 
         // Act
-        var columns = (await IntrospectAsync(introspector => introspector.GetColumnsAsync("Customer"))).ToList();
+        var columns = (await IntrospectAsync(introspector => introspector.GetColumnsAsync(CustomerTable))).ToList();
 
         // Assert
         Assert.Equal(3, columns.Count); // id, data, version
@@ -121,7 +124,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateTableAsync<Customer>();
 
         // Act
-        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync("Customer"))).ToList();
+        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync(CustomerTable))).ToList();
 
         // Assert - Primary key index may or may not be included depending on SQLite version
         // So we just check it doesn't throw
@@ -136,7 +139,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await _store.CreateIndexAsync<Customer>(c => c.Email, "idx_customer_email");
 
         // Act
-        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync("Customer"))).ToList();
+        var indexes = (await IntrospectAsync(introspector => introspector.GetIndexesAsync(CustomerTable))).ToList();
 
         // Assert
         Assert.Contains(indexes, i => i.Name == "idx_customer_email");
@@ -181,9 +184,9 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     {
         await _store.CreateTableAsync<Customer>();
 
-        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "id")));
-        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "data")));
-        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "version")));
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync(CustomerTable, "id")));
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync(CustomerTable, "data")));
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync(CustomerTable, "version")));
     }
 
     [Fact]
@@ -193,7 +196,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         // with whatever casing its DDL used.
         await _store.CreateTableAsync<Customer>();
 
-        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "DATA")));
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync(CustomerTable, "DATA")));
     }
 
     [Fact]
@@ -201,7 +204,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     {
         await _store.CreateTableAsync<Customer>();
 
-        Assert.False(await IntrospectAsync(i => i.ColumnExistsAsync("Customer", "content_type")));
+        Assert.False(await IntrospectAsync(i => i.ColumnExistsAsync(CustomerTable, "content_type")));
     }
 
     [Fact]
@@ -231,7 +234,7 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
             IntrospectAsync(i => i.ColumnExistsAsync(null!, "id")));
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
-            IntrospectAsync(i => i.ColumnExistsAsync("Customer", null!)));
+            IntrospectAsync(i => i.ColumnExistsAsync(CustomerTable, null!)));
     }
 
     [Fact]

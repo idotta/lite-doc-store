@@ -25,7 +25,7 @@ internal sealed class DocumentStore : IDocumentStore
     private static readonly TimeSpan WalCheckpointRentTimeout = TimeSpan.FromSeconds(5);
 
     private readonly SqliteConnectionPool _pool;
-    private readonly ITableNamingConvention _tableNamingConvention;
+    private readonly TableNameCollisionGuard _tableNamingConvention;
     private readonly ILogger<DocumentStore> _logger;
     private readonly JsonSerializerOptions _serializerOptions;
     private readonly bool _walEnabled;
@@ -53,9 +53,11 @@ internal sealed class DocumentStore : IDocumentStore
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(connectionFactory);
 
-        _tableNamingConvention = tableNamingConvention
+        // Per store, so a residual naming collision is a throw rather than silent cross-type
+        // overwriting. Wraps whatever convention was configured, including a caller-supplied one.
+        _tableNamingConvention = new TableNameCollisionGuard(tableNamingConvention
             ?? options.TableNamingConvention
-            ?? new DefaultTableNamingConvention();
+            ?? DefaultTableNamingConvention.Instance);
         _logger = logger ?? NullLogger<DocumentStore>.Instance;
         _serializerOptions = options.SerializerOptions ?? JsonHelper.CreateDefaultReflectionOptions();
         // Only a WAL database has a log to checkpoint on disposal; skipping the probe saves a

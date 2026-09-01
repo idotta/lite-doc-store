@@ -155,8 +155,14 @@ public sealed class DocumentStoreOptions
 
     /// <summary>
     /// Gets or sets the default table naming convention.
-    /// If null, uses the simple type name as table name.
+    /// If null, <see cref="DefaultTableNamingConvention"/> is used: the type's namespace-qualified
+    /// name with every separator folded to an underscore, so <c>MyApp.Sales.Order</c> becomes
+    /// <c>MyApp_Sales_Order</c>.
     /// </summary>
+    /// <remarks>
+    /// Whichever convention is used, a store refuses to serve two different types that resolve to the
+    /// same table name — sharing one table makes each type's writes overwrite the other's rows.
+    /// </remarks>
     public ITableNamingConvention? TableNamingConvention { get; set; }
 
     /// <summary>

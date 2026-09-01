@@ -51,8 +51,8 @@ Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStore
 
 ## What you get
 
-- **Document CRUD** (`IDocumentStore`): type-safe, fully async, table names derived from the type
-  through a pluggable `ITableNamingConvention`.
+- **Document CRUD** (`IDocumentStore`): type-safe, fully async, table names derived from the type's
+  namespace-qualified name through a pluggable `ITableNamingConvention` — see *Table names* below.
 - **Querying**: a JSON-path equality shorthand, plus a composable `DocumentQuery<T>` builder with
   comparison, `Like`/`Glob`, `In`, null and array-contains operators, ordering and paging.
 - **Field-level patching**: `DocumentPatch<T>` changes named fields in one statement, so a
@@ -179,6 +179,37 @@ write workloads.
 - **Storage.** One table per document type: `id TEXT PRIMARY KEY, data BLOB NOT NULL, version
   INTEGER NOT NULL DEFAULT 1`. Writes go through `jsonb(@Data)` with UTF-8 JSON bytes; reads come
   back as `SELECT json(data)`. JSONB is binary, so a raw `SELECT data` is not deserializable.
+- **Table names.** The default `ITableNamingConvention` uses the type's namespace-qualified name
+  with every separator folded to an underscore, and a constructed generic appends its arity then
+  each argument by the same rule:
+
+  | type | table |
+  |---|---|
+  | `Customer` (global namespace) | `Customer` |
+  | `MyApp.Sales.Order` | `MyApp_Sales_Order` |
+  | `MyApp.Outer+Inner` | `MyApp_Outer_Inner` |
+  | `MyApp.Box<int>` | `MyApp_Box_1_System_Int32` |
+
+  Never hardcode a table name — ask the store: `store.GetTableName<T>()`, on a transaction too.
+  The fold is deliberately collision-resistant rather than injective, so a store additionally
+  **refuses to serve two different types that resolve to one table name** (which would otherwise
+  make each type's writes overwrite the other's rows silently). Types the default cannot name —
+  open generics, arrays, types nested in a generic, non-ASCII names — throw `NotSupportedException`
+  naming the type. Supply your own convention through `DocumentStoreOptions.TableNamingConvention`
+  or `WithTableNamingConvention`; to keep names an earlier version wrote, that is five lines:
+
+  ```csharp
+  internal sealed class SimpleTypeNameConvention : ITableNamingConvention
+  {
+      public string GetTableName<T>() => GetTableName(typeof(T));
+
+      public string GetTableName(Type type) => type.Name;
+  }
+  ```
+
+  An existing database keeps the tables it has, so switching to the folded default means renaming
+  them (or plugging the convention above). The same applies to raw SQL inside your own `IMigration`
+  implementations and to auto-derived index names, which are `idx_{table}_{path}`.
 - **Safety.** All *values* are parameterized. SQL identifiers and JSON paths cannot be bound, so
   they are interpolated — and validated first, in one place: table/index/column names must match
   `[A-Za-z_][A-Za-z0-9_]*`, JSON paths must match `$(.member|[index])*`, and column types come from

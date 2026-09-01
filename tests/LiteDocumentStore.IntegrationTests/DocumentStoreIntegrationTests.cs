@@ -54,9 +54,10 @@ public class DocumentStoreIntegrationTests : IDisposable
         await _store.CreateTableAsync<Person>();
 
         // Assert
-        var checkSql = "SELECT name FROM sqlite_master WHERE type='table' AND name='Person'";
+        var tableName = _store.GetTableName<Person>();
+        var checkSql = $"SELECT name FROM sqlite_master WHERE type='table' AND name='{tableName}'";
         var result = await QueryStringAsync(checkSql);
-        Assert.Equal("Person", result);
+        Assert.Equal(tableName, result);
     }
 
     [Fact]
@@ -617,7 +618,8 @@ public class DocumentStoreIntegrationTests : IDisposable
         await _store.CreateIndexAsync<Person>(p => p.Name);
 
         // Assert - check that an index was created (name is auto-generated)
-        var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_Person_name%'";
+        var checkSql = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' " +
+            $"AND name LIKE 'idx_{_store.GetTableName<Person>()}_name%'";
         var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
@@ -689,7 +691,8 @@ public class DocumentStoreIntegrationTests : IDisposable
             });
 
         // Assert - check that a composite index was created
-        var checkSql = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_Person_composite_%'";
+        var checkSql = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' " +
+            $"AND name LIKE 'idx_{_store.GetTableName<Person>()}_composite_%'";
         var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
@@ -750,7 +753,8 @@ public class DocumentStoreIntegrationTests : IDisposable
             var details = new List<string>();
             await using var command = connection.CreateCommand();
             command.CommandText =
-                "EXPLAIN QUERY PLAN SELECT json(data) FROM Person WHERE json_extract(data, '$.Email') = 'person50@example.com'";
+                $"EXPLAIN QUERY PLAN SELECT json(data) FROM [{_store.GetTableName<Person>()}] " +
+                "WHERE json_extract(data, '$.Email') = 'person50@example.com'";
             await using var reader = await command.ExecuteReaderAsync();
             var detailOrdinal = reader.GetOrdinal("detail");
             while (await reader.ReadAsync())

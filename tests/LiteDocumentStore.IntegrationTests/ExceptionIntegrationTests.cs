@@ -8,12 +8,17 @@ namespace LiteDocumentStore.IntegrationTests;
 public class ExceptionIntegrationTests : IDisposable
 {
     private readonly IDocumentStore _store;
+    private readonly string _strictModelTable;
+    private readonly string _strictValueTable;
 
     public ExceptionIntegrationTests()
     {
         // The store owns its connection pool; ForInMemory gives a uniquely named
         // shared-cache in-memory database that every pooled connection sees.
         _store = new DocumentStoreFactory().Create(DocumentStoreOptions.ForInMemory());
+
+        _strictModelTable = _store.GetTableName<StrictModel>();
+        _strictValueTable = _store.GetTableName<StrictValue>();
     }
 
     public void Dispose()
@@ -48,7 +53,7 @@ public class ExceptionIntegrationTests : IDisposable
 
         // Manually insert invalid JSON through the raw-SQL escape hatch
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictModel] (id, data) VALUES (@Id, jsonb(@Data))",
+            $"INSERT INTO [{_strictModelTable}] (id, data) VALUES (@Id, jsonb(@Data))",
             ct,
             ("Id", "test-1"), ("Data", "{\"RequiredInt\": \"not-a-number\"}")));
 
@@ -119,7 +124,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         await CreateNullableTableAsync<StrictModel>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            $"INSERT INTO [{_strictModelTable}] (id, data) VALUES ('null-row', NULL)",
             ct));
 
         var exception = await Assert.ThrowsAsync<CorruptDataException>(() => _store.GetAllAsync<StrictModel>());
@@ -135,7 +140,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         await CreateNullableTableAsync<StrictModel>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            $"INSERT INTO [{_strictModelTable}] (id, data) VALUES ('null-row', NULL)",
             ct));
 
         // Both query shapes read through the same id-carrying reader, so both have to report it.
@@ -150,7 +155,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         await CreateNullableTableAsync<StrictModel>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            $"INSERT INTO [{_strictModelTable}] (id, data) VALUES ('null-row', NULL)",
             ct));
 
         var exception = await Assert.ThrowsAsync<CorruptDataException>(
@@ -173,7 +178,7 @@ public class ExceptionIntegrationTests : IDisposable
         // for null would hand back a fabricated row here instead of throwing.
         await CreateNullableTableAsync<StrictValue>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictValue] (id, data) VALUES ('null-row', NULL)",
+            $"INSERT INTO [{_strictValueTable}] (id, data) VALUES ('null-row', NULL)",
             ct));
 
         var exception = await Assert.ThrowsAsync<CorruptDataException>(
@@ -190,7 +195,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         await CreateNullableTableAsync<StrictModel>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictModel] (id, data) VALUES ('null-row', NULL)",
+            $"INSERT INTO [{_strictModelTable}] (id, data) VALUES ('null-row', NULL)",
             ct));
 
         // Row presence now decides "not found", so the absent id must stay absent rather than
@@ -208,7 +213,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         await CreateNullableTableAsync<StrictValue>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictValue] (id, data) VALUES ('null-row', NULL)",
+            $"INSERT INTO [{_strictValueTable}] (id, data) VALUES ('null-row', NULL)",
             ct));
 
         // JsonHelper maps an absent JSON string to default(T). For a struct that is a real value,
@@ -226,7 +231,7 @@ public class ExceptionIntegrationTests : IDisposable
         var exception = await Assert.ThrowsAsync<CorruptDataException>(read);
 
         Assert.Equal("null-row", exception.Id);
-        Assert.Equal("StrictValue", exception.TableName);
+        Assert.Equal(_strictValueTable, exception.TableName);
         Assert.Equal(typeof(StrictValue), exception.TargetType);
     }
 
@@ -241,7 +246,7 @@ public class ExceptionIntegrationTests : IDisposable
     {
         await _store.CreateTableAsync<StrictValue>();
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictValue] (id, data, version) VALUES ('json-null', jsonb('null'), 1)",
+            $"INSERT INTO [{_strictValueTable}] (id, data, version) VALUES ('json-null', jsonb('null'), 1)",
             ct));
 
         // The other shape of a row that reads back as nothing: json(data) yields the 4-character
@@ -262,7 +267,7 @@ public class ExceptionIntegrationTests : IDisposable
         var exception = await Assert.ThrowsAsync<CorruptDataException>(read);
 
         Assert.Equal("json-null", exception.Id);
-        Assert.Equal("StrictValue", exception.TableName);
+        Assert.Equal(_strictValueTable, exception.TableName);
         Assert.Equal(typeof(StrictValue), exception.TargetType);
     }
 
@@ -288,7 +293,7 @@ public class ExceptionIntegrationTests : IDisposable
         // SQLite error text, which this library deliberately does not do — pinned here as the
         // honest current contract.
         await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
-            "INSERT INTO [StrictModel] (id, data) VALUES ('corrupt', X'FFFFFF')",
+            $"INSERT INTO [{_strictModelTable}] (id, data) VALUES ('corrupt', X'FFFFFF')",
             ct));
 
         var exception = await Assert.ThrowsAsync<SqliteException>(() => _store.GetAsync<StrictModel>("corrupt"));

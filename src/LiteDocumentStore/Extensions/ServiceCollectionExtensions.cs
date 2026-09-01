@@ -113,7 +113,7 @@ public static class ServiceCollectionExtensions
     private static void AddCoreServices(IServiceCollection services)
     {
         services.TryAddSingleton<IConnectionFactory, DefaultConnectionFactory>();
-        services.TryAddSingleton<ITableNamingConvention, DefaultTableNamingConvention>();
+        services.TryAddSingleton<ITableNamingConvention>(DefaultTableNamingConvention.Instance);
 
         services.TryAddSingleton<IDocumentStoreFactory>(sp => new DocumentStoreFactory(
             sp.GetRequiredService<IConnectionFactory>(),

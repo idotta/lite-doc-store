@@ -246,7 +246,7 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
             var pending = await transaction.ExecuteRawAsync(async (connection, ct) =>
             {
                 await using var command = connection.CreateCommand();
-                command.CommandText = "SELECT COUNT(*) FROM [Doc]";
+                command.CommandText = $"SELECT COUNT(*) FROM [{store.GetTableName<Doc>()}]";
                 return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
             });
 
@@ -266,7 +266,7 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
         var viaCreateCommand = await transaction.ExecuteRawAsync(async (connection, ct) =>
         {
             await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT COUNT(*) FROM [Doc]";
+            command.CommandText = $"SELECT COUNT(*) FROM [{store.GetTableName<Doc>()}]";
             return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
         });
 
@@ -275,7 +275,8 @@ public sealed class ConnectionModelIntegrationTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             transaction.ExecuteRawAsync(async (connection, ct) =>
             {
-                await using var command = new SqliteCommand("SELECT COUNT(*) FROM [Doc]", connection);
+                await using var command = new SqliteCommand(
+                    $"SELECT COUNT(*) FROM [{store.GetTableName<Doc>()}]", connection);
                 return Convert.ToInt64(await command.ExecuteScalarAsync(ct));
             }));
 

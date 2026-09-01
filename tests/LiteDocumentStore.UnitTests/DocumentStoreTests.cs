@@ -79,18 +79,20 @@ public class DocumentStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task GetTableName_ReturnsTypeName()
+    public async Task GetTableName_ReturnsTheNamespaceQualifiedName()
     {
         // This tests the interaction indirectly through CreateTableAsync
         await using var store = await CreateStoreAsync(FileOptions());
 
-        // Act - create table should use type name
+        var tableName = store.GetTableName<TestPerson>();
+        Assert.Equal(DefaultTableNamingConvention.Instance.GetTableName<TestPerson>(), tableName);
+        Assert.NotEqual(nameof(TestPerson), tableName);
+
         await store.CreateTableAsync<TestPerson>();
 
-        // Assert - verify table exists with correct name
-        var checkSql = "SELECT name FROM sqlite_master WHERE type='table' AND name='TestPerson'";
+        var checkSql = $"SELECT name FROM sqlite_master WHERE type='table' AND name='{tableName}'";
         var result = await store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(checkSql, ct));
-        Assert.Equal("TestPerson", result);
+        Assert.Equal(tableName, result);
     }
 
     [Fact]

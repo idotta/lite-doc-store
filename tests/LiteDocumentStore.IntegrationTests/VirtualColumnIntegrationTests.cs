@@ -9,6 +9,11 @@ namespace LiteDocumentStore.IntegrationTests;
 /// </summary>
 public class VirtualColumnIntegrationTests : IDisposable
 {
+    // CreateIndexAsync derives idx_{table}_{path}, so a folded table name lands in the index name too.
+    private static readonly string ProductTable = DefaultTableNamingConvention.Instance.GetTableName<Product>();
+    private static readonly string ProductWithMetadataTable =
+        DefaultTableNamingConvention.Instance.GetTableName<ProductWithMetadata>();
+
     private readonly string _testDbPath;
     private readonly IDocumentStore _store;
 
@@ -51,7 +56,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         params (string Name, object? Value)[] parameters)
     {
         var ids = await _store.ExecuteRawAsync((connection, ct) => connection.QueryStringsAsync(
-            $"SELECT id FROM Product WHERE {whereSql}", ct, parameters));
+            $"SELECT id FROM [{ProductTable}] WHERE {whereSql}", ct, parameters));
 
         var products = new List<Product>();
         foreach (var id in ids)
@@ -105,7 +110,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category");
 
         // Assert
-        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("Product"));
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductTable));
         Assert.Contains(columns, c => c.Name == "category");
     }
 
@@ -120,10 +125,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<Product>(x => x.Price, "price", createIndex: true, columnType: "REAL");
 
         // Assert
-        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("Product"));
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductTable));
         Assert.Contains(columns, c => c.Name == "price");
 
-        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync("idx_Product_price"));
+        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync($"idx_{ProductTable}_price"));
         Assert.True(indexExists);
     }
 
@@ -142,10 +147,10 @@ public class VirtualColumnIntegrationTests : IDisposable
         await _store.AddVirtualColumnAsync<ProductWithMetadata>(x => x.Metadata.Brand, "brand", createIndex: true);
 
         // Assert
-        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("ProductWithMetadata"));
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductWithMetadataTable));
         Assert.Contains(columns, c => c.Name == "brand");
 
-        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync("idx_ProductWithMetadata_brand"));
+        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync($"idx_{ProductWithMetadataTable}_brand"));
         Assert.True(indexExists);
     }
 
@@ -159,7 +164,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         // Act & Assert - should not throw
         await _store.AddVirtualColumnAsync<Product>(x => x.Category, "category");
 
-        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync("Product"));
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductTable));
         Assert.Contains(columns, c => c.Name == "category");
     }
 
@@ -178,7 +183,7 @@ public class VirtualColumnIntegrationTests : IDisposable
 
         // Assert - Query using virtual columns directly
         var categories = await _store.ExecuteRawAsync((connection, ct) => connection.QueryStringsAsync(
-            "SELECT category FROM Product WHERE category = 'Electronics' ORDER BY price", ct));
+            $"SELECT category FROM [{ProductTable}] WHERE category = 'Electronics' ORDER BY price", ct));
 
         Assert.Equal(2, categories.Count);
         Assert.Equal("Electronics", categories[0]);
@@ -291,7 +296,7 @@ public class VirtualColumnIntegrationTests : IDisposable
         // Act - Query using index
         var match = await _store.ExecuteRawAsync((connection, ct) =>
             connection.QueryFirstStringAsync(
-                "SELECT id FROM Product WHERE category = @Category",
+                $"SELECT id FROM [{ProductTable}] WHERE category = @Category",
                 ct,
                 ("Category", "Category 5")));
 
