@@ -104,7 +104,6 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         var idColumn = columns.FirstOrDefault(c => c.Name == "id");
         Assert.NotNull(idColumn);
         Assert.Equal("TEXT", idColumn.Type);
-        Assert.True(idColumn.IsPrimaryKey);
 
         var dataColumn = columns.FirstOrDefault(c => c.Name == "data");
         Assert.NotNull(dataColumn);
@@ -266,6 +265,57 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
     public async Task TableExistsAsync_WithANullName_Throws() =>
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
             IntrospectAsync(i => i.TableExistsAsync(null!)));
+
+    // Coverage for a table shape no other test introspects: a consumer-created relational table
+    // with a composite primary key, an explicit NOT NULL, a default, and both flavours of
+    // generated column. Every property ColumnInfo carries is asserted by name, because
+    // GetColumnsAsync promises no ordering and SQLite documents cid as no more than "rank within
+    // the current result set".
+    [Fact]
+    public async Task GetColumnsAsync_WithACompositeKeyRelationalTable_ReportsEveryColumnsMetadata()
+    {
+        // Arrange
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            """
+            CREATE TABLE OrderLine (
+                order_id TEXT,
+                line_no INTEGER,
+                qty INTEGER NOT NULL,
+                status TEXT DEFAULT 'pending',
+                qty_twice INTEGER GENERATED ALWAYS AS (qty * 2) VIRTUAL,
+                qty_thrice INTEGER GENERATED ALWAYS AS (qty * 3) STORED,
+                PRIMARY KEY (order_id, line_no))
+            """, ct));
+
+        // Act
+        var columns = (await IntrospectAsync(i => i.GetColumnsAsync("OrderLine"))).ToList();
+
+        // Assert - cid carries no ordering guarantee, so only its shape is pinned: one distinct
+        // rank per column, covering 0..n-1.
+        Assert.Equal(6, columns.Count);
+        Assert.Equal(
+            Enumerable.Range(0, columns.Count).Select(i => (long)i),
+            columns.Select(c => c.ColumnId).Order());
+
+        var byName = columns.ToDictionary(c => c.Name);
+
+        Assert.Equal("TEXT", byName["order_id"].Type);
+        Assert.False(byName["order_id"].NotNull);
+        Assert.Null(byName["order_id"].DefaultValue);
+        Assert.False(byName["order_id"].IsHidden);
+
+        Assert.Equal("INTEGER", byName["line_no"].Type);
+        Assert.False(byName["line_no"].NotNull);
+
+        Assert.True(byName["qty"].NotNull);
+
+        Assert.Equal("'pending'", byName["status"].DefaultValue);
+        Assert.False(byName["status"].NotNull);
+
+        Assert.True(byName["qty_twice"].IsHidden);
+        Assert.Equal("INTEGER", byName["qty_twice"].Type);
+        Assert.True(byName["qty_thrice"].IsHidden);
+    }
 
     // Test models
     private sealed class Customer

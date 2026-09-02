@@ -105,7 +105,6 @@ public sealed class SchemaIntrospector
         var typeOrdinal = reader.GetOrdinal("type");
         var notNullOrdinal = reader.GetOrdinal("notnull");
         var defaultOrdinal = reader.GetOrdinal("dflt_value");
-        var pkOrdinal = reader.GetOrdinal("pk");
         var hiddenOrdinal = reader.GetOrdinal("hidden");
 
         var columns = new List<ColumnInfo>();
@@ -118,8 +117,7 @@ public sealed class SchemaIntrospector
                 Type = reader.GetString(typeOrdinal),
                 NotNull = reader.GetInt64(notNullOrdinal) == 1,
                 DefaultValue = reader.IsDBNull(defaultOrdinal) ? null : reader.GetValue(defaultOrdinal),
-                IsPrimaryKey = reader.GetInt64(pkOrdinal) == 1,
-                IsHidden = reader.GetInt64(hiddenOrdinal) != 0 // hidden=1 for virtual, hidden=2 for stored
+                IsHidden = reader.GetInt64(hiddenOrdinal) != 0
             });
         }
 
@@ -305,14 +303,10 @@ public sealed class ColumnInfo
     public object? DefaultValue { get; set; }
 
     /// <summary>
-    /// Gets or sets a value indicating whether this column is part of the primary key.
-    /// </summary>
-    public bool IsPrimaryKey { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether this column is hidden/generated.
-    /// Virtual columns have hidden=1, stored generated columns have hidden=2.
-    /// Regular columns have hidden=0.
+    /// Gets or sets a value indicating whether this column is hidden or generated, i.e. whether
+    /// <c>PRAGMA table_xinfo</c> reports a non-zero <c>hidden</c> value for it: 0 for an ordinary
+    /// column, 1 for a hidden column of a virtual table, 2 for a VIRTUAL generated column and 3 for
+    /// a STORED generated column.
     /// </summary>
     public bool IsHidden { get; set; }
 }
