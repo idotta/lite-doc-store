@@ -179,6 +179,13 @@ public sealed class DocumentStoreOptions
     /// When null (the default), the store falls back to reflection-based serialization,
     /// which works only in non-AOT scenarios.
     /// </summary>
+    /// <remarks>
+    /// A supplied instance must carry a <see cref="JsonSerializerOptions.TypeInfoResolver"/>.
+    /// The store resolves every type through <see cref="JsonSerializerOptions.GetTypeInfo(Type)"/>,
+    /// which — unlike the <see cref="JsonSerializer"/> entry points — never populates a missing
+    /// resolver, so options without one make every read and write fail. <see cref="Validate"/>
+    /// refuses them instead.
+    /// </remarks>
     public JsonSerializerOptions? SerializerOptions { get; set; }
 
     /// <summary>
@@ -352,6 +359,18 @@ public sealed class DocumentStoreOptions
                     $"Additional pragma at index {i} is null or blank.",
                     nameof(AdditionalPragmas));
             }
+        }
+
+        // GetTypeInfo, unlike JsonSerializer's own entry points, does not populate a missing
+        // resolver: options that serialize fine on their own make every store read and write throw.
+        if (SerializerOptions is { TypeInfoResolver: null })
+        {
+            throw new ArgumentException(
+                "Serializer options must specify a TypeInfoResolver: set it to a source-generated " +
+                "JsonSerializerContext (TypeInfoResolver = MyContext.Default), or to a " +
+                "DefaultJsonTypeInfoResolver outside Native AOT. Leave SerializerOptions null to use " +
+                "the store's own reflection-based fallback.",
+                nameof(SerializerOptions));
         }
     }
 

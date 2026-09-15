@@ -58,7 +58,7 @@ internal static class JsonHelper
         catch (NotSupportedException ex)
         {
             throw new DocumentSerializationException(
-                $"Serialization not supported for type {typeof(T).Name}.",
+                UnsupportedTypeMessage<T>("serialize"),
                 typeof(T),
                 ex);
         }
@@ -84,6 +84,13 @@ internal static class JsonHelper
         {
             throw new DocumentSerializationException(
                 $"Failed to deserialize JSON to type {typeof(T).Name}.",
+                typeof(T),
+                ex);
+        }
+        catch (NotSupportedException ex)
+        {
+            throw new DocumentSerializationException(
+                UnsupportedTypeMessage<T>("deserialize"),
                 typeof(T),
                 ex);
         }
@@ -113,5 +120,23 @@ internal static class JsonHelper
                 typeof(T),
                 ex);
         }
+        catch (NotSupportedException ex)
+        {
+            throw new DocumentSerializationException(
+                UnsupportedTypeMessage<T>("deserialize"),
+                typeof(T),
+                ex);
+        }
     }
+
+    /// <summary>
+    /// The message for a <see cref="NotSupportedException"/> out of
+    /// <see cref="JsonSerializerOptions.GetTypeInfo(Type)"/> — overwhelmingly a type the configured
+    /// resolver does not cover, which the framework's own wording buries under source-generation
+    /// advice.
+    /// </summary>
+    private static string UnsupportedTypeMessage<T>(string verb) =>
+        $"Cannot {verb} type {typeof(T).Name} with the configured JsonSerializerOptions: the type " +
+        "has no JsonTypeInfo metadata (register it with the source-generated JsonSerializerContext, " +
+        "or supply a TypeInfoResolver that covers it), or it is not serializable.";
 }

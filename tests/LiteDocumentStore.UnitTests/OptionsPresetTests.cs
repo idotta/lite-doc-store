@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Xunit;
 
 namespace LiteDocumentStore.UnitTests;
@@ -163,7 +164,8 @@ public sealed class OptionsPresetTests
     public void Builder_WithEveryMutator_ProducesTheStatedOptions()
     {
         var convention = new UpperCaseConvention();
-        var serializerOptions = new JsonSerializerOptions();
+        // Build() validates, and validation refuses options without a resolver.
+        var serializerOptions = new JsonSerializerOptions { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
 
         var options = DocumentStoreOptions.Builder()
             .UseFile("app.db")
