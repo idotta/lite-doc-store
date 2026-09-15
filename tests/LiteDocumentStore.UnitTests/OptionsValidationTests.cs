@@ -1,4 +1,8 @@
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using LiteDocumentStore.Exceptions;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LiteDocumentStore.UnitTests;
@@ -282,5 +286,89 @@ public sealed class OptionsValidationTests
         var ex = Assert.Throws<IncompatiblePageSizeException>(() => SqlitePageSizeGuard.Validate(4096, reported));
 
         Assert.Equal(4096, ex.RequestedPageSize);
+    }
+
+    [Fact]
+    public void Validate_WithSerializerOptionsCarryingNoResolver_ThrowsNamingSerializerOptions()
+    {
+        // Serializes perfectly through JsonSerializer's own entry points, which populate a missing
+        // resolver; the store resolves through GetTypeInfo, which does not.
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.SerializerOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Equal(nameof(DocumentStoreOptions.SerializerOptions), ex.ParamName);
+        Assert.Contains("TypeInfoResolver", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_WithSerializerOptionsCarryingAResolver_DoesNotThrow()
+    {
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.SerializerOptions = new JsonSerializerOptions { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+
+        options.Validate();
+    }
+
+    [Fact]
+    public void Validate_WithNoSerializerOptions_DoesNotThrow()
+    {
+        // Null keeps the store's own reflection fallback, which is a resolver.
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.SerializerOptions = null;
+
+        options.Validate();
+    }
+
+    [Fact]
+    public void Validate_WithNullSerializerOptions_IsAcceptedWhereDynamicCodeIsSupported()
+    {
+        // The AOT half of this guard is not reachable from xUnit: the test runner is JIT, where
+        // IsDynamicCodeSupported is true. What is pinned here is that the guard does not fire on
+        // that supported path — the refusal itself is gated by examples/AotVerification.
+        Assert.True(RuntimeFeature.IsDynamicCodeSupported);
+
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.SerializerOptions = null;
+
+        options.Validate();
+    }
+
+    [Fact]
+    public async Task CreateAsync_WithSerializerOptionsCarryingNoResolver_RefusesBeforeOpeningAConnection()
+    {
+        var factory = new FailFastConnectionFactory();
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.SerializerOptions = new JsonSerializerOptions();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => new DocumentStoreFactory(factory).CreateAsync(options));
+
+        Assert.Equal(nameof(DocumentStoreOptions.SerializerOptions), ex.ParamName);
+        Assert.Equal(0, factory.OpenAttempts);
+    }
+
+    private sealed class FailFastConnectionFactory : IConnectionFactory
+    {
+        public int OpenAttempts { get; private set; }
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options)
+        {
+            OpenAttempts++;
+            throw new InvalidOperationException("The store must not open a connection for options it refuses.");
+        }
+
+        public Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) => Task.FromResult(CreateConnection(options));
+
+        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options)
+        {
+        }
+
+        public Task ConfigureConnectionAsync(
+            SqliteConnection connection,
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

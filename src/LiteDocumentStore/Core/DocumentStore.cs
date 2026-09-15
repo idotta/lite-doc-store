@@ -59,7 +59,16 @@ internal sealed class DocumentStore : IDocumentStore
             ?? options.TableNamingConvention
             ?? DefaultTableNamingConvention.Instance);
         _logger = logger ?? NullLogger<DocumentStore>.Instance;
-        _serializerOptions = options.SerializerOptions ?? JsonHelper.CreateDefaultReflectionOptions();
+        // Re-checked here rather than trusted from Validate(): validation runs before the store is
+        // built and arbitrary caller code runs in between (an ILoggerFactory's CreateLogger, another
+        // thread setting the property), so what was validated is not necessarily what arrives. Both
+        // serializer rejections are re-run, not just one — honouring half of a paired check is what
+        // let a resolver-less replacement through. Captured once: re-reading the property below
+        // would reopen the same window one line further down. The exception names SerializerOptions
+        // rather than options — see ThrowIfSerializerOptionsUnusable.
+        var serializerOptions = options.SerializerOptions;
+        DocumentStoreOptions.ThrowIfSerializerOptionsUnusable(serializerOptions);
+        _serializerOptions = serializerOptions ?? JsonHelper.CreateDefaultReflectionOptions();
         // Only a WAL database has a log to checkpoint on disposal; skipping the probe saves a
         // round trip for every in-memory or rollback-journal store.
         _walEnabled = options.EnableWalMode;

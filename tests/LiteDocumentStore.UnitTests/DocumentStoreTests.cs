@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Xunit;
 
 namespace LiteDocumentStore.UnitTests;
@@ -34,6 +35,22 @@ public class DocumentStoreTests : IDisposable
         Assert.NotNull(store);
         Assert.True(store.MaxPoolSize >= 2);
         Assert.Equal(1, store.OpenConnectionCount);
+    }
+
+    [Fact]
+    public void Constructor_WithSerializerOptionsCarryingNoResolver_ThrowsNamingSerializerOptions()
+    {
+        // The constructor re-checks what Validate() checked, because the two are separated by the
+        // factory's CreateLogger call and by this direct path, which skips validation entirely.
+        // Unlike the AOT-null half of the same guard, this branch is reachable on a JIT runner.
+        var options = FileOptions();
+        options.SerializerOptions = new JsonSerializerOptions();
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => new DocumentStore(options, new DefaultConnectionFactory()));
+
+        Assert.Equal(nameof(DocumentStoreOptions.SerializerOptions), ex.ParamName);
+        Assert.Contains("TypeInfoResolver", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

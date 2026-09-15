@@ -70,7 +70,10 @@ Without DI, build the store via `IDocumentStoreFactory.CreateAsync(DocumentStore
 - **Indexes**: expression indexes over JSON paths, composite and unique variants, partial-index
   filters, and virtual (generated) columns for hot query paths.
 - **Native-AOT / trim compatible**: `<IsAotCompatible>true</IsAotCompatible>`; serialization goes
-  through `System.Text.Json` `JsonTypeInfo<T>`.
+  through `System.Text.Json` `JsonTypeInfo<T>`. Supplied `SerializerOptions` must carry a
+  `TypeInfoResolver` — the store resolves types through `GetTypeInfo`, which never populates a
+  missing one, so options without a resolver are refused when the store is created. Leave
+  `SerializerOptions` null for the reflection-based fallback.
 - **Cross-platform**: tested on Windows, Linux and macOS.
 
 ### Querying

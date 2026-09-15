@@ -12,7 +12,10 @@ namespace LiteDocumentStore;
 /// resolving the type metadata from the caller-provided <see cref="JsonSerializerOptions"/>.
 /// AOT consumers supply a source-generated <see cref="JsonSerializerContext"/> via
 /// <see cref="DocumentStoreOptions.SerializerOptions"/>; when none is supplied the store
-/// falls back to <see cref="CreateDefaultReflectionOptions"/> (non-AOT only).
+/// falls back to <see cref="CreateDefaultReflectionOptions"/>, which
+/// <see cref="DocumentStoreOptions.ThrowIfSerializerOptionsUnusable"/> makes unreachable where
+/// dynamic code is unsupported, by refusing a null
+/// <see cref="DocumentStoreOptions.SerializerOptions"/> both at validation and at construction.
 /// </summary>
 internal static class JsonHelper
 {
@@ -20,12 +23,13 @@ internal static class JsonHelper
     /// Builds the reflection-based fallback options used when the consumer does not supply
     /// their own <see cref="JsonSerializerOptions"/>. This is the single quarantined spot for
     /// reflection-based serialization: it is not AOT/trim safe and is only reached on the
-    /// fallback path. AOT consumers always provide a source-generated context and never hit it.
+    /// fallback path, which <see cref="DocumentStoreOptions.ThrowIfSerializerOptionsUnusable"/>
+    /// refuses under Native AOT — at validation and again in the constructor that calls this.
     /// </summary>
     [UnconditionalSuppressMessage("Trimming", "IL2026",
-        Justification = "Reflection-based JSON is the documented non-AOT fallback; AOT consumers supply a source-generated JsonSerializerContext via DocumentStoreOptions.SerializerOptions.")]
+        Justification = "DocumentStoreOptions.ThrowIfSerializerOptionsUnusable refuses a null SerializerOptions when RuntimeFeature.IsDynamicCodeSupported is false, and runs both in Validate() and in the DocumentStore constructor that calls this helper, so it is unreachable under Native AOT; AOT consumers supply a source-generated JsonSerializerContext instead.")]
     [UnconditionalSuppressMessage("AOT", "IL3050",
-        Justification = "Reflection-based JSON is the documented non-AOT fallback; AOT consumers supply a source-generated JsonSerializerContext via DocumentStoreOptions.SerializerOptions.")]
+        Justification = "DocumentStoreOptions.ThrowIfSerializerOptionsUnusable refuses a null SerializerOptions when RuntimeFeature.IsDynamicCodeSupported is false, and runs both in Validate() and in the DocumentStore constructor that calls this helper, so it is unreachable under Native AOT; AOT consumers supply a source-generated JsonSerializerContext instead.")]
     public static JsonSerializerOptions CreateDefaultReflectionOptions()
     {
         return new JsonSerializerOptions
@@ -58,7 +62,7 @@ internal static class JsonHelper
         catch (NotSupportedException ex)
         {
             throw new DocumentSerializationException(
-                $"Serialization not supported for type {typeof(T).Name}.",
+                UnsupportedTypeMessage<T>("serialize"),
                 typeof(T),
                 ex);
         }
@@ -84,6 +88,13 @@ internal static class JsonHelper
         {
             throw new DocumentSerializationException(
                 $"Failed to deserialize JSON to type {typeof(T).Name}.",
+                typeof(T),
+                ex);
+        }
+        catch (NotSupportedException ex)
+        {
+            throw new DocumentSerializationException(
+                UnsupportedTypeMessage<T>("deserialize"),
                 typeof(T),
                 ex);
         }
@@ -113,5 +124,23 @@ internal static class JsonHelper
                 typeof(T),
                 ex);
         }
+        catch (NotSupportedException ex)
+        {
+            throw new DocumentSerializationException(
+                UnsupportedTypeMessage<T>("deserialize"),
+                typeof(T),
+                ex);
+        }
     }
+
+    /// <summary>
+    /// The message for a <see cref="NotSupportedException"/> out of
+    /// <see cref="JsonSerializerOptions.GetTypeInfo(Type)"/> — overwhelmingly a type the configured
+    /// resolver does not cover, which the framework's own wording buries under source-generation
+    /// advice.
+    /// </summary>
+    private static string UnsupportedTypeMessage<T>(string verb) =>
+        $"Cannot {verb} type {typeof(T).Name} with the configured JsonSerializerOptions: the type " +
+        "has no JsonTypeInfo metadata (register it with the source-generated JsonSerializerContext, " +
+        "or supply a TypeInfoResolver that covers it), or it is not serializable.";
 }
