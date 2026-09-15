@@ -5,11 +5,76 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using LiteDocumentStore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 var serializerOptions = new JsonSerializerOptions
 {
     TypeInfoResolver = AppJsonContext.Default,
 };
+
+// C12: under Native AOT the reflection fallback is unreachable, so options that would
+// land on it must be refused at validation rather than silently mis-serializing. The assertion
+// is unconditional because PublishAot puts the IsDynamicCodeSupported feature switch in this
+// project's runtimeconfig, so the property is false on `dotnet run` as well as in a published
+// binary and this always runs.
+try
+{
+    _ = new DocumentStoreOptionsBuilder().UseInMemory().Build();
+    throw new InvalidOperationException("Expected resolver-less options to be refused under Native AOT.");
+}
+catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
+{
+    Console.WriteLine($"Reflection fallback => refused ({ex.ParamName})");
+}
+
+// C12 again, at the other boundary: the factory validates, then builds a logger, then constructs
+// the store, and caller code runs in that window. A logger factory that nulls SerializerOptions
+// stands in for any such writer (another thread setting the property reaches the same window).
+// Measured before the constructor check existed: the store was built on the reflection fallback
+// and a published AOT binary silently serialized this model as {}.
+try
+{
+    var hostileOptions = new DocumentStoreOptionsBuilder()
+        .UseInMemory()
+        .WithSerializerOptions(new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default })
+        .Build();
+
+    using var store2 = new DocumentStoreFactory(
+        new UnusedConnectionFactory(),
+        null,
+        new OptionsNullingLoggerFactory(hostileOptions)).Create(hostileOptions);
+
+    throw new InvalidOperationException(
+        "Expected the store constructor to refuse options nulled after validation.");
+}
+catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
+{
+    Console.WriteLine($"Nulled after Validate => refused ({ex.ParamName})");
+}
+
+// The same window, the other half of the paired check: replaced with options that are non-null
+// but carry no TypeInfoResolver. Measured before the constructor re-ran this half: construction
+// succeeded and the first serialization failed with a metadata error instead.
+try
+{
+    var hostileOptions2 = new DocumentStoreOptionsBuilder()
+        .UseInMemory()
+        .WithSerializerOptions(new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default })
+        .Build();
+
+    using var store3 = new DocumentStoreFactory(
+        new UnusedConnectionFactory(),
+        null,
+        new OptionsReplacingLoggerFactory(hostileOptions2)).Create(hostileOptions2);
+
+    throw new InvalidOperationException(
+        "Expected the store constructor to refuse resolver-less options swapped in after validation.");
+}
+catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
+{
+    Console.WriteLine($"Resolver dropped after Validate => refused ({ex.ParamName})");
+}
 
 var options = new DocumentStoreOptionsBuilder()
     .UseInMemory()
@@ -75,6 +140,66 @@ Console.WriteLine("DropTable          => done");
 Console.WriteLine("\nAOT verification completed - all operations ran with source-generated JSON (no reflection).");
 
 sealed record Person(string Id, string Name, string Email, int Age);
+
+/// <summary>
+/// A tripwire, never called: the constructor refuses the swapped-in options before the pool opens
+/// anything. If either guard regresses, the store reaches this instead and the gate dies loudly
+/// rather than passing quietly. Shared by both logger-factory assertions below.
+/// </summary>
+internal sealed class UnusedConnectionFactory : IConnectionFactory
+{
+    private static InvalidOperationException Unexpected() =>
+        new("The store must not reach the connection factory with options it has to refuse.");
+
+    public SqliteConnection CreateConnection(DocumentStoreOptions options) => throw Unexpected();
+
+    public Task<SqliteConnection> CreateConnectionAsync(
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default) => throw Unexpected();
+
+    public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
+        throw Unexpected();
+
+    public Task ConfigureConnectionAsync(
+        SqliteConnection connection,
+        DocumentStoreOptions options,
+        CancellationToken cancellationToken = default) => throw Unexpected();
+}
+
+/// <summary>
+/// Stands in for arbitrary caller code running between <c>Validate()</c> and the store's
+/// construction: <c>DocumentStoreFactory.CreateStore</c> calls <c>CreateLogger</c> in exactly
+/// that window, on the same mutable options object the caller passed in.
+/// </summary>
+internal sealed class OptionsNullingLoggerFactory(DocumentStoreOptions options) : ILoggerFactory
+{
+    public ILogger CreateLogger(string categoryName)
+    {
+        options.SerializerOptions = null;
+        return Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+    }
+
+    public void AddProvider(ILoggerProvider provider) { }
+
+    public void Dispose() { }
+}
+
+/// <summary>
+/// The same window as <see cref="OptionsNullingLoggerFactory"/>, swapping in options that are
+/// present but carry no resolver — the other half of the paired serializer check.
+/// </summary>
+internal sealed class OptionsReplacingLoggerFactory(DocumentStoreOptions options) : ILoggerFactory
+{
+    public ILogger CreateLogger(string categoryName)
+    {
+        options.SerializerOptions = new JsonSerializerOptions();
+        return Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+    }
+
+    public void AddProvider(ILoggerProvider provider) { }
+
+    public void Dispose() { }
+}
 
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(Person))]

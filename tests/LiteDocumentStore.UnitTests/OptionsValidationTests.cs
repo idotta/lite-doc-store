@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using LiteDocumentStore.Exceptions;
@@ -313,6 +314,20 @@ public sealed class OptionsValidationTests
     public void Validate_WithNoSerializerOptions_DoesNotThrow()
     {
         // Null keeps the store's own reflection fallback, which is a resolver.
+        var options = DocumentStoreOptions.ForFile("some.db");
+        options.SerializerOptions = null;
+
+        options.Validate();
+    }
+
+    [Fact]
+    public void Validate_WithNullSerializerOptions_IsAcceptedWhereDynamicCodeIsSupported()
+    {
+        // The AOT half of this guard is not reachable from xUnit: the test runner is JIT, where
+        // IsDynamicCodeSupported is true. What is pinned here is that the guard does not fire on
+        // that supported path — the refusal itself is gated by examples/AotVerification.
+        Assert.True(RuntimeFeature.IsDynamicCodeSupported);
+
         var options = DocumentStoreOptions.ForFile("some.db");
         options.SerializerOptions = null;
 

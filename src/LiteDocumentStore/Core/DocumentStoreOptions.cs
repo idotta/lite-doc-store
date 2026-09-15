@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -176,15 +178,29 @@ public sealed class DocumentStoreOptions
     /// For Native AOT / trimming, set this to options backed by a source-generated
     /// <see cref="JsonSerializerContext"/>, e.g.
     /// <c>new JsonSerializerOptions { TypeInfoResolver = MyContext.Default }</c>.
-    /// When null (the default), the store falls back to reflection-based serialization,
-    /// which works only in non-AOT scenarios.
+    /// When null (the default), the store falls back to reflection-based serialization — which is
+    /// unavailable under Native AOT, so null is <em>refused</em> there, by <see cref="Validate"/> and
+    /// again by the store's constructor.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A supplied instance must carry a <see cref="JsonSerializerOptions.TypeInfoResolver"/>.
     /// The store resolves every type through <see cref="JsonSerializerOptions.GetTypeInfo(Type)"/>,
     /// which — unlike the <see cref="JsonSerializer"/> entry points — never populates a missing
     /// resolver, so options without one make every read and write fail. <see cref="Validate"/>
     /// refuses them instead.
+    /// </para>
+    /// <para>
+    /// Leaving this null is likewise refused when <see cref="RuntimeFeature.IsDynamicCodeSupported"/>
+    /// is false — under Native AOT, or wherever the <c>DynamicCodeSupport</c> feature switch is set
+    /// false — since the reflection fallback cannot build a converter there. That refusal runs both in
+    /// <see cref="Validate"/> and in the store's constructor, so setting this to null after validation
+    /// has passed is refused too. Trimming <em>without</em> AOT is not detectable:
+    /// <see cref="RuntimeFeature.IsDynamicCodeSupported"/> is true on a self-contained CoreCLR publish
+    /// with <c>PublishTrimmed</c> (measured on .NET 10), and no runtime switch reports trimming — so a
+    /// trimmed JIT deployment must supply a source-generated context itself: the reflection fallback
+    /// will otherwise round-trip documents whose accessors the trimmer removed.
+    /// </para>
     /// </remarks>
     public JsonSerializerOptions? SerializerOptions { get; set; }
 
@@ -361,15 +377,60 @@ public sealed class DocumentStoreOptions
             }
         }
 
+        ThrowIfSerializerOptionsUnusable(SerializerOptions);
+    }
+
+    /// <summary>
+    /// Throws when <paramref name="serializerOptions"/> cannot serve the store's operations: supplied
+    /// without a <see cref="JsonSerializerOptions.TypeInfoResolver"/>, or left null on a runtime that
+    /// cannot build serialization converters dynamically.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These are the two ways a store reaches an operation with metadata it cannot produce, so they
+    /// are one helper rather than two: honouring only one of them at one of the boundaries is what
+    /// let a resolver-less replacement through after the first fix.
+    /// </para>
+    /// <para>
+    /// Shared by <see cref="Validate"/> and the store's own constructor, which is the boundary that
+    /// cannot be bypassed: validation happens before the store is built, and arbitrary caller code
+    /// runs in between (an <c>ILoggerFactory</c>'s <c>CreateLogger</c>, or simply another thread
+    /// setting the property), so a check that only ran in <see cref="Validate"/> could be passed and
+    /// then undone. <see cref="ArgumentException.ParamName"/> is <c>SerializerOptions</c> at both
+    /// sites — at the constructor the offending parameter is really <c>options</c>, but naming the
+    /// option the caller has to fix beats naming the bag it arrived in, and one condition should
+    /// report one ParamName wherever it fires.
+    /// </para>
+    /// </remarks>
+    [SuppressMessage("Usage", "CA2208",
+        Justification = "ParamName deliberately names the option the caller must fix, not this " +
+                        "helper's parameter: the two call sites take it from different parameters " +
+                        "(Validate's own property, the constructor's options bag) and one condition " +
+                        "should report one ParamName wherever it fires.")]
+    internal static void ThrowIfSerializerOptionsUnusable(JsonSerializerOptions? serializerOptions)
+    {
         // GetTypeInfo, unlike JsonSerializer's own entry points, does not populate a missing
         // resolver: options that serialize fine on their own make every store read and write throw.
-        if (SerializerOptions is { TypeInfoResolver: null })
+        if (serializerOptions is { TypeInfoResolver: null })
         {
             throw new ArgumentException(
                 "Serializer options must specify a TypeInfoResolver: set it to a source-generated " +
                 "JsonSerializerContext (TypeInfoResolver = MyContext.Default), or to a " +
                 "DefaultJsonTypeInfoResolver outside Native AOT. Leave SerializerOptions null to use " +
                 "the store's own reflection-based fallback.",
+                nameof(SerializerOptions));
+        }
+
+        // ILC substitutes IsDynamicCodeSupported as a constant, so under Native AOT this branch is
+        // resolved at publish time rather than costing the JIT path a check that can never fire.
+        if (serializerOptions is null && !RuntimeFeature.IsDynamicCodeSupported)
+        {
+            throw new ArgumentException(
+                "This runtime cannot build serialization converters dynamically (Native AOT, or the " +
+                "DynamicCodeSupport feature switch turned off), so the store's reflection-based " +
+                "fallback is unavailable and SerializerOptions must be set to options backed by a " +
+                "source-generated JsonSerializerContext " +
+                "(new JsonSerializerOptions { TypeInfoResolver = MyContext.Default }).",
                 nameof(SerializerOptions));
         }
     }
