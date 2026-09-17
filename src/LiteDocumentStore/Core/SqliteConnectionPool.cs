@@ -27,13 +27,17 @@ namespace LiteDocumentStore;
 /// the database silently ignored fails there too.
 /// </para>
 /// <para>
-/// A returned connection normally goes straight back to the idle bag rather than being closed,
-/// which is what keeps an in-memory database alive between operations: a shared-cache in-memory
-/// database is destroyed when its last connection closes, so the pool eagerly opens one
-/// connection at initialization and holds it until disposal. It is closed instead when it comes
-/// back unusable — a state other than Open, a caller reporting it through
-/// <see cref="Discard"/>, or transaction state left on it (see <see cref="SqliteSessionState"/>
-/// and <see cref="ReturnAfterExternalAccess"/>).
+/// A returned connection normally goes straight back to the idle bag rather than being closed. It
+/// is closed instead when it comes back unusable — a state other than Open, a caller reporting it
+/// through <see cref="Discard"/>, or transaction state left on it (see
+/// <see cref="SqliteSessionState"/> and <see cref="ReturnAfterExternalAccess"/>).
+/// </para>
+/// <para>
+/// What keeps a shared-cache in-memory database alive is <em>not</em> that: such a database is
+/// destroyed when its last connection closes, and every one of those discard sites can close the
+/// last one. <see cref="Initialize"/> therefore <strong>reserves</strong> the connection it opens
+/// as a keeper — never leased, never discarded, never counted — so the leasable count can reach
+/// zero harmlessly and no discard site needs a last-connection test.
 /// </para>
 /// </remarks>
 internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
@@ -44,6 +48,8 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     private readonly ConcurrentBag<SqliteConnection> _idle = [];
     private readonly SemaphoreSlim _slots;
     private readonly SemaphoreSlim _blobStreamSlots;
+    private readonly bool _needsKeeper;
+    private SqliteConnection? _keeper;
     private int _created;
     private int _disposed;
 
@@ -67,7 +73,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(connectionFactory);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _options = Normalize(options);
+        _options = Normalize(options, out _needsKeeper);
         _connectionFactory = connectionFactory;
         _logger = logger;
         _slots = new SemaphoreSlim(_options.MaxPoolSize, _options.MaxPoolSize);
@@ -75,22 +81,69 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets the maximum number of connections this pool will open.
+    /// Gets the cap on <em>leasable</em> pooled connections, which is not the most the store can
+    /// hold open.
     /// </summary>
+    /// <remarks>
+    /// It bounds two budgets of this size independently — pooled connections and blob read stream
+    /// connections — and a shared in-memory store keeps one reserved keeper besides. So a store can
+    /// hold up to <c>2 × MaxPoolSize + 1</c> connections: at <c>MaxPoolSize = 2</c>, five.
+    /// </remarks>
     public int MaxPoolSize => _options.MaxPoolSize;
 
     /// <summary>
-    /// Gets the number of physical connections opened so far.
+    /// Gets the number of leasable pooled connections the pool currently owns.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not a running total of opens: it <em>decreases</em> when a connection is discarded or a
+    /// leaked lease is abandoned. Three kinds of connection are deliberately excluded because the
+    /// pool never hands them out — the in-memory <see cref="Initialize">keeper</see>, a blob read
+    /// stream's connection, and one abandoned by <see cref="AbandonLease"/> and left to the
+    /// provider's finalizer. So this is what the pool can lease, not how many handles exist.
+    /// </para>
+    /// <para>
+    /// <strong>Meaningful only before disposal.</strong> <see cref="DrainIdle"/> closes the idle
+    /// connections without decrementing, since nothing is going to lease them afterwards, so the
+    /// value a disposed pool reports is whatever it held when disposal began and is stale by
+    /// design. Treat it as undefined once <see cref="Dispose"/> has run.
+    /// </para>
+    /// </remarks>
     public int ConnectionCount => Volatile.Read(ref _created);
 
     /// <summary>
     /// Opens the first connection so that the database exists, the connection string is
     /// validated eagerly, and an in-memory database stays alive for the pool's lifetime.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For a shared-cache in-memory database that connection is <strong>reserved as a keeper</strong>
+    /// rather than banked: such a database is destroyed when its last connection closes, and every
+    /// site that closes an established connection — the two discard branches in
+    /// <see cref="ReturnCore"/>, <see cref="Discard"/>, and <see cref="TryTakeIdle"/> — can
+    /// otherwise take the count to zero. Measured before it was reserved: a caller leaving a raw
+    /// <c>BEGIN</c> in an <c>ExecuteRawAsync</c> callback made the guard discard the only
+    /// connection and the whole database went with it, silently, while ordinary operations carried
+    /// on against a fresh empty one.
+    /// </para>
+    /// <para>
+    /// The keeper is never leased, never discarded and never counted in
+    /// <see cref="ConnectionCount"/>: it is un-pooled, the same category as a blob read stream's
+    /// connection. That is what lets every discard site keep closing connections unconditionally —
+    /// there is no "am I the last?" test anywhere, so there is nothing to race. A file database
+    /// needs none of this and gets none: no keeper, no extra handle, no changed path.
+    /// </para>
+    /// </remarks>
     public void Initialize()
     {
         ThrowIfDisposed();
+
+        if (_needsKeeper)
+        {
+            ReserveKeeper(CreateConnection());
+            return;
+        }
+
         _idle.Add(CreateConnection());
         DrainIfDisposed();
     }
@@ -99,7 +152,15 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        _idle.Add(await CreateConnectionAsync(cancellationToken).ConfigureAwait(false));
+        var connection = await CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        if (_needsKeeper)
+        {
+            ReserveKeeper(connection);
+            return;
+        }
+
+        _idle.Add(connection);
         DrainIfDisposed();
     }
 
@@ -169,7 +230,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 return new PooledConnection(this, idle);
             }
 
-            return new PooledConnection(this, CreateConnection());
+            return new PooledConnection(this, FreshOrThrowIfDisposed(CreateConnection()));
         }
         catch
         {
@@ -190,13 +251,48 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 return new PooledConnection(this, idle);
             }
 
-            return new PooledConnection(this, await CreateConnectionAsync(cancellationToken).ConfigureAwait(false));
+            return new PooledConnection(
+                this,
+                FreshOrThrowIfDisposed(await CreateConnectionAsync(cancellationToken).ConfigureAwait(false)));
         }
         catch
         {
             ReleaseSlot();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Re-checks disposal after a connection has been opened, and closes it rather than handing it
+    /// out when the pool was disposed while the open was in flight.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A rent passes <see cref="ThrowIfDisposed"/> and can still be inside the connection factory
+    /// when <see cref="Dispose"/> runs. Without this the renter is handed a connection opened
+    /// <em>after</em> the keeper closed — and for a shared-cache in-memory store that connection
+    /// has just recreated the database <strong>empty</strong>, which is the same silent loss the
+    /// keeper exists to prevent, merely moved to disposal. Ordering alone cannot close it: the open
+    /// is arbitrarily long, and it is a caller-supplied <see cref="IConnectionFactory"/>.
+    /// </para>
+    /// <para>
+    /// Re-reading the flag after the open is the same shape as <see cref="DrainIfDisposed"/> — one
+    /// volatile read, no lock, on a path that has just paid for a physical connection — and it
+    /// cannot deadlock against the one-shot <c>_disposed</c> exchange because it takes nothing:
+    /// <see cref="Dispose"/> never waits for a rent, and this never waits for disposal. Whichever
+    /// runs first, the connection is closed exactly once, here or by the drain.
+    /// </para>
+    /// </remarks>
+    private SqliteConnection FreshOrThrowIfDisposed(SqliteConnection connection)
+    {
+        if (Volatile.Read(ref _disposed) == 0)
+        {
+            return connection;
+        }
+
+        DiscardBrokenConnection(connection, "the pool was disposed while the connection was opening");
+        ThrowIfDisposed();
+        return connection;
     }
 
     private bool TryTakeIdle(out SqliteConnection connection)
@@ -426,6 +522,11 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         }
 
         DrainIdle();
+
+        // Last, and through CloseQuietly: a throwing close here must not abandon the idle bag,
+        // and a keeper that outlives disposal is both a leaked handle and an in-memory database
+        // still alive under a name the caller has finished with.
+        CloseKeeper();
     }
 
     /// <inheritdoc cref="Dispose" />
@@ -439,6 +540,14 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         while (_idle.TryTake(out var pooled))
         {
             await CloseQuietlyAsync(pooled).ConfigureAwait(false);
+        }
+
+        // See Dispose: the keeper goes last.
+        var keeper = Interlocked.Exchange(ref _keeper, null);
+
+        if (keeper is not null)
+        {
+            await CloseQuietlyAsync(keeper).ConfigureAwait(false);
         }
     }
 
@@ -481,7 +590,41 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     public async Task<SqliteConnection> CreateUnpooledConnectionAsync(CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
-        return await OpenGuardedConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return FreshUnpooledOrThrowIfDisposed(
+            await OpenGuardedConnectionAsync(cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// The unpooled twin of <see cref="FreshOrThrowIfDisposed"/>, for connections that were never
+    /// counted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Same race, same consequence: the check before the open cannot see a disposal that happens
+    /// during it, and a caller-supplied <see cref="IConnectionFactory"/> makes that window
+    /// arbitrarily long. For a shared-cache in-memory store the connection handed back would then
+    /// be one that had just <strong>recreated the database empty</strong> after the keeper closed,
+    /// and a blob read stream would query that rather than fail — the silent loss the keeper exists
+    /// to prevent, on the one creation path the pooled guard does not cover.
+    /// </para>
+    /// <para>
+    /// It must not go through <see cref="DiscardBrokenConnection"/>. Connections from
+    /// <see cref="OpenGuardedConnectionAsync"/> never reach <see cref="Announce"/>, so they were
+    /// never added to <c>_created</c>; uncounting one here would push
+    /// <see cref="ConnectionCount"/> <em>below</em> the number of pooled connections the pool
+    /// actually holds. Closing without uncounting is the whole difference between the two.
+    /// </para>
+    /// </remarks>
+    private SqliteConnection FreshUnpooledOrThrowIfDisposed(SqliteConnection connection)
+    {
+        if (Volatile.Read(ref _disposed) == 0)
+        {
+            return connection;
+        }
+
+        CloseQuietly(connection);
+        ThrowIfDisposed();
+        return connection;
     }
     private SqliteConnection CreateConnection()
     {
@@ -559,6 +702,41 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         return connection;
     }
 
+    /// <summary>
+    /// Holds the connection open for the pool's lifetime so a shared-cache in-memory database
+    /// cannot be destroyed by a discard.
+    /// </summary>
+    /// <remarks>
+    /// The disposed re-check is the same one every banking path runs, and for a sharper reason
+    /// here: <see cref="Dispose"/> flips the flag and closes the keeper exactly once, so a keeper
+    /// assigned after that close would be a handle nothing ever closes — and, worse, would hold a
+    /// database alive that the caller believes is gone. Losing the race means closing this
+    /// connection instead, which is what disposal would have done anyway.
+    /// </remarks>
+    private void ReserveKeeper(SqliteConnection connection)
+    {
+        // Uncount it: ConnectionCount counts the connections the pool can hand out, which is the
+        // sense DiscardBrokenConnection and AbandonLease already use, and the keeper is never one
+        // of them. Counting it would also make the keeper look like it occupies a slot.
+        Interlocked.Decrement(ref _created);
+        _keeper = connection;
+
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            CloseKeeper();
+        }
+    }
+
+    private void CloseKeeper()
+    {
+        var keeper = Interlocked.Exchange(ref _keeper, null);
+
+        if (keeper is not null)
+        {
+            CloseQuietly(keeper);
+        }
+    }
+
     private void DiscardBrokenConnection(SqliteConnection connection, string reason)
     {
         Interlocked.Decrement(ref _created);
@@ -631,9 +809,10 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// Microsoft.Data.Sqlite's own pool, so that this pool owns the physical connections and
     /// their one-time PRAGMA configuration.
     /// </summary>
-    private static DocumentStoreOptions Normalize(DocumentStoreOptions options)
+    private static DocumentStoreOptions Normalize(DocumentStoreOptions options, out bool needsKeeper)
     {
         var builder = SqliteConnectionStringGuard.EnsureUsable(options, nameof(options));
+        needsKeeper = SqliteConnectionStringGuard.IsSharedInMemory(builder);
         builder.Pooling = false;
 
         var normalized = options.Clone();

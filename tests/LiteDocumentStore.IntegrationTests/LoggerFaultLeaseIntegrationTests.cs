@@ -255,16 +255,21 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
         using var owned = pool;
         await pool.InitializeAsync();
 
-        // Hold the eagerly opened connection, so the next rent has to open a second one and log.
+        // Take a lease and hold it, so the next rent has to open another connection and log. This
+        // pool is over a shared in-memory database, so Initialize's connection is the reserved
+        // keeper and this first rent already opens one of its own.
         await using var first = await pool.RentAsync();
         fault.Armed = true;
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await pool.RentAsync());
 
         fault.Armed = false;
-        Assert.Equal(2, factory.Opened.Count);
 
-        var abandoned = factory.Opened[1];
+        // Three, not two: this pool is over a shared in-memory database, so Initialize's
+        // connection is reserved as the keeper and the first rent opens its own.
+        Assert.Equal(3, factory.Opened.Count);
+
+        var abandoned = factory.Opened[2];
         Assert.Equal(ConnectionState.Closed, abandoned.State);
 
         // And the count matches reality, so a retry does not push the pool past its own cap.
@@ -287,8 +292,9 @@ public sealed class LoggerFaultLeaseIntegrationTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => pool.Rent());
 
         fault.Armed = false;
-        Assert.Equal(2, factory.Opened.Count);
-        Assert.Equal(ConnectionState.Closed, factory.Opened[1].State);
+        // See the async twin: the keeper takes Initialize's connection, so this is the third.
+        Assert.Equal(3, factory.Opened.Count);
+        Assert.Equal(ConnectionState.Closed, factory.Opened[2].State);
 
         using var second = pool.Rent();
         Assert.Equal(pool.MaxPoolSize, pool.ConnectionCount);

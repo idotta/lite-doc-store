@@ -66,11 +66,19 @@ public sealed class SqliteConnectionPoolTests
     [Fact]
     public void Initialize_OpensOneConnection()
     {
-        using var pool = CreatePool();
+        var factory = new RecordingConnectionFactory();
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 4;
+        using var pool = new SqliteConnectionPool(options, factory, NullLogger.Instance);
 
         pool.Initialize();
 
-        Assert.Equal(1, pool.ConnectionCount);
+        // One physical connection, as before — but this pool is over a shared in-memory database,
+        // so that connection is reserved as the keeper rather than banked, and the keeper is
+        // un-pooled and therefore uncounted. SharedInMemoryClassificationTests pins both halves,
+        // including that a file pool still banks it and reports 1.
+        Assert.Single(factory.Opened);
+        Assert.Equal(0, pool.ConnectionCount);
     }
 
     [Fact]
