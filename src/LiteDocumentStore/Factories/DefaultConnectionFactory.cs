@@ -4,11 +4,36 @@ using Microsoft.Data.Sqlite;
 namespace LiteDocumentStore;
 
 /// <summary>
-/// Default stateless implementation of <see cref="IConnectionFactory"/>.
-/// A single instance can create connections for multiple databases by passing
-/// different options to each method.
+/// Default stateless implementation of <see cref="IConnectionFactory"/>, and the delegation
+/// target for a custom one.
 /// </summary>
-internal sealed class DefaultConnectionFactory : IConnectionFactory
+/// <remarks>
+/// <para>
+/// A single instance can create connections for multiple databases by passing different options
+/// to each method. It is <c>sealed</c> on purpose: a custom factory decorates it by holding one
+/// and forwarding to it, not by deriving from it.
+/// </para>
+/// <para>
+/// Three of its behaviours are correctness, not tuning, and are the reason a custom factory
+/// should delegate rather than reimplement. It applies <c>PRAGMA page_size</c> <em>before</em>
+/// <c>journal_mode</c>, because SQLite refuses to change the page size of a database already in
+/// WAL mode — the other order made <see cref="DocumentStoreOptions.PageSize"/> a no-op even on a
+/// brand-new file. It always <em>states</em> <c>PRAGMA foreign_keys = ON|OFF</c>, because
+/// Microsoft.Data.Sqlite opens connections with foreign keys already on, so omitting the statement
+/// silently ignores <see cref="DocumentStoreOptions.EnableForeignKeys"/> = <c>false</c>. And it
+/// derives <see cref="SqliteConnection.DefaultTimeout"/> from
+/// <see cref="DocumentStoreOptions.BusyTimeoutMs"/> unless the connection string already states
+/// <c>Default Timeout</c>/<c>Command Timeout</c>, because <c>PRAGMA busy_timeout</c> bounds only
+/// SQLite's busy handler within one attempt while the provider re-runs the whole attempt until
+/// its own command timeout elapses — leaving the provider's 30 s default in place makes
+/// <c>BusyTimeoutMs</c> a floor rather than the bound it documents.
+/// </para>
+/// <para>
+/// See <see cref="IConnectionFactory"/> for which of these the store detects behind any factory —
+/// detection, not exemption: a factory that does not delegate still has to apply them.
+/// </para>
+/// </remarks>
+public sealed class DefaultConnectionFactory : IConnectionFactory
 {
     /// <summary>
     /// Initializes a new instance of DefaultConnectionFactory.
