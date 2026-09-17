@@ -82,10 +82,25 @@ public interface IMigration
     /// enforced — so a table rebuild written on the assumption that they are suspended is not
     /// running under that assumption.
     /// When such a <c>PRAGMA</c> is set through <c>ExecuteRawAsync</c> instead, restore it before
-    /// that callback returns — along with any other connection-local state the callback changed,
-    /// since an <c>ATTACH</c>ed database and a <c>TEMP</c> table were measured to survive on the
-    /// pooled connection too, and anything else living on the connection rather than in the file
-    /// behaves the same way. The store resets none of it.
+    /// that callback returns.
+    /// </para>
+    /// <para>
+    /// <strong>That rule covers this method too, not only an <c>ExecuteRawAsync</c> callback.</strong>
+    /// The run's lease goes back through the pool's external-access path exactly as a raw callback's
+    /// does, and nothing resets connection-local state on the way — measured at
+    /// <see cref="DocumentStoreOptions.MaxPoolSize"/> = 1 on a file database, a migration that set
+    /// <c>PRAGMA cache_size = -7777</c> and created a <c>TEMP</c> table left both in place for the
+    /// next store operation, and an <c>ATTACH</c>ed database stayed listed in
+    /// <c>pragma_database_list</c>. <see cref="DownAsync"/> behaves the same way. So restore what
+    /// you change before returning.
+    /// </para>
+    /// <para>
+    /// Failing does not restore it for you, and what the rollback covers <em>differs by kind</em>,
+    /// so it is worth knowing which is which: the runner's transaction takes a <c>TEMP</c> table
+    /// back with the rest of the migration's DDL — measured, it was gone after the rollback — while
+    /// a <c>PRAGMA</c> and an <c>ATTACH</c>ed database both survived it. Anything else living on the
+    /// <see cref="Microsoft.Data.Sqlite.SqliteConnection"/> rather than in the database file behaves
+    /// by the same mechanism.
     /// </para>
     /// </remarks>
     /// <param name="connection">
@@ -102,12 +117,16 @@ public interface IMigration
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The four <em>restrictions</em> in <see cref="UpAsync"/>'s remarks apply here unchanged, and
-    /// for the same reasons: do not open, commit or roll back a transaction on the connection;
-    /// build commands with <c>connection.CreateCommand()</c>; do not call back into the store,
-    /// since this is the run's only pooled connection; and keep statements SQLite prohibits inside
-    /// a transaction out of the runner. Measured on this path too — a nested transaction and a
-    /// <c>VACUUM</c> both throw, and <c>PRAGMA foreign_keys</c> is silently ignored.
+    /// The <em>restrictions</em> in <see cref="UpAsync"/>'s remarks apply here unchanged, and for
+    /// the same reasons: do not open, commit or roll back a transaction on the connection; build
+    /// commands with <c>connection.CreateCommand()</c>; do not call back into the store, since this
+    /// is the run's only pooled connection; keep statements SQLite prohibits inside a transaction
+    /// out of the runner; and restore any connection-local state this method changes — a
+    /// <c>PRAGMA</c>, a <c>TEMP</c> object, an <c>ATTACH</c>ed database — before returning, since
+    /// the lease goes back to the pool carrying it. Measured on this path too: a nested transaction
+    /// and a <c>VACUUM</c> both throw, <c>PRAGMA foreign_keys</c> is silently ignored, and a
+    /// <c>TEMP</c> table plus a changed <c>cache_size</c> were both still on the connection after
+    /// the rollback run finished.
     /// </para>
     /// <para>
     /// The <em>consequences</em> are this path's own, because the transaction here is atomic with
