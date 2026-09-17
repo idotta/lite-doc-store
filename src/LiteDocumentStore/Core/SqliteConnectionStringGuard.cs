@@ -111,6 +111,20 @@ internal static class SqliteConnectionStringGuard
             || keys.ContainsKey("CommandTimeout");
     }
 
+    /// <summary>
+    /// Whether the data source names a shared-cache in-memory database, which lives only as long
+    /// as a connection to it is open.
+    /// </summary>
+    /// <remarks>
+    /// Answered by the same structural <see cref="Classify"/> the rejections use, rather than by
+    /// matching text: substring tests let five measured shapes through, which is why that parser
+    /// exists. A private in-memory database never reaches this — <see cref="EnsureUsable"/>
+    /// refuses it first — so a <c>true</c> here means the database genuinely outlives a single
+    /// connection and genuinely dies with the last one.
+    /// </remarks>
+    public static bool IsSharedInMemory(SqliteConnectionStringBuilder builder) =>
+        Classify(builder) is { InMemory: true, Shared: true, EmptyName: false };
+
     /// <summary>What the data source names, once parsed the way SQLite parses it.</summary>
     private readonly record struct ConnectionShape(bool InMemory, bool Shared, bool EmptyName);
 

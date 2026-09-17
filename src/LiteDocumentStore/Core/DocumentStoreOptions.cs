@@ -97,7 +97,11 @@ public sealed class DocumentStoreOptions
     /// <em>separately</em>: each holds its own connection outside this pool until disposed, so
     /// that a caller who forgets to dispose one cannot starve ordinary operations. This value
     /// bounds that count too, as a second budget of the same size — so a store may hold up to
-    /// twice this many connections when every blob stream slot is in use.
+    /// twice this many connections when every blob stream slot is in use, and one more than that
+    /// over a shared in-memory database, which keeps a reserved connection open so that discarding
+    /// a pooled one cannot destroy it. Those are the connections the store <em>holds</em>; a
+    /// transaction dropped without being disposed adds a handle beyond them until the runtime
+    /// finalizes it, because its slot comes back before its connection does.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">The value is less than 1</exception>
