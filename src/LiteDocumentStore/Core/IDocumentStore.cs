@@ -253,10 +253,20 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// Rolls back every applied migration above <paramref name="targetVersion"/>, newest first.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Refuses the whole operation when any migration in the rollback range has no definition in
     /// <paramref name="migrations"/> — a partial rollback would leave the schema and the history
     /// table inconsistent. Checksums are never verified on this path, so a migration whose down
     /// SQL was edited still rolls back.
+    /// </para>
+    /// <para>
+    /// The shape is <see cref="MigrateAsync(IEnumerable{IMigration}, CancellationToken)"/>'s: the
+    /// whole run holds one pooled connection, and each <see cref="IMigration.DownAsync"/> runs in
+    /// its own <c>BEGIN IMMEDIATE</c> transaction, atomic with the deletion of its history row, so
+    /// a throw part-way through leaves the already-rolled-back migrations rolled back. See
+    /// <see cref="IMigration.UpAsync"/> for what that transaction and that single connection mean
+    /// for the code inside a migration.
+    /// </para>
     /// </remarks>
     /// <param name="targetVersion">The version to roll back to; 0 rolls back everything</param>
     /// <param name="migrations">The available migration definitions</param>
