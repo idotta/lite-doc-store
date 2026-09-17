@@ -124,6 +124,45 @@ public sealed class DefaultConnectionFactoryTests : IDisposable
         File.Delete(path);
     }
 
+    /// <summary>
+    /// Pins the shipped accessibility contract: <see cref="DefaultConnectionFactory"/> is public
+    /// and sealed, so a consumer's <see cref="IConnectionFactory"/> can decorate it by delegation
+    /// (and only by delegation).
+    /// </summary>
+    /// <remarks>
+    /// Reflection rather than a compile-time reference on purpose: this project sees the library's
+    /// internals through <c>InternalsVisibleTo</c>, so a plain <c>new DefaultConnectionFactory()</c>
+    /// compiles whether the type is public or internal and would pin nothing. Only the metadata
+    /// says what a real consumer outside the assembly can reach.
+    /// </remarks>
+    [Fact]
+    public void DefaultConnectionFactory_IsPubliclyConstructibleAndSealed()
+    {
+        var type = typeof(DefaultConnectionFactory);
+
+        Assert.True(type.IsPublic, $"{type.Name} must be public so a consumer factory can delegate to it.");
+        Assert.True(type.IsSealed, $"{type.Name} must stay sealed: decoration is by delegation, not inheritance.");
+
+        var constructor = type.GetConstructor(Type.EmptyTypes);
+        Assert.NotNull(constructor);
+        Assert.True(constructor.IsPublic);
+
+        Assert.True(typeof(IConnectionFactory).IsAssignableFrom(type));
+
+        foreach (var name in new[]
+                 {
+                     nameof(IConnectionFactory.CreateConnection),
+                     nameof(IConnectionFactory.CreateConnectionAsync),
+                     nameof(IConnectionFactory.ConfigureConnection),
+                     nameof(IConnectionFactory.ConfigureConnectionAsync),
+                 })
+        {
+            var method = type.GetMethod(name);
+            Assert.NotNull(method);
+            Assert.True(method.IsPublic, $"{name} must be publicly callable on the delegation target.");
+        }
+    }
+
     public void Dispose()
     {
         foreach (var path in _databasePaths)
