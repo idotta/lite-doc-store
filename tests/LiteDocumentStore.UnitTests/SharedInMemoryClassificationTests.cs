@@ -158,6 +158,47 @@ public sealed class SharedInMemoryClassificationTests
     }
 
     /// <summary>
+    /// Reserving a keeper must not drop one already held. A keeper that is overwritten is in
+    /// neither the idle bag nor the field, so nothing can close it and it holds the named
+    /// in-memory database alive after the caller has disposed the pool.
+    /// </summary>
+    /// <remarks>
+    /// Pinned through the pool directly, because no path initializes twice: the factory calls
+    /// <c>Initialize</c> once on a store it has just constructed. The guard is defence for a state
+    /// no caller reaches, and this is what says so out loud.
+    /// </remarks>
+    [Fact]
+    public void Initialize_RunASecondTime_DoesNotStrandTheFirstKeeper()
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 2;
+
+        var pool = new SqliteConnectionPool(
+            options, new DefaultConnectionFactory(), NullLogger<DocumentStore>.Instance);
+        pool.Initialize();
+
+        using (var lease = pool.Rent())
+        {
+            using var create = lease.Connection.CreateCommand();
+            create.CommandText = "CREATE TABLE canary(id INTEGER PRIMARY KEY);";
+            create.ExecuteNonQuery();
+        }
+
+        pool.Initialize();
+        pool.Dispose();
+
+        // Disposal closed every connection the pool ever held, so the database went with the last
+        // one. A stranded first keeper would still be holding it open, table and all.
+        using var probe = new SqliteConnection(options.ConnectionString);
+        probe.Open();
+        using var command = probe.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM canary;";
+
+        var ex = Assert.Throws<SqliteException>(() => command.ExecuteScalar());
+        Assert.Contains("no such table: canary", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The lifecycle half: a pool over a shared in-memory database reserves its first connection
     /// instead of banking it, and one over a file database opens no keeper at all. Visible through
     /// <see cref="SqliteConnectionPool.ConnectionCount"/>, which counts only leasable connections.

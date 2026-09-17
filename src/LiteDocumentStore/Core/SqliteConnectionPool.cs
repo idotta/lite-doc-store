@@ -86,8 +86,11 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// It bounds two budgets of this size independently — pooled connections and blob read stream
-    /// connections — and a shared in-memory store keeps one reserved keeper besides. So a store can
-    /// hold up to <c>2 × MaxPoolSize + 1</c> connections: at <c>MaxPoolSize = 2</c>, five.
+    /// connections — and a shared in-memory store keeps one reserved keeper besides. So a store
+    /// holds up to <c>2 × MaxPoolSize + 1</c> connections: at <c>MaxPoolSize = 2</c>, five. That
+    /// is the steady-state figure, not a hard ceiling on handles: <see cref="AbandonLease"/> gives
+    /// a leaked transaction's slot back without closing its connection, so a replacement is opened
+    /// while the abandoned handle waits on the provider's finalizer.
     /// </remarks>
     public int MaxPoolSize => _options.MaxPoolSize;
 
@@ -707,11 +710,23 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// cannot be destroyed by a discard.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The disposed re-check is the same one every banking path runs, and for a sharper reason
     /// here: <see cref="Dispose"/> flips the flag and closes the keeper exactly once, so a keeper
     /// assigned after that close would be a handle nothing ever closes — and, worse, would hold a
     /// database alive that the caller believes is gone. Losing the race means closing this
     /// connection instead, which is what disposal would have done anyway.
+    /// </para>
+    /// <para>
+    /// Exchanging rather than assigning answers the same failure by the other route. A keeper
+    /// overwritten by a second <see cref="Initialize"/> is in neither the idle bag nor this field,
+    /// so nothing can ever close it and it holds the named database alive past disposal — exactly
+    /// the end state the re-check above exists to refuse. No path reaches a second initialization
+    /// (the factory calls it once, on a store it has just constructed), and the guard is kept
+    /// anyway for the reason <c>DocumentStoreTransaction.Release</c>'s own unreachable catch is
+    /// kept: holding "a keeper is never lost" here is cheaper than re-deriving it from
+    /// <see cref="Initialize"/>'s callers every time they change.
+    /// </para>
     /// </remarks>
     private void ReserveKeeper(SqliteConnection connection)
     {
@@ -719,7 +734,15 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
         // sense DiscardBrokenConnection and AbandonLease already use, and the keeper is never one
         // of them. Counting it would also make the keeper look like it occupies a slot.
         Interlocked.Decrement(ref _created);
-        _keeper = connection;
+
+        // Install first, close second: the replacement is already open, so the database never
+        // stands on the connection being closed here.
+        var previous = Interlocked.Exchange(ref _keeper, connection);
+
+        if (previous is not null)
+        {
+            CloseQuietly(previous);
+        }
 
         if (Volatile.Read(ref _disposed) != 0)
         {

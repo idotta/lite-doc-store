@@ -105,31 +105,39 @@ public sealed class InMemoryKeeperIntegrationTests : IDisposable
     /// the transaction's own release path rather than an ordinary operation's.
     /// </summary>
     /// <remarks>
-    /// This does <strong>not</strong> discriminate <c>_lease.Discard()</c> from
+    /// <para>
+    /// Each step is asserted on its own rather than under one <c>try</c> over the whole sequence.
+    /// With a single catch, a <c>BeginTransactionAsync</c> or <c>ExecuteRawAsync</c> that threw
+    /// first would leave the canary intact and pass the test without the connection ever having
+    /// been closed — the test would pin nothing. Reaching the canary check now means the close
+    /// happened, the commit failed <em>on it</em>, and disposal handed the lease back.
+    /// </para>
+    /// <para>
+    /// What it still does <strong>not</strong> discriminate is <c>_lease.Discard()</c> from
     /// <c>_lease.Dispose()</c>: a closed connection reaches <c>ReturnCore</c>'s
-    /// <c>State != Open</c> discard either way, so the canary would survive under both. It is kept
-    /// for the route it does cover — a transaction, rather than a bare operation, ending on a
-    /// connection that must be closed — and named for that rather than for the call site.
+    /// <c>State != Open</c> discard either way, so the canary would survive under both. It proves
+    /// the route — a transaction, rather than a bare operation, ending on a connection that must
+    /// be closed — not which call site inside <c>Release</c> ends it.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task TransactionEndingOnAClosedConnection_LeavesTheInMemoryDatabaseIntact()
     {
         await using var store = await StoreWithCanaryAsync(InMemoryOptions());
 
-        try
+        var transaction = await store.BeginTransactionAsync();
+        await transaction.ExecuteRawAsync((connection, _) =>
         {
-            await using var transaction = await store.BeginTransactionAsync();
-            await transaction.ExecuteRawAsync((connection, _) =>
-            {
-                connection.Close();
-                return Task.CompletedTask;
-            });
-            await transaction.CommitAsync();
-        }
-        catch (InvalidOperationException)
-        {
-            // Committing on a closed connection fails; the lease is discarded on the way out.
-        }
+            connection.Close();
+            return Task.CompletedTask;
+        });
+
+        // The commit is what must fail, and it must fail on the closed connection: CommitAsync
+        // releases only on success, so the lease is still held when this returns.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => transaction.CommitAsync());
+
+        // Disposal rolls back, fails on the same closed connection, and hands the lease back.
+        await transaction.DisposeAsync();
 
         Assert.Equal(1, await CanaryRowsAsync(store));
     }
