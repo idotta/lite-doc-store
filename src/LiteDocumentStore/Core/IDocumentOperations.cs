@@ -884,6 +884,21 @@ public interface IDocumentOperations
     /// transaction onto them. A directly constructed <see cref="SqliteCommand"/> has no
     /// transaction and will not execute while one is pending.
     /// </para>
+    /// <para>
+    /// A session-scoped <c>PRAGMA</c> set here — <c>foreign_keys</c>, <c>synchronous</c>,
+    /// <c>busy_timeout</c>, <c>cache_size</c> and the rest — <strong>must be restored before the
+    /// callback returns</strong>. The connection is pooled and its PRAGMAs are applied once, when
+    /// it is physically opened, so a changed one persists on that connection until it is discarded
+    /// or the store is disposed, and is inherited by unrelated later operations that draw it; the
+    /// guard that runs on the way back probes for a pending transaction, not for session state.
+    /// Measured with
+    /// <see cref="DocumentStoreOptions.MaxPoolSize"/> = 1 and
+    /// <see cref="DocumentStoreOptions.EnableForeignKeys"/> = <c>true</c>: a callback issuing
+    /// <c>PRAGMA foreign_keys = OFF</c> left the next operation, an ordinary store write and a
+    /// store transaction all reading <c>0</c>, with the option still reporting <c>true</c>. A
+    /// larger pool does not remove the leak, only makes it less deterministic: it reaches fewer
+    /// operations, but which ones depends on who draws that connection.
+    /// </para>
     /// </remarks>
     /// <typeparam name="TResult">The result type</typeparam>
     /// <param name="operation">The work to run against the connection</param>
