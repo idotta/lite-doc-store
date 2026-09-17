@@ -82,7 +82,10 @@ public interface IMigration
     /// enforced — so a table rebuild written on the assumption that they are suspended is not
     /// running under that assumption.
     /// When such a <c>PRAGMA</c> is set through <c>ExecuteRawAsync</c> instead, restore it before
-    /// that callback returns; the connection is pooled and carries it otherwise.
+    /// that callback returns — along with any other connection-local state the callback changed,
+    /// since an <c>ATTACH</c>ed database and a <c>TEMP</c> table were measured to survive on the
+    /// pooled connection too, and anything else living on the connection rather than in the file
+    /// behaves the same way. The store resets none of it.
     /// </para>
     /// </remarks>
     /// <param name="connection">
