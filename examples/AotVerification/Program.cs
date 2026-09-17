@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using LiteDocumentStore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 var serializerOptions = new JsonSerializerOptions
@@ -28,52 +27,88 @@ catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
     Console.WriteLine($"Reflection fallback => refused ({ex.ParamName})");
 }
 
-// C12 again, at the other boundary: the factory validates, then builds a logger, then constructs
-// the store, and caller code runs in that window. A logger factory that nulls SerializerOptions
-// stands in for any such writer (another thread setting the property reaches the same window).
-// Measured before the constructor check existed: the store was built on the reflection fallback
-// and a published AOT binary silently serialized this model as {}.
-try
+// C46, at the other boundary: the factory validates, then builds a logger, then constructs the
+// store, and caller code runs in that window. A logger factory that nulls SerializerOptions stands
+// in for any such writer (another thread setting the property reaches the same window). The factory
+// now snapshots the options *before* CreateLogger runs, so the mutation lands on the caller's object
+// and the store never reads it — it is ignored, not refused, because nothing bad arrives.
+// Measured before any of these guards existed: the store was built on the reflection fallback and a
+// published AOT binary silently serialized this model as {}. The round-trip below is the positive
+// evidence that the validated AppJsonContext.Default was used — surviving fields mean the mutated
+// value was not. A regression here does not actually look like {}, though: reverting only the
+// factory snapshot leaves the constructor cloning the *mutated* options and rejecting them in its
+// own Validate(), so the shape fails at resolution. Reaching {} needs both guards gone, and only
+// for this nulled half — resolver-less options fail inside JsonHelper's GetTypeInfo instead.
 {
     var hostileOptions = new DocumentStoreOptionsBuilder()
         .UseInMemory()
         .WithSerializerOptions(new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default })
         .Build();
 
-    using var store2 = new DocumentStoreFactory(
-        new UnusedConnectionFactory(),
-        null,
-        new OptionsNullingLoggerFactory(hostileOptions)).Create(hostileOptions);
+    // Through the DI registration, which resolves ILoggerFactory from the container and hands it
+    // to DocumentStoreFactory — the same window, on the same options object it captured.
+    var hostileServices = new ServiceCollection();
+    hostileServices.AddSingleton<ILoggerFactory>(new OptionsNullingLoggerFactory(hostileOptions));
+    hostileServices.AddLiteDocumentStore(hostileOptions);
+    await using var hostileProvider = hostileServices.BuildServiceProvider();
+    var store2 = hostileProvider.GetRequiredService<IDocumentStore>();
 
-    throw new InvalidOperationException(
-        "Expected the store constructor to refuse options nulled after validation.");
-}
-catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
-{
-    Console.WriteLine($"Nulled after Validate => refused ({ex.ParamName})");
+    if (hostileOptions.SerializerOptions is not null)
+    {
+        throw new InvalidOperationException(
+            "Expected the hostile logger factory to have nulled the caller's SerializerOptions.");
+    }
+
+    await store2.CreateTableAsync<Person>();
+    await store2.UpsertAsync("nulled", new Person("nulled", "Ada Lovelace", "ada@example.com", 36));
+    var roundTripped = await store2.GetAsync<Person>("nulled");
+
+    if (roundTripped?.Name != "Ada Lovelace" || roundTripped.Age != 36)
+    {
+        throw new InvalidOperationException(
+            "Expected the validated source-generated context to be used, but the document did not " +
+            $"round-trip (got {roundTripped?.Name ?? "null"}).");
+    }
+
+    Console.WriteLine("Nulled after Validate => ignored (validated options used)");
 }
 
-// The same window, the other half of the paired check: replaced with options that are non-null
-// but carry no TypeInfoResolver. Measured before the constructor re-ran this half: construction
-// succeeded and the first serialization failed with a metadata error instead.
-try
+// The same window, the other half of the paired check: replaced with options that are non-null but
+// carry no TypeInfoResolver. Measured before the snapshot, with the constructor check alone: the
+// store refused; before even that, construction succeeded and the first serialization failed with a
+// metadata error. Now the replacement never reaches the store, so the round-trip is again what
+// proves which options were used.
 {
     var hostileOptions2 = new DocumentStoreOptionsBuilder()
         .UseInMemory()
         .WithSerializerOptions(new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default })
         .Build();
 
-    using var store3 = new DocumentStoreFactory(
-        new UnusedConnectionFactory(),
-        null,
-        new OptionsReplacingLoggerFactory(hostileOptions2)).Create(hostileOptions2);
+    var hostileServices2 = new ServiceCollection();
+    hostileServices2.AddSingleton<ILoggerFactory>(new OptionsReplacingLoggerFactory(hostileOptions2));
+    hostileServices2.AddLiteDocumentStore(hostileOptions2);
+    await using var hostileProvider2 = hostileServices2.BuildServiceProvider();
+    var store3 = hostileProvider2.GetRequiredService<IDocumentStore>();
 
-    throw new InvalidOperationException(
-        "Expected the store constructor to refuse resolver-less options swapped in after validation.");
-}
-catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
-{
-    Console.WriteLine($"Resolver dropped after Validate => refused ({ex.ParamName})");
+    if (hostileOptions2.SerializerOptions?.TypeInfoResolver is not null)
+    {
+        throw new InvalidOperationException(
+            "Expected the hostile logger factory to have replaced the caller's SerializerOptions " +
+            "with resolver-less ones.");
+    }
+
+    await store3.CreateTableAsync<Person>();
+    await store3.UpsertAsync("dropped", new Person("dropped", "Grace Hopper", "grace@example.com", 85));
+    var roundTripped2 = await store3.GetAsync<Person>("dropped");
+
+    if (roundTripped2?.Name != "Grace Hopper" || roundTripped2.Age != 85)
+    {
+        throw new InvalidOperationException(
+            "Expected the validated source-generated context to be used, but the document did not " +
+            $"round-trip (got {roundTripped2?.Name ?? "null"}).");
+    }
+
+    Console.WriteLine("Resolver dropped after Validate => ignored (validated options used)");
 }
 
 var options = new DocumentStoreOptionsBuilder()
@@ -140,31 +175,6 @@ Console.WriteLine("DropTable          => done");
 Console.WriteLine("\nAOT verification completed - all operations ran with source-generated JSON (no reflection).");
 
 sealed record Person(string Id, string Name, string Email, int Age);
-
-/// <summary>
-/// A tripwire, never called: the constructor refuses the swapped-in options before the pool opens
-/// anything. If either guard regresses, the store reaches this instead and the gate dies loudly
-/// rather than passing quietly. Shared by both logger-factory assertions below.
-/// </summary>
-internal sealed class UnusedConnectionFactory : IConnectionFactory
-{
-    private static InvalidOperationException Unexpected() =>
-        new("The store must not reach the connection factory with options it has to refuse.");
-
-    public SqliteConnection CreateConnection(DocumentStoreOptions options) => throw Unexpected();
-
-    public Task<SqliteConnection> CreateConnectionAsync(
-        DocumentStoreOptions options,
-        CancellationToken cancellationToken = default) => throw Unexpected();
-
-    public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
-        throw Unexpected();
-
-    public Task ConfigureConnectionAsync(
-        SqliteConnection connection,
-        DocumentStoreOptions options,
-        CancellationToken cancellationToken = default) => throw Unexpected();
-}
 
 /// <summary>
 /// Stands in for arbitrary caller code running between <c>Validate()</c> and the store's

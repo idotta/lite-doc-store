@@ -85,12 +85,22 @@ public sealed class DocumentStoreFactory : IDocumentStoreFactory
     private DocumentStore CreateStore(DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
+
+        // Snapshot before validating, and read nothing from the caller's object afterwards: the
+        // CreateLogger call below is arbitrary caller code holding that same mutable object (both
+        // DI registrations capture it by reference), and a concurrent setter reaches the same
+        // window with no custom logger at all. Validating the caller's object and then constructing
+        // from it let a logger factory retarget a store to a different, equally valid database
+        // between the two. The store's constructor snapshots and re-validates again, which is what
+        // covers direct construction; this earlier pair is what makes the failure attributable
+        // before a logger even exists.
+        var snapshot = options.Clone();
+        snapshot.Validate();
 
         // Use options-level overrides if provided, otherwise use factory defaults
-        var namingConvention = options.TableNamingConvention ?? _tableNamingConvention;
+        var namingConvention = snapshot.TableNamingConvention ?? _tableNamingConvention;
         var logger = _loggerFactory?.CreateLogger<DocumentStore>() ?? NullLogger<DocumentStore>.Instance;
 
-        return new DocumentStore(options, _connectionFactory, namingConvention, logger);
+        return new DocumentStore(snapshot, _connectionFactory, namingConvention, logger);
     }
 }

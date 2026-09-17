@@ -439,14 +439,37 @@ public sealed class DocumentStoreOptions
     /// Creates a copy of the current options.
     /// </summary>
     /// <remarks>
-    /// <see cref="SerializerOptions"/> is shared by reference intentionally: the instance carries
-    /// the source-generated <c>TypeInfoResolver</c> and its metadata cache, which must be shared for
-    /// AOT correctness and performance. System.Text.Json also makes a <see cref="JsonSerializerOptions"/>
-    /// read-only after its first use, so the shared instance is effectively immutable in practice.
+    /// <para>
+    /// This is the store's configuration snapshot: <c>DocumentStore</c>'s constructor clones the
+    /// caller's options and validates the clone, so every property must be copied here. A settable
+    /// property left out of this method silently reverts to its default on <em>every</em> store
+    /// construction, not merely in the connection pool's own normalization —
+    /// <c>OptionsSnapshotTests.Clone_CopiesEverySettablePublicProperty</c> fails when one is.
+    /// </para>
+    /// <para>
+    /// The clone detaches <em>values</em>; what it cannot detach is <em>behaviour</em>.
+    /// <see cref="SerializerOptions"/> stays the caller's instance deliberately — it carries the
+    /// source-generated <c>TypeInfoResolver</c> and its metadata cache, which must be shared for AOT
+    /// correctness and performance, and System.Text.Json makes a <see cref="JsonSerializerOptions"/>
+    /// read-only after its first use, so it is effectively immutable in practice.
+    /// <see cref="TableNamingConvention"/> stays the caller's instance necessarily: it is a behaviour
+    /// object like <c>IConnectionFactory</c> and <c>ILogger</c>, which the store has never
+    /// snapshotted either, so
+    /// a caller holding a mutable convention can change table names under a live store — see
+    /// <see cref="ITableNamingConvention"/>, whose contract requires determinism for that reason.
+    /// <see cref="AdditionalPragmas"/> is genuinely detached: the copy is a new list and its elements
+    /// are immutable strings.
+    /// </para>
     /// </remarks>
     /// <returns>A new DocumentStoreOptions instance with copied values</returns>
     public DocumentStoreOptions Clone()
     {
+        // Read once: a concurrent writer nulling the property between the null check and the copy
+        // would otherwise fail the spread below — measured as ArgumentNullException naming "source",
+        // since a collection expression lowers to Enumerable.ToList — instead of letting Validate()
+        // report it as the option it is.
+        var pragmas = AdditionalPragmas;
+
         return new DocumentStoreOptions
         {
             ConnectionString = ConnectionString,
@@ -459,7 +482,9 @@ public sealed class DocumentStoreOptions
             MaxPoolSize = MaxPoolSize,
             PoolWaitTimeoutMs = PoolWaitTimeoutMs,
             TableNamingConvention = TableNamingConvention,
-            AdditionalPragmas = [.. AdditionalPragmas],
+            // Null is carried through rather than spread, so that a null list is reported by
+            // Validate() as the option it is instead of as an opaque failure from here.
+            AdditionalPragmas = pragmas is null ? null! : [.. pragmas],
             SerializerOptions = SerializerOptions
         };
     }
