@@ -219,6 +219,80 @@ public sealed class OptionsSnapshotTests
         }
     }
 
+    [Fact]
+    public async Task Clone_WithAdditionalPragmasNulledConcurrently_CarriesTheNullThrough()
+    {
+        // Clone() runs on every store construction now, and reading AdditionalPragmas twice — once
+        // for the null check, once for the copy — let a writer nulling it in between fail the copy
+        // instead of carrying the null through to the ArgumentException Validate() documents for the
+        // option. Measured as ArgumentNullException naming "source", because a collection expression
+        // lowers to Enumerable.ToList; NullReferenceException is caught beside it so the assertion
+        // does not depend on that lowering. Stressed rather than pinned deterministically, like the
+        // constructor race above: the window sits between two reads of one property and nothing in
+        // it is injectable.
+        const int clones = 200_000;
+
+        var pragmas = new List<string> { "PRAGMA temp_store = MEMORY" };
+        var options = new DocumentStoreOptions
+        {
+            ConnectionString = "Data Source=file:clone-pragma-race?mode=memory&cache=shared",
+            AdditionalPragmas = pragmas
+        };
+
+        var cloningDone = 0;
+        var nullsCarried = 0;
+        var dereferenced = 0;
+
+        using var ready = new Barrier(2);
+        var mutator = Task.Run(() =>
+        {
+            ready.SignalAndWait();
+
+            var flip = false;
+            while (Volatile.Read(ref cloningDone) == 0)
+            {
+                options.AdditionalPragmas = flip ? null! : pragmas;
+                flip = !flip;
+            }
+
+            options.AdditionalPragmas = pragmas;
+        });
+
+        var cloner = Task.Run(() =>
+        {
+            ready.SignalAndWait();
+            try
+            {
+                for (var i = 0; i < clones; i++)
+                {
+                    try
+                    {
+                        if (options.Clone().AdditionalPragmas is null)
+                        {
+                            nullsCarried++;
+                        }
+                    }
+                    catch (Exception ex) when (ex is ArgumentNullException or NullReferenceException)
+                    {
+                        // Counted rather than thrown so the assertion below names the defect.
+                        dereferenced++;
+                    }
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref cloningDone, 1);
+            }
+        });
+
+        await Task.WhenAll(mutator, cloner);
+
+        Assert.Equal(0, dereferenced);
+        // Guards against a vacuous run: a clone that never observed the nulled value never
+        // exercised the double read, so the assertion above would prove nothing.
+        Assert.True(nullsCarried > 0, "no clone observed a null AdditionalPragmas, so nothing was proved");
+    }
+
     /// <summary>
     /// A value that differs from the property's default, so a property missing from
     /// <see cref="DocumentStoreOptions.Clone"/> shows up as the default rather than as a match.

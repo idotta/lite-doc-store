@@ -464,6 +464,12 @@ public sealed class DocumentStoreOptions
     /// <returns>A new DocumentStoreOptions instance with copied values</returns>
     public DocumentStoreOptions Clone()
     {
+        // Read once: a concurrent writer nulling the property between the null check and the copy
+        // would otherwise fail the spread below — measured as ArgumentNullException naming "source",
+        // since a collection expression lowers to Enumerable.ToList — instead of letting Validate()
+        // report it as the option it is.
+        var pragmas = AdditionalPragmas;
+
         return new DocumentStoreOptions
         {
             ConnectionString = ConnectionString,
@@ -476,9 +482,9 @@ public sealed class DocumentStoreOptions
             MaxPoolSize = MaxPoolSize,
             PoolWaitTimeoutMs = PoolWaitTimeoutMs,
             TableNamingConvention = TableNamingConvention,
-            // Null is carried through rather than dereferenced, so that a null list is reported by
-            // Validate() as the option it is instead of as a NullReferenceException from here.
-            AdditionalPragmas = AdditionalPragmas is null ? null! : [.. AdditionalPragmas],
+            // Null is carried through rather than spread, so that a null list is reported by
+            // Validate() as the option it is instead of as an opaque failure from here.
+            AdditionalPragmas = pragmas is null ? null! : [.. pragmas],
             SerializerOptions = SerializerOptions
         };
     }
