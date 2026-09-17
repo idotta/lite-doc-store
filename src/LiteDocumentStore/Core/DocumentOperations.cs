@@ -1331,8 +1331,19 @@ internal readonly struct DocumentOperations
     /// other work in it — but leaving the failure in place is not an option either: the reserve
     /// statement has already replaced the payload with zero bytes, so a caller who catches the
     /// exception and commits would persist a corrupt blob. The savepoint is the only construct
-    /// that undoes just this write. Cleanup runs on <see cref="CancellationToken.None"/>, since
-    /// the usual reason to be here is that the caller's token was cancelled.
+    /// that undoes just this write.
+    /// <para>
+    /// The statements divide by whether cancelling them can still be honest. The opening
+    /// <c>SAVEPOINT</c> and the write itself take the caller's token: nothing is committed yet, so
+    /// reporting cancellation there is true. The failure cleanup runs on
+    /// <see cref="CancellationToken.None"/>, since the usual reason to be in the <c>catch</c> is
+    /// that the caller's token was cancelled and the rollback must still happen. <strong>So does the
+    /// successful release</strong>, which is the less obvious half: once every declared byte is written,
+    /// the release is the point of no cancellation — the work is already in the caller's
+    /// transaction and only the savepoint marker remains. Honouring the token there would report
+    /// failure while leaving the write committable, so a caller who caught the exception and
+    /// committed their other work would persist a write they were told had failed.
+    /// </para>
     /// </remarks>
     private async Task<long> PutBlobInSavepointAsync(
         string id,
@@ -1379,7 +1390,11 @@ internal readonly struct DocumentOperations
             throw;
         }
 
-        await _connection.ExecuteAsync(SqlGenerator.GenerateReleaseSavepointSql(savepoint), cancellationToken)
+        // CancellationToken.None, like the failure cleanup above: every declared byte is already
+        // written, so this release is the point of no cancellation. Honouring the token here would
+        // report failure to the caller while leaving the write sitting committable in their
+        // transaction.
+        await _connection.ExecuteAsync(SqlGenerator.GenerateReleaseSavepointSql(savepoint), CancellationToken.None)
             .ConfigureAwait(false);
 
         return version;
