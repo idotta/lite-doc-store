@@ -40,9 +40,10 @@ public class DocumentStoreTests : IDisposable
     [Fact]
     public void Constructor_WithSerializerOptionsCarryingNoResolver_ThrowsNamingSerializerOptions()
     {
-        // The constructor re-checks what Validate() checked, because the two are separated by the
-        // factory's CreateLogger call and by this direct path, which skips validation entirely.
-        // Unlike the AOT-null half of the same guard, this branch is reachable on a JIT runner.
+        // The constructor validates its own snapshot, so this direct path — which skips the factory
+        // and its validation entirely — still refuses. Since the factory snapshots before it calls
+        // CreateLogger, direct construction is the remaining way to hand the store options it must
+        // refuse. Unlike the AOT-null half of the same guard, this branch is reachable on a JIT runner.
         var options = FileOptions();
         options.SerializerOptions = new JsonSerializerOptions();
 

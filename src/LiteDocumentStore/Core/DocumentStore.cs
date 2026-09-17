@@ -44,6 +44,30 @@ internal sealed class DocumentStore : IDocumentStore
     /// then to <see cref="DefaultTableNamingConvention"/>.
     /// </param>
     /// <param name="logger">Logger for diagnostics (optional)</param>
+    /// <remarks>
+    /// <para>
+    /// The constructor takes a <see cref="DocumentStoreOptions.Clone"/> snapshot of
+    /// <paramref name="options"/> and validates <em>that</em>, so the store is governed by the
+    /// configuration as it stood at construction: later mutation of the caller's object — or
+    /// mutation from arbitrary caller code running between an earlier <see cref="DocumentStoreOptions.Validate"/>
+    /// and this constructor, such as an <c>ILoggerFactory</c>'s <c>CreateLogger</c> — does not
+    /// reach it. This is also the validation boundary that cannot be bypassed: it runs whether the
+    /// store was built through <see cref="DocumentStoreFactory"/>, through the DI registration, or
+    /// directly.
+    /// </para>
+    /// <para>
+    /// The snapshot detaches <em>values</em>, not behaviour: a reference-typed option —
+    /// <see cref="DocumentStoreOptions.SerializerOptions"/> and
+    /// <see cref="DocumentStoreOptions.TableNamingConvention"/> — is copied by reference, so the
+    /// <em>property</em> is detached from the caller's object but the instance behind it is still
+    /// shared, as the connection factory and the logger always have been. See
+    /// <see cref="DocumentStoreOptions.Clone"/> for why each one is shared.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// An option is outside its valid range, or the connection string names a database the store
+    /// cannot use as configured. The exception names the offending option.
+    /// </exception>
     public DocumentStore(
         DocumentStoreOptions options,
         IConnectionFactory connectionFactory,
@@ -53,26 +77,28 @@ internal sealed class DocumentStore : IDocumentStore
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(connectionFactory);
 
+        // Snapshot first, then validate the snapshot: the caller's object is mutable and arbitrary
+        // caller code runs between DocumentStoreFactory's own Validate() and this constructor (an
+        // ILoggerFactory's CreateLogger, or simply another thread setting a property), so what was
+        // validated there is not necessarily what arrives here. Validating the detached copy makes
+        // what is validated what is used. Every read below comes from the snapshot — reading
+        // `options` again anywhere past this line reopens the same window one line further down.
+        var snapshot = options.Clone();
+        snapshot.Validate();
+
         // Per store, so a residual naming collision is a throw rather than silent cross-type
         // overwriting. Wraps whatever convention was configured, including a caller-supplied one.
         _tableNamingConvention = new TableNameCollisionGuard(tableNamingConvention
-            ?? options.TableNamingConvention
+            ?? snapshot.TableNamingConvention
             ?? DefaultTableNamingConvention.Instance);
         _logger = logger ?? NullLogger<DocumentStore>.Instance;
-        // Re-checked here rather than trusted from Validate(): validation runs before the store is
-        // built and arbitrary caller code runs in between (an ILoggerFactory's CreateLogger, another
-        // thread setting the property), so what was validated is not necessarily what arrives. Both
-        // serializer rejections are re-run, not just one — honouring half of a paired check is what
-        // let a resolver-less replacement through. Captured once: re-reading the property below
-        // would reopen the same window one line further down. The exception names SerializerOptions
-        // rather than options — see ThrowIfSerializerOptionsUnusable.
-        var serializerOptions = options.SerializerOptions;
-        DocumentStoreOptions.ThrowIfSerializerOptionsUnusable(serializerOptions);
-        _serializerOptions = serializerOptions ?? JsonHelper.CreateDefaultReflectionOptions();
+        // Validate() ends in ThrowIfSerializerOptionsUnusable, so both serializer rejections have
+        // already run against the snapshot; no standalone re-check is needed here.
+        _serializerOptions = snapshot.SerializerOptions ?? JsonHelper.CreateDefaultReflectionOptions();
         // Only a WAL database has a log to checkpoint on disposal; skipping the probe saves a
         // round trip for every in-memory or rollback-journal store.
-        _walEnabled = options.EnableWalMode;
-        _pool = new SqliteConnectionPool(options, connectionFactory, _logger);
+        _walEnabled = snapshot.EnableWalMode;
+        _pool = new SqliteConnectionPool(snapshot, connectionFactory, _logger);
     }
 
     /// <summary>
