@@ -126,54 +126,104 @@ internal sealed class DocumentStore : IDocumentStore
         RunAsync(ops => ops.CreateTableAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.UpsertAsync(id, data, cancellationToken), cancellationToken);
+    public Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken = default)
+    {
+        // Ahead of the rent, like every guard below: see the validation region in
+        // DocumentOperations for why the same check runs at both boundaries.
+        DocumentOperations.ValidateId(id);
+        ArgumentNullException.ThrowIfNull(data);
+
+        return RunAsync(ops => ops.UpsertAsync(id, data, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<int> UpsertManyAsync<T>(
         IEnumerable<(string id, T data)> items,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.UpsertManyAsync(items, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // The null check only. The per-element validation runs after the operation materializes
+        // the sequence, and repeating it here would enumerate it a second time — silently
+        // consuming a one-shot enumerable.
+        ArgumentNullException.ThrowIfNull(items);
+
+        return RunAsync(ops => ops.UpsertManyAsync(items, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> UpsertWithVersionAsync<T>(
         string id,
         T data,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.UpsertWithVersionAsync(id, data, expectedVersion, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+        ArgumentNullException.ThrowIfNull(data);
+        DocumentOperations.ValidateExpectedVersion(expectedVersion);
+
+        return RunAsync(
+            ops => ops.UpsertWithVersionAsync(id, data, expectedVersion, cancellationToken),
+            cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task DeleteWithVersionAsync<T>(
         string id,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.DeleteWithVersionAsync<T>(id, expectedVersion, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+        DocumentOperations.ValidateExpectedVersion(expectedVersion);
+
+        return RunAsync(ops => ops.DeleteWithVersionAsync<T>(id, expectedVersion, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> PatchAsync<T>(
         string id,
         DocumentPatch<T> patch,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.PatchAsync(id, patch, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+        ArgumentNullException.ThrowIfNull(patch);
+
+        return RunAsync(ops => ops.PatchAsync(id, patch, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> PatchWithVersionAsync<T>(
         string id,
         DocumentPatch<T> patch,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.PatchWithVersionAsync(id, patch, expectedVersion, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // The version first, matching the operation: PatchWithVersionAsync screens it before
+        // delegating to the shared core that checks the id and the patch.
+        DocumentOperations.ValidateExpectedVersion(expectedVersion);
+        DocumentOperations.ValidateId(id);
+        ArgumentNullException.ThrowIfNull(patch);
+
+        return RunAsync(
+            ops => ops.PatchWithVersionAsync(id, patch, expectedVersion, cancellationToken),
+            cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<VersionedDocument<T>?> GetWithVersionAsync<T>(
         string id,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.GetWithVersionAsync<T>(id, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.GetWithVersionAsync<T>(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.GetAsync<T>(id, cancellationToken), cancellationToken);
+    public Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.GetAsync<T>(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<IEnumerable<T>> GetAllAsync<T>(CancellationToken cancellationToken = default) =>
@@ -182,26 +232,45 @@ internal sealed class DocumentStore : IDocumentStore
     /// <inheritdoc />
     public Task<IReadOnlyDictionary<string, T>> GetManyAsync<T>(
         IEnumerable<string> ids,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.GetManyAsync<T>(ids, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // See UpsertManyAsync: the per-element check stays in the operation so the sequence is
+        // enumerated once.
+        ArgumentNullException.ThrowIfNull(ids);
+
+        return RunAsync(ops => ops.GetManyAsync<T>(ids, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.DeleteAsync<T>(id, cancellationToken), cancellationToken);
+    public Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.DeleteAsync<T>(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<int> DeleteManyAsync<T>(
         IEnumerable<string> ids,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.DeleteManyAsync<T>(ids, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // See UpsertManyAsync.
+        ArgumentNullException.ThrowIfNull(ids);
+
+        return RunAsync(ops => ops.DeleteManyAsync<T>(ids, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.DeleteAllAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.ExistsAsync<T>(id, cancellationToken), cancellationToken);
+    public Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.ExistsAsync<T>(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> CountAsync<T>(CancellationToken cancellationToken = default) =>
@@ -211,29 +280,50 @@ internal sealed class DocumentStore : IDocumentStore
     public Task<IEnumerable<T>> QueryAsync<T, TValue>(
         string jsonPath,
         TValue value,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateQueryJsonPath(jsonPath);
+        ArgumentNullException.ThrowIfNull(value);
+
+        return RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<IEnumerable<T>> QueryAsync<T>(
         DocumentQuery<T> query,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.QueryAsync(query, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        return RunAsync(ops => ops.QueryAsync(query, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.CountAsync(query, cancellationToken), cancellationToken);
+    public Task<long> CountAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        return RunAsync(ops => ops.CountAsync(query, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> ExistsAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.ExistsAsync(query, cancellationToken), cancellationToken);
+    public Task<bool> ExistsAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        return RunAsync(ops => ops.ExistsAsync(query, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, null, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(jsonPath);
+
+        return RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, null, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateIndexAsync<T>(
@@ -243,6 +333,8 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(jsonPath);
+
         return RunAsync(ops => ops.CreateIndexAsync(jsonPath, indexName, options, cancellationToken), cancellationToken);
     }
 
@@ -250,8 +342,12 @@ internal sealed class DocumentStore : IDocumentStore
     public Task CreateIndexAsync<T>(
         string jsonPath,
         string? indexName = null,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.CreateIndexAsync<T>(jsonPath, indexName, null, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateJsonPathArgument(jsonPath);
+
+        return RunAsync(ops => ops.CreateIndexAsync<T>(jsonPath, indexName, null, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateIndexAsync<T>(
@@ -261,6 +357,8 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateJsonPathArgument(jsonPath);
+
         return RunAsync(ops => ops.CreateIndexAsync<T>(jsonPath, indexName, options, cancellationToken), cancellationToken);
     }
 
@@ -268,8 +366,14 @@ internal sealed class DocumentStore : IDocumentStore
     public Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, null, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateJsonPathExpressions(jsonPaths);
+
+        return RunAsync(
+            ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, null, cancellationToken),
+            cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateCompositeIndexAsync<T>(
@@ -279,6 +383,8 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateJsonPathExpressions(jsonPaths);
+
         return RunAsync(
             ops => ops.CreateCompositeIndexAsync(jsonPaths, indexName, options, cancellationToken),
             cancellationToken);
@@ -288,10 +394,14 @@ internal sealed class DocumentStore : IDocumentStore
     public Task CreateCompositeIndexAsync<T>(
         string[] jsonPaths,
         string? indexName = null,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateJsonPathArguments(jsonPaths);
+
+        return RunAsync(
             ops => ops.CreateCompositeIndexAsync<T>(jsonPaths, indexName, null, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateCompositeIndexAsync<T>(
@@ -301,6 +411,8 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateJsonPathArguments(jsonPaths);
+
         return RunAsync(
             ops => ops.CreateCompositeIndexAsync<T>(jsonPaths, indexName, options, cancellationToken),
             cancellationToken);
@@ -312,10 +424,17 @@ internal sealed class DocumentStore : IDocumentStore
         string columnName,
         bool createIndex = false,
         string columnType = "TEXT",
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        // Only the expression: the column name is screened by the string overload the operation
+        // delegates to, after the path has been resolved, and hoisting it here would reorder the
+        // two for a call that gets both wrong.
+        ArgumentNullException.ThrowIfNull(jsonPath);
+
+        return RunAsync(
             ops => ops.AddVirtualColumnAsync(jsonPath, columnName, createIndex, columnType, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task AddVirtualColumnAsync<T>(
@@ -323,24 +442,37 @@ internal sealed class DocumentStore : IDocumentStore
         string columnName,
         bool createIndex = false,
         string columnType = "TEXT",
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateJsonPathArgument(jsonPath);
+        DocumentOperations.ValidateColumnName(columnName);
+
+        return RunAsync(
             ops => ops.AddVirtualColumnAsync<T>(jsonPath, columnName, createIndex, columnType, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task DropTableAsync<T>(CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.DropTableAsync<T>(cancellationToken), cancellationToken);
 
     /// <inheritdoc />
-    public Task DropIndexAsync(string indexName, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.DropIndexAsync(indexName, cancellationToken), cancellationToken);
+    public Task DropIndexAsync(string indexName, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateIndexName(indexName);
+
+        return RunAsync(ops => ops.DropIndexAsync(indexName, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task DropIndexAsync<T>(
         Expression<Func<T, object>> expression,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.DropIndexAsync(expression, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+
+        return RunAsync(ops => ops.DropIndexAsync(expression, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task CreateBlobTableAsync(CancellationToken cancellationToken = default) =>
@@ -354,8 +486,12 @@ internal sealed class DocumentStore : IDocumentStore
     public Task PutBlobAsync(
         string id,
         ReadOnlyMemory<byte> data,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.PutBlobAsync(id, data, null, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateBlobWriteArguments(id, data, null);
+
+        return RunAsync(ops => ops.PutBlobAsync(id, data, null, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task PutBlobAsync(
@@ -365,6 +501,8 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateBlobWriteArguments(id, data, options);
+
         return RunAsync(ops => ops.PutBlobAsync(id, data, options, cancellationToken), cancellationToken);
     }
 
@@ -373,10 +511,14 @@ internal sealed class DocumentStore : IDocumentStore
         string id,
         Stream source,
         long length,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateBlobStreamArguments(id, source, length, null, null);
+
+        return RunAsync(
             ops => ops.PutBlobAsync(id, source, length, null, null, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task PutBlobAsync(
@@ -387,6 +529,8 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateBlobStreamArguments(id, source, length, options, null);
+
         return RunAsync(
             ops => ops.PutBlobAsync(id, source, length, options, null, cancellationToken),
             cancellationToken);
@@ -397,10 +541,15 @@ internal sealed class DocumentStore : IDocumentStore
         string id,
         ReadOnlyMemory<byte> data,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateBlobWriteArguments(id, data, null);
+        DocumentOperations.ValidateExpectedVersion(expectedVersion);
+
+        return RunAsync(
             ops => ops.PutBlobWithVersionAsync(id, data, expectedVersion, null, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> PutBlobWithVersionAsync(
@@ -411,6 +560,9 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateBlobWriteArguments(id, data, options);
+        DocumentOperations.ValidateExpectedVersion(expectedVersion);
+
         return RunAsync(
             ops => ops.PutBlobWithVersionAsync(id, data, expectedVersion, options, cancellationToken),
             cancellationToken);
@@ -422,10 +574,14 @@ internal sealed class DocumentStore : IDocumentStore
         Stream source,
         long length,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateBlobStreamArguments(id, source, length, null, expectedVersion);
+
+        return RunAsync(
             ops => ops.PutBlobAsync(id, source, length, null, expectedVersion, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<long> PutBlobWithVersionAsync(
@@ -437,14 +593,20 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
+        DocumentOperations.ValidateBlobStreamArguments(id, source, length, options, expectedVersion);
+
         return RunAsync(
             ops => ops.PutBlobAsync(id, source, length, options, expectedVersion, cancellationToken),
             cancellationToken);
     }
 
     /// <inheritdoc />
-    public Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.BlobLengthAsync(id, cancellationToken), cancellationToken);
+    public Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.BlobLengthAsync(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public async Task<Stream?> OpenBlobReadAsync(string id, CancellationToken cancellationToken = default)
@@ -477,37 +639,62 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
-    public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.GetBlobAsync(id, cancellationToken), cancellationToken);
+    public Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.GetBlobAsync(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.DeleteBlobAsync(id, cancellationToken), cancellationToken);
+    public Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.DeleteBlobAsync(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task DeleteBlobWithVersionAsync(
         string id,
         long expectedVersion,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+        DocumentOperations.ValidateExpectedVersion(expectedVersion);
+
+        return RunAsync(
             ops => ops.DeleteBlobWithVersionAsync(id, expectedVersion, cancellationToken),
             cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.GetBlobInfoAsync(id, cancellationToken), cancellationToken);
+    public Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.GetBlobInfoAsync(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
         string? idPrefix = null,
         int skip = 0,
         int? take = null,
-        CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.ListBlobsAsync(idPrefix, skip, take, cancellationToken), cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateListBlobsArguments(skip, take);
+
+        return RunAsync(ops => ops.ListBlobsAsync(idPrefix, skip, take, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
-    public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default) =>
-        RunAsync(ops => ops.BlobExistsAsync(id, cancellationToken), cancellationToken);
+    public Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken = default)
+    {
+        DocumentOperations.ValidateId(id);
+
+        return RunAsync(ops => ops.BlobExistsAsync(id, cancellationToken), cancellationToken);
+    }
 
     /// <inheritdoc />
     public async Task<TResult> ExecuteRawAsync<TResult>(
@@ -584,12 +771,14 @@ internal sealed class DocumentStore : IDocumentStore
         TransactionMode mode,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfDisposed();
-
+        // Ahead of the disposal guard, like every other argument check on this surface: an
+        // unknown mode is a caller bug whatever state the store is in.
         if (mode is not (TransactionMode.Deferred or TransactionMode.Immediate))
         {
             throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown transaction mode.");
         }
+
+        ThrowIfDisposed();
 
         var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         try
