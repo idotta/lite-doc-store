@@ -3,10 +3,10 @@ using Microsoft.Data.Sqlite;
 namespace LiteDocumentStore;
 
 /// <summary>
-/// Rejects connection strings the store cannot honour: a private in-memory database, which a
-/// pool of connections would multiply into one empty database per connection, and WAL mode on
-/// an in-memory database, where <c>PRAGMA journal_mode = WAL</c> silently reports back
-/// <c>memory</c>.
+/// Rejects connection strings the store cannot honour: a private in-memory database and an empty
+/// data source, both of which a pool of connections would multiply into one database per
+/// connection, and WAL mode on an in-memory database, where <c>PRAGMA journal_mode = WAL</c>
+/// silently reports back <c>memory</c>.
 /// </summary>
 /// <remarks>
 /// Classification is structural rather than spelling-based: a URI data source is split at its
@@ -16,6 +16,16 @@ namespace LiteDocumentStore;
 /// measured, <c>FILE::memory:</c> and <c>mode=MEMORY</c> do not name an in-memory database at all,
 /// they fail to open with SQLite Error 14, so rejecting them here would blame the store for a
 /// string SQLite never accepts.
+/// <para>
+/// The empty-name rejection is deliberately independent of that classification. An empty filename
+/// names a private temporary database — on disk when no mode is stated, in memory when one is —
+/// and SQLite deletes it when the connection closes, so a pool turns one configured database into
+/// one per connection. It is checked after the in-memory branch only so the in-memory spellings
+/// keep reporting themselves as such; the WAL rejection below needs no equivalent split, because
+/// an empty data source is refused outright here whatever <see cref="DocumentStoreOptions.EnableWalMode"/>
+/// says, and naming a journal mode as the problem would understate a configuration the store
+/// cannot pool at all.
+/// </para>
 /// </remarks>
 internal static class SqliteConnectionStringGuard
 {
@@ -24,7 +34,9 @@ internal static class SqliteConnectionStringGuard
     /// </summary>
     /// <returns>The parsed builder, so callers do not parse twice.</returns>
     /// <exception cref="ArgumentException">
-    /// The connection string is empty, names a private in-memory database, or names an in-memory
+    /// The connection string is empty, names a private in-memory database, leaves the data source
+    /// empty (an absent or blank <c>Data Source</c>, <c>file:</c>, or a URI filename that decodes
+    /// to nothing — each a private temporary database per connection), or names an in-memory
     /// database while <see cref="DocumentStoreOptions.EnableWalMode"/> is set.
     /// </exception>
     public static SqliteConnectionStringBuilder EnsureUsable(DocumentStoreOptions options, string paramName)
@@ -55,6 +67,29 @@ internal static class SqliteConnectionStringGuard
                 $"{nameof(DocumentStoreOptions)}.{nameof(DocumentStoreOptions.ForInMemory)}() for a " +
                 $"private in-memory store, or {nameof(DocumentStoreOptions.ForSharedInMemory)}(name) " +
                 "to share one by name.",
+                paramName);
+        }
+
+        // An empty filename is the same pool-multiplies-one-request failure on disk: SQLite's
+        // contract for it is a private temporary database, deleted when *the connection* closes,
+        // so every pooled connection gets its own. Measured at MaxPoolSize = 4, four concurrent
+        // leases each re-issuing the idempotent DDL wrote four documents and the store then read
+        // back one, with no exception and no log. The check is independent of the in-memory
+        // classification above: "Data Source=", "Data Source=file:",
+        // "Data Source=file:?cache=shared" and a string carrying no Data Source keyword at all
+        // name no in-memory database, so nothing above refuses them.
+        if (shape.EmptyName)
+        {
+            throw new ArgumentException(
+                "A connection string with an empty data source (\"Data Source=\", " +
+                "\"Data Source=file:\", a URI filename that decodes to nothing, or no Data Source " +
+                "keyword at all) cannot be used by a document store: SQLite opens a private " +
+                "temporary database for it and deletes that database when the connection closes, " +
+                "so the store's pool would give every connection its own and writes would be lost " +
+                "silently. Name a database with " +
+                $"{nameof(DocumentStoreOptions)}.{nameof(DocumentStoreOptions.ForFile)}(path), or use " +
+                $"{nameof(DocumentStoreOptions.ForInMemory)}()/" +
+                $"{nameof(DocumentStoreOptions.ForSharedInMemory)}(name) for an in-memory store.",
                 paramName);
         }
 
