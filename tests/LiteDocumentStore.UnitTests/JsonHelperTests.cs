@@ -26,6 +26,15 @@ public sealed class JsonHelperTests
         [JsonPropertyName("x")] public string Two { get; set; } = string.Empty;
     }
 
+    private sealed class ThrowingConverter : JsonConverter<Doc>
+    {
+        public override Doc Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new InvalidOperationException("converter read failed");
+
+        public override void Write(Utf8JsonWriter writer, Doc value, JsonSerializerOptions options) =>
+            throw new InvalidOperationException("converter write failed");
+    }
+
     private sealed class ThrowingResolver : IJsonTypeInfoResolver
     {
         public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options) =>
@@ -139,5 +148,22 @@ public sealed class JsonHelperTests
             () => JsonHelper.Deserialize<Doc>("""{"Name":"n"}""", options)).InnerException);
         Assert.IsType<InvalidOperationException>(Assert.Throws<DocumentSerializationException>(
             () => JsonHelper.Deserialize<Doc>("""{"Name":"n"}"""u8.ToArray().AsSpan(), options)).InnerException);
+    }
+
+    [Fact]
+    public void AllThreeMethods_WhenACustomConverterThrowsInvalidOperation_PropagateItUnchanged()
+    {
+        // System.Text.Json propagates exceptions other than JsonException and NotSupportedException
+        // unchanged from a converter, so this one never touched the type metadata. Relabelling it as
+        // a metadata failure would send the caller to the wrong place.
+        var options = Covering();
+        options.Converters.Add(new ThrowingConverter());
+
+        Assert.Equal("converter write failed", Assert.Throws<InvalidOperationException>(
+            () => JsonHelper.SerializeToUtf8Bytes(new Doc(), options)).Message);
+        Assert.Equal("converter read failed", Assert.Throws<InvalidOperationException>(
+            () => JsonHelper.Deserialize<Doc>("""{"Name":"n"}""", options)).Message);
+        Assert.Equal("converter read failed", Assert.Throws<InvalidOperationException>(
+            () => JsonHelper.Deserialize<Doc>("""{"Name":"n"}"""u8.ToArray().AsSpan(), options)).Message);
     }
 }

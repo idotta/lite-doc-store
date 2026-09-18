@@ -49,7 +49,7 @@ internal static class JsonHelper
     {
         try
         {
-            var typeInfo = (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+            var typeInfo = ResolveTypeInfo<T>(options, "serialize");
             return JsonSerializer.SerializeToUtf8Bytes(value, typeInfo);
         }
         catch (JsonException ex)
@@ -63,13 +63,6 @@ internal static class JsonHelper
         {
             throw new DocumentSerializationException(
                 UnsupportedTypeMessage<T>("serialize"),
-                typeof(T),
-                ex);
-        }
-        catch (InvalidOperationException ex)
-        {
-            throw new DocumentSerializationException(
-                InvalidMetadataMessage<T>("serialize"),
                 typeof(T),
                 ex);
         }
@@ -88,7 +81,7 @@ internal static class JsonHelper
 
         try
         {
-            var typeInfo = (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+            var typeInfo = ResolveTypeInfo<T>(options, "deserialize");
             return JsonSerializer.Deserialize(utf8Json, typeInfo);
         }
         catch (JsonException ex)
@@ -102,13 +95,6 @@ internal static class JsonHelper
         {
             throw new DocumentSerializationException(
                 UnsupportedTypeMessage<T>("deserialize"),
-                typeof(T),
-                ex);
-        }
-        catch (InvalidOperationException ex)
-        {
-            throw new DocumentSerializationException(
-                InvalidMetadataMessage<T>("deserialize"),
                 typeof(T),
                 ex);
         }
@@ -128,7 +114,7 @@ internal static class JsonHelper
 
         try
         {
-            var typeInfo = (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+            var typeInfo = ResolveTypeInfo<T>(options, "deserialize");
             return JsonSerializer.Deserialize(json, typeInfo);
         }
         catch (JsonException ex)
@@ -145,13 +131,6 @@ internal static class JsonHelper
                 typeof(T),
                 ex);
         }
-        catch (InvalidOperationException ex)
-        {
-            throw new DocumentSerializationException(
-                InvalidMetadataMessage<T>("deserialize"),
-                typeof(T),
-                ex);
-        }
     }
 
     /// <summary>
@@ -164,6 +143,34 @@ internal static class JsonHelper
         $"Cannot {verb} type {typeof(T).Name} with the configured JsonSerializerOptions: the type " +
         "has no JsonTypeInfo metadata (register it with the source-generated JsonSerializerContext, " +
         "or supply a TypeInfoResolver that covers it), or it is not serializable.";
+
+    /// <summary>
+    /// Resolves the type metadata, and is the <em>only</em> statement whose
+    /// <see cref="InvalidOperationException"/> is translated. System.Text.Json propagates exceptions
+    /// other than <see cref="JsonException"/> and <see cref="NotSupportedException"/> unchanged from
+    /// a custom <see cref="JsonConverter{T}"/>, so wrapping the <see cref="JsonSerializer"/> call in
+    /// the same clause would relabel a converter's own failure as a metadata one. The callers keep
+    /// their <see cref="JsonException"/> and <see cref="NotSupportedException"/> clauses around both
+    /// statements, because both legitimately arrive from either side — a resolver that is present
+    /// but does not cover <typeparamref name="T"/> answers <see cref="NotSupportedException"/> here,
+    /// while a converter can answer it at the serializer call. The
+    /// <see cref="DocumentSerializationException"/> thrown below passes through those clauses
+    /// untouched, since it derives from neither.
+    /// </summary>
+    private static JsonTypeInfo<T> ResolveTypeInfo<T>(JsonSerializerOptions options, string verb)
+    {
+        try
+        {
+            return (JsonTypeInfo<T>)options.GetTypeInfo(typeof(T));
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new DocumentSerializationException(
+                InvalidMetadataMessage<T>(verb),
+                typeof(T),
+                ex);
+        }
+    }
 
     /// <summary>
     /// The message for an <see cref="InvalidOperationException"/> raised while the configured
