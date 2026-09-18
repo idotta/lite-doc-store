@@ -559,4 +559,49 @@ public sealed class ArgumentValidationTests
         var nullException = Assert.IsType<ArgumentNullException>(exception);
         Assert.Equal("jsonPaths", nullException.ParamName);
     }
+
+    /// <summary>
+    /// <c>AddVirtualColumnAsync</c> short-circuits when the column already exists, skipping
+    /// <c>SqlGenerator.GenerateAddVirtualColumnSql</c> and with it the generator's own checks on
+    /// <c>columnType</c> and <c>columnName</c>. Both are therefore validated at the call site, so
+    /// the call fails identically whether or not the column is already there.
+    /// </summary>
+    /// <remarks>
+    /// Before the hoist the second call was <em>accepted</em>: the same arguments threw on a fresh
+    /// database and were a silent no-op on the next run. No injection surface — the bad type and
+    /// the bad name never reached SQL on that branch — but a non-idempotent contract.
+    /// </remarks>
+    [Fact]
+    public async Task AddVirtualColumnAsync_WithAnUnsupportedTypeOverAnExistingColumn_StillThrows()
+    {
+        await using var store = await CreateStoreAsync();
+        await store.AddVirtualColumnAsync<Doc>("$.Name", "vc_name");
+
+        var exception = await Record.ExceptionAsync(
+            () => store.AddVirtualColumnAsync<Doc>("$.Name", "vc_name", false, "NOT_A_TYPE"));
+
+        var argumentException = Assert.IsType<ArgumentException>(exception);
+        Assert.Equal("columnType", argumentException.ParamName);
+    }
+
+    /// <inheritdoc cref="AddVirtualColumnAsync_WithAnUnsupportedTypeOverAnExistingColumn_StillThrows" />
+    /// <remarks>
+    /// <c>SchemaIntrospector.ColumnExistsAsync</c> compares against the table's real columns, so a
+    /// column added by raw SQL under a name the identifier rule rejects is reported present — which
+    /// is how a name no generator would accept reached the short-circuit.
+    /// </remarks>
+    [Fact]
+    public async Task AddVirtualColumnAsync_WithAnInvalidNameOverAnExistingColumn_StillThrows()
+    {
+        await using var store = await CreateStoreAsync();
+        var table = store.GetTableName<Doc>();
+        await store.ExecuteRawAsync((connection, ct) =>
+            connection.ExecuteAsync($"ALTER TABLE [{table}] ADD COLUMN \"weird name\" TEXT", ct));
+
+        var exception = await Record.ExceptionAsync(
+            () => store.AddVirtualColumnAsync<Doc>("$.Name", "weird name"));
+
+        var argumentException = Assert.IsType<ArgumentException>(exception);
+        Assert.Equal("columnName", argumentException.ParamName);
+    }
 }

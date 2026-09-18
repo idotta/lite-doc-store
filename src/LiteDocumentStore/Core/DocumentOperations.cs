@@ -1024,8 +1024,12 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
 
         // Validated here and not only in the generator: an existing column short-circuits past
-        // the generator entirely, so the root would be accepted or rejected by database state.
+        // the generator entirely, so the root, the column name and the column type would be
+        // accepted or rejected by database state rather than by the argument. The generator's
+        // own order is kept, so the fault reported first is the same on both branches.
+        SqlGenerator.ValidateIdentifier(columnName, nameof(columnName));
         var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
+        SqlGenerator.ValidateColumnType(columnType);
 
         // The index name and its stored form are derived up front so the definition can be
         // checked before any DDL runs. The ALTER below commits immediately outside an ambient

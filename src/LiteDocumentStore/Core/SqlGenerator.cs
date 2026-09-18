@@ -1346,7 +1346,11 @@ internal static class SqlGenerator
     // Table, index and column names, restricted to [A-Za-z_][A-Za-z0-9_]*. Bracket quoting
     // alone is not enough: a ] in the name closes it early and the rest is parsed as SQL.
     // Returns the input so calls can be inlined into interpolation.
-    private static string ValidateIdentifier(string identifier, string paramName)
+    //
+    // Internal rather than private for the one caller that has to run the rule before the
+    // generator does: DocumentOperations.AddVirtualColumnAsync hoists it, because an existing
+    // column short-circuits past the generator entirely.
+    internal static string ValidateIdentifier(string identifier, string paramName)
     {
         var error = IdentifierError(identifier);
         if (error is not null)
@@ -1542,7 +1546,8 @@ internal static class SqlGenerator
     }
 
     // The type lands unquoted in ALTER TABLE ... ADD COLUMN, so a whitelist is the only option.
-    private static string ValidateColumnType(string columnType)
+    // Internal for the same reason as ValidateIdentifier above: the virtual-column path hoists it.
+    internal static string ValidateColumnType(string columnType)
     {
         return columnType?.ToUpperInvariant() switch
         {
