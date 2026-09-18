@@ -7,7 +7,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// End-to-end coverage for the options-bearing <c>CreateIndexAsync</c> overloads against real
 /// SQLite: a UNIQUE index actually rejecting a duplicate, a partial index tolerating duplicates
 /// among the rows it excludes, <c>NOCASE</c> uniqueness, a descending index still being used,
-/// and the name pre-check that skips an existing index options and all.
+/// and the name pre-check that now refuses an existing index whose definition differs.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class IndexOptionsIntegrationTests : IAsyncLifetime
@@ -168,14 +168,20 @@ public sealed class IndexOptionsIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task CreateIndexAsync_WhenTheNameAlreadyExists_KeepsTheExistingIndexOptionsAndAll()
+    public async Task CreateIndexAsync_WhenTheNameAlreadyExistsWithOtherOptions_Throws()
     {
         await _store.CreateIndexAsync<Member>(x => x.Email!, "idx_members_email");
 
-        await _store.CreateIndexAsync<Member>(
-            x => x.Email!,
-            "idx_members_email",
-            new IndexOptions { Unique = true });
+        // The name pre-check used to skip creation silently, leaving the caller's options
+        // unapplied with nothing but a Debug line to say so.
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.CreateIndexAsync<Member>(
+                x => x.Email!,
+                "idx_members_email",
+                new IndexOptions { Unique = true }));
+
+        Assert.Contains("idx_members_email", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("UNIQUE", exception.Message, StringComparison.Ordinal);
 
         var ddl = await IndexDdlAsync("idx_members_email");
         Assert.DoesNotContain("UNIQUE", ddl, StringComparison.Ordinal);

@@ -631,11 +631,17 @@ internal static class SqlGenerator
     }
 
     /// <summary>
-    /// Generates SQL to check if an index exists.
+    /// Generates SQL to look up an index by name.
     /// </summary>
+    /// <remarks>
+    /// Returns the index's stored <c>CREATE INDEX</c> text, so a caller can compare an existing
+    /// index against the definition it is about to create rather than only learning that the
+    /// name is taken. No row means no such index; a row whose <c>sql</c> is NULL is an index
+    /// SQLite created itself (<c>sqlite_autoindex_*</c>), which has no <c>CREATE</c> statement.
+    /// </remarks>
     public static string GenerateCheckIndexExistsSql()
     {
-        return "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=@IndexName";
+        return "SELECT sql FROM sqlite_master WHERE type='index' AND name=@IndexName";
     }
 
     /// <summary>
@@ -645,17 +651,22 @@ internal static class SqlGenerator
     /// <param name="indexName">The index name</param>
     /// <param name="jsonPath">The JSON path to index (e.g., '$.email'), below the document root</param>
     /// <param name="options">Uniqueness, collation, direction and partial filter, or null for none</param>
+    /// <param name="ifNotExists">
+    /// Whether to emit the <c>IF NOT EXISTS</c> token. False renders the form SQLite stores in
+    /// <c>sqlite_master</c>, which is what an existing index is compared against.
+    /// </param>
     public static string GenerateCreateJsonIndexSql(
         string tableName,
         string indexName,
         string jsonPath,
-        IndexOptions? options = null)
+        IndexOptions? options = null,
+        bool ifNotExists = true)
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
         ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 
-        return BuildCreateIndexSql(tableName, indexName, [jsonPath], options);
+        return BuildCreateIndexSql(tableName, indexName, [jsonPath], options, ifNotExists);
     }
 
     /// <summary>
@@ -675,17 +686,22 @@ internal static class SqlGenerator
     /// Uniqueness, collation, direction and partial filter, or null for none. Collation and
     /// direction apply to every indexed column.
     /// </param>
+    /// <param name="ifNotExists">
+    /// Whether to emit the <c>IF NOT EXISTS</c> token. False renders the form SQLite stores in
+    /// <c>sqlite_master</c>, which is what an existing index is compared against.
+    /// </param>
     public static string GenerateCreateCompositeJsonIndexSql(
         string tableName,
         string indexName,
         IEnumerable<string> jsonPaths,
-        IndexOptions? options = null)
+        IndexOptions? options = null,
+        bool ifNotExists = true)
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
 
         var paths = jsonPaths.Select(p => ValidateJsonPath(p, nameof(jsonPaths), allowRoot: false)).ToList();
-        return BuildCreateIndexSql(tableName, indexName, paths, options);
+        return BuildCreateIndexSql(tableName, indexName, paths, options, ifNotExists);
     }
 
     // Identifiers and paths arrive validated; the options carry two more interpolated pieces —
@@ -693,11 +709,17 @@ internal static class SqlGenerator
     // where that happens. Default options emit the statement these generators emitted before
     // the options existed: no UNIQUE, no COLLATE, no direction (SQLite's default is ascending)
     // and no WHERE.
+    //
+    // With ifNotExists false the result is the form SQLite stores in sqlite_master: the header
+    // is reconstructed canonically there, and the only difference from the executed statement
+    // is that the IF NOT EXISTS token is dropped. The comparison form is generated here rather
+    // than cut out of the executed text, so the two cannot drift apart.
     private static string BuildCreateIndexSql(
         string tableName,
         string indexName,
         IReadOnlyList<string> validatedPaths,
-        IndexOptions? options)
+        IndexOptions? options,
+        bool ifNotExists = true)
     {
         var columnSuffix = new StringBuilder();
         if (options?.Collation is { } collation)
@@ -719,7 +741,13 @@ internal static class SqlGenerator
             sb.Append("UNIQUE ");
         }
 
-        sb.Append("INDEX IF NOT EXISTS [").Append(indexName)
+        sb.Append("INDEX ");
+        if (ifNotExists)
+        {
+            sb.Append("IF NOT EXISTS ");
+        }
+
+        sb.Append('[').Append(indexName)
           .Append("] ON [").Append(tableName).Append("] (").Append(columns).Append(')');
 
         if (options?.Filter is { } filter)
@@ -894,13 +922,22 @@ internal static class SqlGenerator
     /// <param name="tableName">The table name</param>
     /// <param name="indexName">The index name</param>
     /// <param name="columnName">The column name to index</param>
-    public static string GenerateCreateColumnIndexSql(string tableName, string indexName, string columnName)
+    /// <param name="ifNotExists">
+    /// Whether to emit the <c>IF NOT EXISTS</c> token. False renders the form SQLite stores in
+    /// <c>sqlite_master</c>, which is what an existing index is compared against.
+    /// </param>
+    public static string GenerateCreateColumnIndexSql(
+        string tableName,
+        string indexName,
+        string columnName,
+        bool ifNotExists = true)
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
         ValidateIdentifier(columnName, nameof(columnName));
 
-        return $"CREATE INDEX IF NOT EXISTS [{indexName}] ON [{tableName}] ([{columnName}])";
+        var existsClause = ifNotExists ? "IF NOT EXISTS " : string.Empty;
+        return $"CREATE INDEX {existsClause}[{indexName}] ON [{tableName}] ([{columnName}])";
     }
 
     /// <summary>

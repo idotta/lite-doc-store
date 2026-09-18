@@ -787,19 +787,17 @@ internal readonly struct DocumentOperations
         // whether or not the index happens to exist already: a bad argument is a bad argument.
         var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString, options);
 
-        // Check if index already exists
-        var indexExists = await _connection.ExecuteScalarAsync<int>(
-            SqlGenerator.GenerateCheckIndexExistsSql(),
-            cancellationToken,
-            ("IndexName", finalIndexName)).ConfigureAwait(false);
+        var created = await CreateIndexUnlessIdenticalAsync(
+            finalIndexName,
+            sql,
+            SqlGenerator.GenerateCreateJsonIndexSql(
+                tableName, finalIndexName, pathString, options, ifNotExists: false),
+            cancellationToken).ConfigureAwait(false);
 
-        if (indexExists > 0)
+        if (!created)
         {
             _logger.LogDebug("Index {IndexName} already exists, skipping creation", finalIndexName);
-            return;
         }
-
-        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateCompositeIndexAsync{T}(Expression{Func{T, object}}[], string, IndexOptions, CancellationToken)" />
@@ -866,19 +864,17 @@ internal readonly struct DocumentOperations
         // Generated before the pre-check, for the reason in CreateIndexAsync.
         var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
 
-        // Check if index already exists
-        var indexExists = await _connection.ExecuteScalarAsync<int>(
-            SqlGenerator.GenerateCheckIndexExistsSql(),
-            cancellationToken,
-            ("IndexName", finalIndexName)).ConfigureAwait(false);
+        var created = await CreateIndexUnlessIdenticalAsync(
+            finalIndexName,
+            sql,
+            SqlGenerator.GenerateCreateCompositeJsonIndexSql(
+                tableName, finalIndexName, pathStrings, options, ifNotExists: false),
+            cancellationToken).ConfigureAwait(false);
 
-        if (indexExists > 0)
+        if (!created)
         {
             _logger.LogDebug("Composite index {IndexName} already exists, skipping creation", finalIndexName);
-            return;
         }
-
-        await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc cref="IDocumentOperations.AddVirtualColumnAsync{T}(Expression{Func{T, object}}, string, bool, string, CancellationToken)" />
@@ -920,6 +916,25 @@ internal readonly struct DocumentOperations
         // the generator entirely, so the root would be accepted or rejected by database state.
         var pathString = SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 
+        // The index name and its stored form are derived up front so the definition can be
+        // checked before any DDL runs. The ALTER below commits immediately outside an ambient
+        // transaction, so refusing the index afterwards would leave the generated column added
+        // and the call failed — half applied, and not undoable by the caller catching it. The
+        // preflight sits ahead of the column check rather than between it and the ALTER because
+        // that makes "refuse before any work" true by construction instead of by the
+        // short-circuit happening to skip the ALTER: the call now fails identically whether or
+        // not the column is already there, and in both cases with nothing written.
+        var indexName = createIndex ? $"idx_{tableName}_{columnName}" : null;
+        var expectedIndexSql = indexName is null
+            ? null
+            : SqlGenerator.GenerateCreateColumnIndexSql(tableName, indexName, columnName, ifNotExists: false);
+
+        if (indexName is not null)
+        {
+            await PreflightIndexDefinitionAsync(indexName, expectedIndexSql!, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         // Check if column already exists using SchemaIntrospector
         var introspector = new SchemaIntrospector(_connection);
         var columnExists = await introspector.ColumnExistsAsync(tableName, columnName, cancellationToken)
@@ -936,25 +951,22 @@ internal readonly struct DocumentOperations
             await _connection.ExecuteAsync(addColumnSql, cancellationToken).ConfigureAwait(false);
         }
 
-        // Create index on the virtual column if requested
-        if (createIndex)
+        // Create index on the virtual column if requested. The preflight above already refused a
+        // name held by a different definition; this repeats the check because another connection
+        // can still claim it in between — a residual the store cannot close without wrapping the
+        // whole operation in a transaction, and narrower than the pre-existing state the
+        // preflight covers.
+        if (indexName is not null)
         {
-            var indexName = $"idx_{tableName}_{columnName}";
+            var created = await CreateIndexUnlessIdenticalAsync(
+                indexName,
+                SqlGenerator.GenerateCreateColumnIndexSql(tableName, indexName, columnName),
+                expectedIndexSql!,
+                cancellationToken).ConfigureAwait(false);
 
-            // Check if index already exists
-            var indexExists = await _connection.ExecuteScalarAsync<int>(
-                SqlGenerator.GenerateCheckIndexExistsSql(),
-                cancellationToken,
-                ("IndexName", indexName)).ConfigureAwait(false);
-
-            if (indexExists > 0)
+            if (!created)
             {
                 _logger.LogDebug("Index {IndexName} already exists, skipping creation", indexName);
-            }
-            else
-            {
-                var createIndexSql = SqlGenerator.GenerateCreateColumnIndexSql(tableName, indexName, columnName);
-                await _connection.ExecuteAsync(createIndexSql, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -1841,6 +1853,125 @@ internal readonly struct DocumentOperations
         // Remove special characters and convert to valid index name
         var pathPart = jsonPath.Replace("$.", "").Replace(".", "_");
         return $"idx_{tableName}_{pathPart}";
+    }
+
+    /// <summary>
+    /// Creates an index unless one of that name already carries exactly this definition, and
+    /// refuses the name when it is held by a different one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The look-up and the creation are two statements, so the name can be claimed between them.
+    /// The executed statement keeps <c>IF NOT EXISTS</c> — two callers racing to create the
+    /// <em>same</em> index should both succeed, and absorbing that is correct — but that same
+    /// token makes a create against a <em>differently</em>-defined index of that name a silent
+    /// no-op, which is the failure this whole guard exists to kill, reached by a race instead of
+    /// by a same-process collision. So the stored definition is re-read after the create and
+    /// compared again: an identical concurrent creation is absorbed, a conflicting one is
+    /// refused. Dropping <c>IF NOT EXISTS</c> instead would make the identical race fail, which
+    /// is the wrong trade.
+    /// </para>
+    /// <para>
+    /// A name that is absent on the second read was created and then dropped again by another
+    /// connection. Nothing claims it, so there is nothing to refuse.
+    /// </para>
+    /// </remarks>
+    /// <param name="indexName">The index name</param>
+    /// <param name="createSql">The statement to execute, <c>IF NOT EXISTS</c> included</param>
+    /// <param name="expectedStoredSql">
+    /// The same definition in the form SQLite stores, which is what both comparisons use
+    /// </param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>True when the create was issued, false when an identical index already existed</returns>
+    private async Task<bool> CreateIndexUnlessIdenticalAsync(
+        string indexName,
+        string createSql,
+        string expectedStoredSql,
+        CancellationToken cancellationToken)
+    {
+        var existing = await _connection.QueryFirstStringRowAsync(
+            SqlGenerator.GenerateCheckIndexExistsSql(),
+            cancellationToken,
+            ("IndexName", indexName)).ConfigureAwait(false);
+
+        if (existing.Found)
+        {
+            EnsureIndexDefinitionMatches(indexName, existing.Text, expectedStoredSql);
+            return false;
+        }
+
+        await _connection.ExecuteAsync(createSql, cancellationToken).ConfigureAwait(false);
+
+        var stored = await _connection.QueryFirstStringRowAsync(
+            SqlGenerator.GenerateCheckIndexExistsSql(),
+            cancellationToken,
+            ("IndexName", indexName)).ConfigureAwait(false);
+
+        if (stored.Found)
+        {
+            EnsureIndexDefinitionMatches(indexName, stored.Text, expectedStoredSql);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the definition an index of this name already carries, if any, and refuses the name
+    /// when it is not the one being asked for.
+    /// </summary>
+    /// <remarks>
+    /// Separated from <see cref="CreateIndexUnlessIdenticalAsync"/> so a caller that commits other
+    /// DDL first can refuse <em>before</em> doing so rather than after.
+    /// </remarks>
+    private async Task PreflightIndexDefinitionAsync(
+        string indexName,
+        string expectedStoredSql,
+        CancellationToken cancellationToken)
+    {
+        var existing = await _connection.QueryFirstStringRowAsync(
+            SqlGenerator.GenerateCheckIndexExistsSql(),
+            cancellationToken,
+            ("IndexName", indexName)).ConfigureAwait(false);
+
+        if (existing.Found)
+        {
+            EnsureIndexDefinitionMatches(indexName, existing.Text, expectedStoredSql);
+        }
+    }
+
+    /// <summary>
+    /// Refuses to skip index creation when the index already sitting under that name is not the
+    /// one the caller asked for.
+    /// </summary>
+    /// <remarks>
+    /// The derived-name scheme is not injective — <c>$.A.B</c> and <c>$.A_B</c> flatten alike,
+    /// a composite of <c>["$.A","$.B"]</c> collides with a single <c>$.A.B</c>, and a virtual
+    /// column's <c>idx_{table}_{column}</c> collides with the expression index for the same
+    /// member — so the <c>sqlite_master</c> pre-check would otherwise turn a collision into a
+    /// silently skipped creation, leaving every query over the losing path on a table scan.
+    /// Making the scheme injective would cost a name nobody can read in a SQL client, so the
+    /// residual collision is made loud instead, the way
+    /// <c>TableNameCollisionGuard</c> does for table names.
+    /// </remarks>
+    /// <param name="indexName">The index name both definitions claim</param>
+    /// <param name="storedSql">
+    /// The <c>CREATE INDEX</c> text SQLite has stored for it, or null for an index SQLite
+    /// created itself
+    /// </param>
+    /// <param name="expectedSql">The stored form of the definition the caller asked for</param>
+    private static void EnsureIndexDefinitionMatches(string indexName, string? storedSql, string expectedSql)
+    {
+        if (string.Equals(storedSql, expectedSql, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Index '{indexName}' already exists with a different definition. " +
+            $"Existing: {storedSql ?? "<an internal index with no CREATE statement>"}. " +
+            $"Requested: {expectedSql}. " +
+            "Two different JSON paths can derive the same index name, and changing IndexOptions " +
+            "does not change the name either; drop the existing index before creating this one.");
     }
 
     /// <summary>
