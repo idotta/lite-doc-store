@@ -10,12 +10,16 @@ public interface IMigration
     /// Migrations are applied in ascending order by version.
     /// </summary>
     /// <remarks>
-    /// It must be greater than zero: 0 is the sentinel
+    /// It must be greater than zero. Every non-positive version is rejected with an
+    /// <see cref="ArgumentException"/> when the migration reaches the runner, the same rule
+    /// <see cref="Migration"/>'s constructor already applies, and rejection happens before
+    /// <see cref="MigrationOptions.AllowOutOfOrder"/> is consulted, so that flag does not excuse
+    /// one. Zero is why the floor exists: it is the sentinel
     /// <see cref="IDocumentStore.GetCurrentMigrationVersionAsync"/> returns for "nothing applied"
-    /// and the floor <see cref="IDocumentStore.RollbackToVersionAsync"/> accepts, so a migration at
-    /// or below it would apply but could never be reported or rolled back. A non-positive version
-    /// is rejected with an <see cref="ArgumentException"/> when the migration reaches the runner,
-    /// the same rule <see cref="Migration"/>'s constructor already applies.
+    /// and the lowest target <see cref="IDocumentStore.RollbackToVersionAsync"/> accepts, so a
+    /// migration sitting there was indistinguishable from an empty history and could not be
+    /// rolled back. A negative version is refused by the same guard rather than left to compare
+    /// against that sentinel.
     /// </remarks>
     long Version { get; }
 
