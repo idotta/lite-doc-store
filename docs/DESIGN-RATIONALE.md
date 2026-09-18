@@ -1609,6 +1609,28 @@ The down SQL is not part of what was applied, so editing it must not fail a star
 never verifies checksums at all. Either side null skips the check, which is what keeps pre-checksum history
 usable.
 
+### Why `Version` must be positive
+
+`Migration` has refused `version <= 0` since it was written; a hand-written `IMigration` skipped that.
+Measured, version 0 **applied** (`MigrateAsync` returned 1) while `GetCurrentMigrationVersionAsync` then
+answered `0` — the documented "nothing applied" sentinel — and `RollbackToVersionAsync(0)` returned 0
+without rolling it back, with `-1` refused by the target's own `ThrowIfNegative`. So it was applied,
+unreportable and unrollbackable through the public API. It was not *re-*applied, because the check is
+membership rather than `Version <= MAX(applied)`, so the damage was confined to reporting and rollback.
+
+A negative version was worse in a different way: on an **empty** database `MigrateAsync` threw
+`MigrationOutOfOrderException` comparing against that same 0 sentinel, and under `AllowOutOfOrder` it
+applied and made `GetCurrentMigrationVersionAsync` answer `-1`.
+
+The floor is one `RequirePositiveVersion` helper called from three sites — `Validate`'s per-element loop,
+which covers `MigrateAsync` and `RollbackToVersionAsync`, plus the two internal single-migration entry
+points `ApplyMigrationAsync`/`RollbackMigrationAsync`, which do not go through `Validate` — reporting
+`ArgumentException` against `migrations` or `migration` respectively.
+
+**Behaviour break:** a consumer whose hand-written `IMigration` sits at 0 or below had it applied and now
+gets an `ArgumentException`; the version is unreportable and unrollbackable either way, so the throw is the
+only outcome that says so.
+
 ### Why migrations are not on `IDocumentOperations`
 
 So a migration can never run on a caller's `IDocumentTransaction`: it owns its own transaction. There is no

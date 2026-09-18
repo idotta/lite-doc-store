@@ -9,6 +9,14 @@ public interface IMigration
     /// Gets the unique version identifier for this migration.
     /// Migrations are applied in ascending order by version.
     /// </summary>
+    /// <remarks>
+    /// It must be greater than zero: 0 is the sentinel
+    /// <see cref="IDocumentStore.GetCurrentMigrationVersionAsync"/> returns for "nothing applied"
+    /// and the floor <see cref="IDocumentStore.RollbackToVersionAsync"/> accepts, so a migration at
+    /// or below it would apply but could never be reported or rolled back. A non-positive version
+    /// is rejected with an <see cref="ArgumentException"/> when the migration reaches the runner,
+    /// the same rule <see cref="Migration"/>'s constructor already applies.
+    /// </remarks>
     long Version { get; }
 
     /// <summary>
