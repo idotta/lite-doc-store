@@ -82,11 +82,20 @@ public sealed class NulPathIntegrationTests : IAsyncLifetime
         await Assert.ThrowsAsync<ArgumentException>(
             () => _store.AddVirtualColumnAsync<Bag>(NulPath, "vc_nul"));
 
-        // And nothing was created by any of them.
-        var created = await _store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(
+        // And nothing was created by any of them. The two indexes are schema objects, so
+        // sqlite_master names them — but a generated column is not, so sqlite_master can never
+        // hold 'vc_nul' whether or not AddVirtualColumnAsync added it (measured: 0 rows for a
+        // column that exists). The column needs its own probe, or the virtual-column half of this
+        // assertion tests nothing. It should genuinely be absent: AddVirtualColumnAsync preflights
+        // the index definition ahead of the ALTER precisely so a refusal leaves nothing behind.
+        var createdObjects = await _store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(
             "SELECT count(*) FROM sqlite_master WHERE name IN " +
             "('idx_nul', 'idx_nul_composite', 'vc_nul')", ct));
-        Assert.Equal("0", created);
+        Assert.Equal("0", createdObjects);
+
+        var createdColumn = await _store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(
+            $"SELECT count(*) FROM pragma_table_xinfo('{TableName}') WHERE name = 'vc_nul'", ct));
+        Assert.Equal("0", createdColumn);
     }
 
     // An explicit index name is the shape that used to slip past: auto-naming already refused a NUL

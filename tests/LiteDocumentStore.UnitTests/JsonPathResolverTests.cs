@@ -205,6 +205,40 @@ public class JsonPathResolverTests
         Assert.Contains("U+0000", exception.Message, StringComparison.Ordinal);
     }
 
+    // The recovery advice has to split by reason, because only one of these is this library's own
+    // limitation. A '.' or a '[' needs the $."quoted" rendering that is deferred to C18 Tier 2, and
+    // an apostrophe only breaks the interpolated literal - measured, a bound '$."a.b"' and '$.a''b'
+    // each read their own key, so ExecuteRawAsync really does reach them. A U+0000 member is
+    // reachable by nothing, so sending the caller to raw SQL would be false advice.
+    [Fact]
+    public void Resolve_WithANulName_DoesNotPointTheCallerAtRawSql()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => Resolve<Customer>(x => x.Nul, Reflection()));
+
+        Assert.Contains("No JSON path can address it", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExecuteRawAsync", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Resolve_WithADottedName_KeepsTheRawSqlPointer()
+    {
+        AssertKeepsTheRawSqlPointer(Assert.Throws<ArgumentException>(
+            () => Resolve<Customer>(x => x.Dotted, Reflection())));
+    }
+
+    [Fact]
+    public void Resolve_WithAnApostropheName_KeepsTheRawSqlPointer()
+    {
+        AssertKeepsTheRawSqlPointer(Assert.Throws<ArgumentException>(
+            () => Resolve<Customer>(x => x.Quoted, Reflection())));
+    }
+
+    private static void AssertKeepsTheRawSqlPointer(ArgumentException exception)
+    {
+        Assert.Contains("Index it through ExecuteRawAsync", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("No JSON path can address it", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Resolve_WithNoMetadataForTheType_ThrowsNamingTheType()
     {

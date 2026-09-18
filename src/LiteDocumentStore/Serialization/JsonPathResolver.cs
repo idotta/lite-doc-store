@@ -167,18 +167,31 @@ internal static class JsonPathResolver
         // grammar). A serialized name carrying one of the latter two needs the $."quoted" form,
         // which is not implemented.
         var valid = name.Length > 0;
+        var nul = false;
 
         for (var i = 0; valid && i < name.Length; i++)
         {
-            valid = name[i] != '\0' && name[i] != '\'' && name[i] != '.' && name[i] != '[';
+            nul = name[i] == '\0';
+            valid = !nul && name[i] != '\'' && name[i] != '.' && name[i] != '[';
         }
 
         if (!valid)
         {
+            // The recovery differs by reason, because only one of these is a limitation of this
+            // library. An apostrophe, a '.', a '[' and the empty name are all addressable by a
+            // path SQLite accepts - measured, a bound '$.a''b', '$."a.b"' and '$.""' each read
+            // their own key - so ExecuteRawAsync genuinely reaches them. A U+0000 member is
+            // addressable by nothing: it terminates the string sqlite3_prepare reads, and quoting
+            // does not rescue it either, so pointing the caller at raw SQL would send them
+            // somewhere that cannot work.
+            var recovery = nul
+                ? "No JSON path can address it, in this library or through raw SQL."
+                : "Index it through ExecuteRawAsync.";
+
             throw new ArgumentException(
                 $"'{container.Name}.{memberName}' serializes as '{name}', which is not expressible as a " +
                 "JSON path member (it must be one or more characters, none of which is U+0000, an " +
-                "apostrophe, a '.' or a '['). Index it through ExecuteRawAsync.",
+                $"apostrophe, a '.' or a '['). {recovery}",
                 paramName);
         }
 
