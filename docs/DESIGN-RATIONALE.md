@@ -1215,8 +1215,10 @@ there.
 
 ### Why `columnType` and `columnName` are hoisted with it
 
-The same short-circuit hides the *rest* of `GenerateAddVirtualColumnSql`'s validation, not just the root
-check. Measured on current `main` against a real file database (`DocumentStoreOptions.ForFile`), one store,
+The same short-circuit hides the rest of `GenerateAddVirtualColumnSql`'s validation *over the caller's own
+arguments*, not just the root check — `columnName` and `columnType` as well. Its fourth check, over
+`tableName`, is deliberately left where it is; see below. Measured on current `main` against a real file
+database (`DocumentStoreOptions.ForFile`), one store,
 one table, verbatim:
 
 | call | before | after |
@@ -1256,9 +1258,41 @@ its unit counterpart with *"Assert.Throws() Failure: No exception was thrown"*; 
 line fails `AddVirtualColumnAsync_WithAnUnsupportedType_ThrowsWhetherOrNotTheColumnExists` and
 `..._OnATransactionOverAnExistingColumn_StillThrows` the same way.
 
-Out of scope, deliberately: the index-definition preflight, the derived-index-name scheme (still
-non-injective, still its own job), and any widening of what `ValidateColumnType` accepts — the five SQLite
-storage classes stay as they are.
+### Why `tableName` is *not* hoisted with them
+
+`GenerateAddVirtualColumnSql` validates four things, in this order:
+
+```csharp
+ValidateIdentifier(tableName, nameof(tableName));
+ValidateIdentifier(columnName, nameof(columnName));
+ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
+var validatedType = ValidateColumnType(columnType);
+```
+
+The hoist covers the last three. The first stays in the generator, so on the short-circuit branch a
+non-identifier table name *is* still accepted or rejected by database state. That is deliberate, for three
+measured reasons:
+
+1. **It is a derived name, not an argument.** `AddVirtualColumnAsync<T>` takes a type; the string comes from
+   `_tableNamingConvention.GetTableName<T>()`. Hoisting the check would raise an `ArgumentException` with
+   `ParamName=tableName` against a parameter the caller never supplied — the same mis-attribution the
+   `createIndex: true` row above shows for `indexName`, and the class **C29** addresses directly. Fixing it
+   here would mean picking a `ParamName` before that decision is made.
+2. **The shape needs two deliberate steps to reach.** A custom `ITableNamingConvention` has to return a
+   non-identifier name *and* the table has to have been created by raw SQL under it: every other path
+   through `SqlGenerator` refuses the name, `GenerateCreateTableSql` (`SqlGenerator.cs:76`) included, so a
+   store-created table can never carry one.
+3. **There is no injection surface.** The only statement the table name reaches on that branch is
+   `SchemaIntrospector.GetColumnsAsync` (`Migrations/SchemaIntrospector.cs:95`), which quotes it itself —
+   `"\"" + tableName.Replace("\"", "\"\"") + "\""` — before interpolating it into `PRAGMA table_xinfo(...)`.
+   A `]`, a quote or a `;` in the name cannot break out of that identifier.
+
+So what is left open is a non-idempotence in one doubly-opted-into configuration, not a correctness or a
+safety hole — and closing it belongs with the `ParamName` question, not here.
+
+Out of scope, deliberately: the `tableName` check above, the index-definition preflight, the
+derived-index-name scheme (still non-injective, still its own job), and any widening of what
+`ValidateColumnType` accepts — the five SQLite storage classes stay as they are.
 
 ---
 

@@ -567,6 +567,16 @@ public interface IDocumentOperations
     /// <param name="createIndex">Whether to also index the column</param>
     /// <param name="columnType">The column's SQLite type (default TEXT)</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="jsonPath"/> is not a property access rooted at the lambda
+    /// parameter, when the serializer has no metadata for a type along it, when the member it
+    /// names is not serialized (it is <c>[JsonIgnore]</c>d, has no getter, is
+    /// <c>[JsonExtensionData]</c>, or has no serialized counterpart at all), or when its
+    /// serialized name is not expressible as a JSON path member; and when
+    /// <paramref name="columnName"/> is null, empty, whitespace or not a valid SQL identifier, or
+    /// <paramref name="columnType"/> is not a SQLite storage class — the latter two whether or not
+    /// a column of that name already exists
+    /// </exception>
     /// <exception cref="InvalidOperationException">
     /// Thrown when an index of that name already exists with a different definition. The derived
     /// name is not injective — two distinct JSON paths, or a virtual column and the expression
@@ -592,9 +602,11 @@ public interface IDocumentOperations
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <exception cref="ArgumentException">
     /// Thrown when <paramref name="jsonPath"/> or <paramref name="columnName"/> is null, empty or
-    /// whitespace, when the path is not a valid JSON path or is the bare document root <c>$</c>,
-    /// which would duplicate the whole serialized document into the column, or when
-    /// <paramref name="columnType"/> is not a SQLite storage class
+    /// whitespace, when <paramref name="columnName"/> is not a valid SQL identifier, when the path
+    /// is not a valid JSON path or is the bare document root <c>$</c>, which would duplicate the
+    /// whole serialized document into the column, or when <paramref name="columnType"/> is not a
+    /// SQLite storage class. The column name and the column type are rejected whether or not a
+    /// column of that name already exists
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// Thrown when an index of that name already exists with a different definition. The derived

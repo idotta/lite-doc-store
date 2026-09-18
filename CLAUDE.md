@@ -752,9 +752,10 @@ one test; the `AddVirtualColumnAsync` call site is not redundant, because an exi
 short-circuits past the generator. The expression overloads need nothing, since `JsonPathResolver`
 always appends at least one member. → rationale#index-ddl
 
-**Everything the virtual-column generator validates is hoisted beside that root check**, for the same
-reason: an existing column short-circuits past `GenerateAddVirtualColumnSql` entirely, so `columnType`
-and `columnName` would otherwise be accepted or rejected by *database state*. Measured, the identical
+**The generator's checks over the caller's own arguments are hoisted beside that root check**, for the
+same reason: an existing column short-circuits past `GenerateAddVirtualColumnSql` entirely, so
+`columnName`, the path root and `columnType` would otherwise be accepted or rejected by *database
+state*. Measured, the identical
 call threw `ArgumentException` on a fresh database and was a silent no-op on the second run — no
 injection surface (the bad value never reaches SQL on that branch), but a non-idempotent contract.
 `columnName` reaches it because `SchemaIntrospector.ColumnExistsAsync` compares against the table's
@@ -762,7 +763,17 @@ injection surface (the bad value never reaches SQL on that branch), but a non-id
 `SqlGenerator.ValidateColumnType` and `ValidateIdentifier` are `internal` for this; the rule keeps one
 owner, and the generator's own checks stay. The hoist lives in `DocumentOperations` only — it is
 validation intrinsic to SQL generation, not a plain argument guard, and the transaction boundary needs
-it there. → rationale#index-ddl
+it there.
+
+**The generator's fourth check, `tableName`, is deliberately not hoisted**, so on the short-circuit
+branch a non-identifier table name is still left to database state. It is a *derived* name — the caller
+passes a type, not a string — so hoisting it would raise an `ArgumentException` against a parameter no
+caller passed, which is the mis-attribution class C29 addresses. The shape is only reachable through a
+custom `ITableNamingConvention` returning a non-identifier name **and** a table created by raw SQL under
+it, since every other path through `SqlGenerator` (`GenerateCreateTableSql` included) refuses it. And it
+is not an injection surface: `SchemaIntrospector.GetColumnsAsync` double-quotes the table name and
+doubles any embedded `"` itself before interpolating it into `PRAGMA table_xinfo(...)`.
+→ rationale#index-ddl
 
 ### Blobs
 
