@@ -103,12 +103,12 @@ internal sealed class MigrationRunner
     /// <remarks>
     /// Reads without writing, like <see cref="GetAppliedMigrationsAsync"/>: an absent history
     /// table is answered with 0 rather than created. See the remarks on
-    /// <see cref="ReadHistorySchemaAsync"/>.
+    /// <see cref="HistoryTableExistsAsync"/>. This read never projects the checksum, so it probes
+    /// presence only and does not pay for <see cref="HasChecksumColumnAsync"/>.
     /// </remarks>
     internal async Task<long> GetCurrentVersionAsync(CancellationToken cancellationToken = default)
     {
-        var schema = await ReadHistorySchemaAsync(cancellationToken).ConfigureAwait(false);
-        if (!schema.TablePresent)
+        if (!await HistoryTableExistsAsync(cancellationToken).ConfigureAwait(false))
         {
             _logger.LogDebug("Migration history table is absent; reporting current version 0");
             return 0;
@@ -395,8 +395,7 @@ internal sealed class MigrationRunner
     private readonly record struct HistorySchema(bool TablePresent, bool HasChecksumColumn);
 
     /// <summary>
-    /// Reports whether the history table exists and whether it carries the checksum column,
-    /// issuing no DDL of its own.
+    /// Reports whether the history table exists, issuing no DDL of its own.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -414,13 +413,30 @@ internal sealed class MigrationRunner
     /// write to the history table, so creating and upgrading it is part of their job.
     /// </para>
     /// </remarks>
-    private async Task<HistorySchema> ReadHistorySchemaAsync(CancellationToken cancellationToken)
+    private async Task<bool> HistoryTableExistsAsync(CancellationToken cancellationToken)
     {
         var present = await _connection.ExecuteScalarAsync<long>(
             $"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{MigrationTableName}'",
             cancellationToken).ConfigureAwait(false);
 
-        if (present == 0)
+        return present > 0;
+    }
+
+    /// <summary>
+    /// Reports whether the history table exists and, when it does, whether it carries the
+    /// checksum column — for the one read that projects it.
+    /// </summary>
+    /// <remarks>
+    /// The checksum probe is a second statement, so it is deliberately <b>not</b> folded into
+    /// <see cref="HistoryTableExistsAsync"/>: <see cref="GetCurrentVersionAsync"/> never reads
+    /// <see cref="HistorySchema.HasChecksumColumn"/>, and it is the read a caller polls. Splitting
+    /// the two rather than passing a flag keeps every field of the returned value meaningful —
+    /// a flag would make <c>HasChecksumColumn = false</c> mean "absent" on one call and "not
+    /// asked" on another, which a later reader has no way to tell apart.
+    /// </remarks>
+    private async Task<HistorySchema> ReadHistorySchemaAsync(CancellationToken cancellationToken)
+    {
+        if (!await HistoryTableExistsAsync(cancellationToken).ConfigureAwait(false))
         {
             return new HistorySchema(false, false);
         }

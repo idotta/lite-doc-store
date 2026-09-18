@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -87,5 +88,90 @@ public sealed class MigrationReadPathIntegrationTests : IAsyncLifetime
 
         Assert.True(await ChecksumColumnExistsAsync());
         Assert.Equal(8, await _store.GetCurrentMigrationVersionAsync());
+    }
+
+    /// <summary>
+    /// The version read never projects the checksum, so it must probe presence only: the
+    /// <c>pragma_table_info</c> statement is the applied-migrations read's cost alone. Asserted by
+    /// recording what the store actually issues, through the one seam that exists —
+    /// <see cref="SqliteConnection.CreateCommand"/> is virtual, and a delegating
+    /// <see cref="IConnectionFactory"/> can hand the store a subclass that logs every statement.
+    /// </summary>
+    [Fact]
+    public async Task GetCurrentMigrationVersionAsync_ProbesPresenceOnly_WhileTheAppliedReadAlsoProbesTheColumn()
+    {
+        var factory = new RecordingConnectionFactory();
+        await using var store = await new DocumentStoreFactory(factory)
+            .CreateAsync(DocumentStoreOptions.ForInMemory());
+
+        // A table has to be present, or both reads short-circuit before any column probe.
+        await store.MigrateAsync([new Migration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")]);
+
+        factory.Reset();
+        await store.GetCurrentMigrationVersionAsync();
+        var versionRead = factory.Statements();
+
+        factory.Reset();
+        await store.GetAppliedMigrationsAsync();
+        var appliedRead = factory.Statements();
+
+        Assert.Contains(versionRead, s => s.Contains("sqlite_master", StringComparison.Ordinal));
+        Assert.DoesNotContain(versionRead, s => s.Contains("pragma_table_info", StringComparison.Ordinal));
+        Assert.Contains(appliedRead, s => s.Contains("pragma_table_info", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Keeps every command the store creates on this connection. The commands are kept rather
+    /// than their text, because <see cref="SqliteCommand.CommandText"/> is assigned after
+    /// <see cref="SqliteConnection.CreateCommand"/> has returned — reading it here would record
+    /// nothing but empty strings.
+    /// </summary>
+    private sealed class RecordingConnection(string connectionString, List<SqliteCommand> log)
+        : SqliteConnection(connectionString)
+    {
+        public override SqliteCommand CreateCommand()
+        {
+            var command = base.CreateCommand();
+            log.Add(command);
+            return command;
+        }
+    }
+
+    /// <summary>Hands the store the recording connection; everything else is the default factory's.</summary>
+    private sealed class RecordingConnectionFactory : IConnectionFactory
+    {
+        private readonly DefaultConnectionFactory _inner = new();
+        private readonly List<SqliteCommand> _log = [];
+
+        public void Reset() => _log.Clear();
+
+        public IReadOnlyList<string> Statements() => [.. _log.Select(c => c.CommandText ?? string.Empty)];
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options)
+        {
+            var connection = new RecordingConnection(options.ConnectionString, _log);
+            connection.Open();
+            _inner.ConfigureConnection(connection, options);
+            return connection;
+        }
+
+        public async Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            var connection = new RecordingConnection(options.ConnectionString, _log);
+            await connection.OpenAsync(cancellationToken);
+            _inner.ConfigureConnection(connection, options);
+            return connection;
+        }
+
+        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
+            _inner.ConfigureConnection(connection, options);
+
+        public Task ConfigureConnectionAsync(
+            SqliteConnection connection,
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) =>
+            _inner.ConfigureConnectionAsync(connection, options, cancellationToken);
     }
 }
