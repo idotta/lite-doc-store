@@ -755,9 +755,9 @@ always appends at least one member. → rationale#index-ddl
 **The generator's checks over the caller's own arguments are hoisted beside that root check**, for the
 same reason: an existing column short-circuits past `GenerateAddVirtualColumnSql` entirely, so
 `columnName`, the path root and `columnType` would otherwise be accepted or rejected by *database
-state*. Measured, the identical
-call threw `ArgumentException` on a fresh database and was a silent no-op on the second run — no
-injection surface (the bad value never reaches SQL on that branch), but a non-idempotent contract.
+state*. Measured, the identical call threw `ArgumentException` on a fresh database and was a silent
+no-op on the second run — no injection surface (the bad value never reaches SQL on that branch), but a
+non-idempotent contract.
 `columnName` reaches it because `SchemaIntrospector.ColumnExistsAsync` compares against the table's
 *real* columns, so one added by raw SQL under a name `ValidateIdentifier` rejects is reported present.
 `SqlGenerator.ValidateColumnType` and `ValidateIdentifier` are `internal` for this; the rule keeps one
