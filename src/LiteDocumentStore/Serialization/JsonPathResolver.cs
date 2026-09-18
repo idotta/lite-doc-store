@@ -159,19 +159,39 @@ internal static class JsonPathResolver
     /// </summary>
     private static string ValidPathMember(string name, Type container, string memberName, string paramName)
     {
-        var valid = name.Length > 0 && (char.IsAsciiLetter(name[0]) || name[0] == '_');
+        // The rule the grammar states: one or more characters, none of which is U+0000 (it
+        // terminates the SQL string sqlite3_prepare reads, truncating the whole statement; no
+        // quoting form can address such a key, so it is rejected permanently rather than deferred
+        // to C18 Tier 2), an apostrophe (the injection boundary - it would close the single-quoted
+        // SQL literal the path is written into), a '.' or a '[' (both structural in the path
+        // grammar). A serialized name carrying one of the latter two needs the $."quoted" form,
+        // which is not implemented.
+        var valid = name.Length > 0;
+        var nul = false;
 
-        for (var i = 1; valid && i < name.Length; i++)
+        for (var i = 0; valid && i < name.Length; i++)
         {
-            valid = char.IsAsciiLetterOrDigit(name[i]) || name[i] == '_';
+            nul = name[i] == '\0';
+            valid = !nul && name[i] != '\'' && name[i] != '.' && name[i] != '[';
         }
 
         if (!valid)
         {
+            // The recovery differs by reason, because only one of these is a limitation of this
+            // library. An apostrophe, a '.', a '[' and the empty name are all addressable by a
+            // path SQLite accepts - measured, a bound '$.a''b', '$."a.b"' and '$.""' each read
+            // their own key - so ExecuteRawAsync genuinely reaches them. A U+0000 member is
+            // addressable by nothing: it terminates the string sqlite3_prepare reads, and quoting
+            // does not rescue it either, so pointing the caller at raw SQL would send them
+            // somewhere that cannot work.
+            var recovery = nul
+                ? "No JSON path can address it, in this library or through raw SQL."
+                : "Index it through ExecuteRawAsync.";
+
             throw new ArgumentException(
                 $"'{container.Name}.{memberName}' serializes as '{name}', which is not expressible as a " +
-                "JSON path member (only ASCII letters, digits and underscores are supported, and the first " +
-                "character cannot be a digit). Index it through ExecuteRawAsync.",
+                "JSON path member (it must be one or more characters, none of which is U+0000, an " +
+                $"apostrophe, a '.' or a '['). {recovery}",
                 paramName);
         }
 

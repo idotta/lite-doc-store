@@ -1348,16 +1348,35 @@ internal static class SqlGenerator
     // Returns the input so calls can be inlined into interpolation.
     private static string ValidateIdentifier(string identifier, string paramName)
     {
+        var error = IdentifierError(identifier);
+        if (error is not null)
+        {
+            throw new ArgumentException(error, paramName);
+        }
+
+        return identifier;
+    }
+
+    /// <summary>
+    /// The non-throwing form of the identifier rule, for a caller that <em>derives</em> a name rather
+    /// than receiving one: <c>DocumentOperations.RequireDerivableName</c> screens the index name it is
+    /// about to derive from a JSON path, and has to report the failure against the path the caller
+    /// actually passed. It shares <see cref="IdentifierError" /> with
+    /// <see cref="ValidateIdentifier" /> so the identifier rule keeps one owner.
+    /// </summary>
+    internal static bool IsValidIdentifier(string identifier) => IdentifierError(identifier) is null;
+
+    // Null when the identifier is valid; otherwise the message describing why it is not.
+    private static string? IdentifierError(string identifier)
+    {
         if (string.IsNullOrEmpty(identifier))
         {
-            throw new ArgumentException("A SQL identifier cannot be null or empty.", paramName);
+            return "A SQL identifier cannot be null or empty.";
         }
 
         if (!char.IsAsciiLetter(identifier[0]) && identifier[0] != '_')
         {
-            throw new ArgumentException(
-                $"Invalid SQL identifier '{identifier}': it must start with an ASCII letter or an underscore.",
-                paramName);
+            return $"Invalid SQL identifier '{identifier}': it must start with an ASCII letter or an underscore.";
         }
 
         for (var i = 1; i < identifier.Length; i++)
@@ -1365,16 +1384,55 @@ internal static class SqlGenerator
             var c = identifier[i];
             if (!char.IsAsciiLetterOrDigit(c) && c != '_')
             {
-                throw new ArgumentException(
-                    $"Invalid SQL identifier '{identifier}': only ASCII letters, digits and underscores are supported.",
-                    paramName);
+                return $"Invalid SQL identifier '{identifier}': only ASCII letters, digits and underscores are supported.";
             }
         }
 
-        return identifier;
+        return null;
     }
 
-    // Grammar: $(.member|[index])*  — a ' in the path would close the SQL literal it lands in.
+    // Grammar: $(.member|[index])*, where a member is one or more characters, none of which is
+    // U+0000, an apostrophe, a '.' or a '['.
+    //
+    // That mirrors SQLite's own unquoted path label, which terminates only at '.' or '['. Measured
+    // against 3.53.3 in json_extract, jsonb_set, jsonb_remove and json_each, all unquoted:
+    // $.full-name, "$.a b", an accented key, an emoji key, $.2024, $.a$b, $.a]b and keys carrying a
+    // newline or a tab all resolve, and an expression index over such a path is still used
+    // (EXPLAIN QUERY PLAN -> SEARCH t USING INDEX ix (<expr>=?)). Identifier-shaped members were the
+    // old rule and were far narrower than SQLite allows: JsonNamingPolicy.KebabCaseLower turns
+    // "FullName" into "full-name", so a store on the BCL's own kebab-case policy could use no typed
+    // query, index or patch API at all.
+    //
+    // The apostrophe stays rejected, and is the injection boundary: the path is interpolated into a
+    // single-quoted SQL literal (json_extract(data, '...')), which an apostrophe would close. It is
+    // deliberately *not* supported by doubling - SQLite only matches a query against an expression
+    // index when the indexed expression appears literally, so the emitted text must stay
+    // byte-identical to what CreateIndexAsync wrote, and a rewrite would break that.
+    //
+    // U+0000 is rejected for a different reason, and permanently. sqlite3_prepare reads a
+    // NUL-terminated string, so a NUL in an interpolated path truncates the whole SQL statement at
+    // that byte. The path always sits immediately after an opening apostrophe, so the truncated
+    // prefix always ends inside an unterminated literal and SQLite always answers SQLITE_ERROR
+    // "unrecognized token" - measured across every generator that interpolates a path (query
+    // predicates, IN, json_each, ordering, count, exists, patch set, patch remove, create index,
+    // create composite index, index filter terms, query-by-path, add virtual column): none of the
+    // truncated prefixes is valid SQL. So the failure is loud, but it is a raw SqliteException
+    // leaked from six typed APIs carrying a truncated, misleading message, for an argument the
+    // validator should refuse up front - the same class as the jsonb_remove(data, '$') NOT NULL
+    // leak the root guard below closes. (Bound as a parameter, which this library never does, the
+    // quirk is worse and silent: json_extract(doc, @p) with "$.a\0b" reads key "a", and jsonb_set /
+    // jsonb_remove write and remove it. Worth knowing when binding a path through ExecuteRawAsync.)
+    //
+    // U+0000 is NOT a Tier 2 shape, and quoting cannot rescue it - measured both ways: interpolated
+    // $."a\0b" fails with "unrecognized token", bound $."a\0b" fails with "bad JSON path". Unquoted,
+    // $."quoted" and $['bracket-quoted'] all fail, so such a key is unaddressable by every form.
+    // json_each does list it, so one can exist in a stored document and simply cannot be reached.
+    //
+    // '.' and '[' stay rejected inside a member because they are structural in this grammar, and the
+    // empty member stays rejected because SQLite errors on it. Those three shapes - a key containing
+    // '.', a key containing '[', and the empty key - need the $."quoted" form, which is not
+    // implemented (C18 Tier 2). A dotted key is the reason it is worth implementing rather than
+    // documenting: measured, jsonb_set and jsonb_remove silently no-op on one instead of failing.
     //
     // The bare root "$" is grammatically valid; whether it is *usable* splits by what the caller
     // does with the value it extracts, which is what allowRoot selects:
@@ -1422,16 +1480,35 @@ internal static class SqlGenerator
             if (jsonPath[i] == '.')
             {
                 i++;
-                if (i >= jsonPath.Length || (!char.IsAsciiLetter(jsonPath[i]) && jsonPath[i] != '_'))
+                var memberStart = i;
+                while (i < jsonPath.Length && jsonPath[i] != '.' && jsonPath[i] != '[')
                 {
-                    throw new ArgumentException(
-                        $"Invalid JSON path '{jsonPath}': a '.' must be followed by a member name starting with an ASCII letter or an underscore.",
-                        paramName);
+                    if (jsonPath[i] == '\'')
+                    {
+                        throw new ArgumentException(
+                            $"Invalid JSON path '{jsonPath}': a member name cannot contain an apostrophe, " +
+                            "which would close the SQL literal the path is written into.",
+                            paramName);
+                    }
+
+                    if (jsonPath[i] == '\0')
+                    {
+                        throw new ArgumentException(
+                            $"Invalid JSON path '{jsonPath}': a member name cannot contain U+0000, which " +
+                            "truncates the SQL statement the path is written into. No quoting form can " +
+                            "address such a key.",
+                            paramName);
+                    }
+
+                    i++;
                 }
 
-                while (i < jsonPath.Length && (char.IsAsciiLetterOrDigit(jsonPath[i]) || jsonPath[i] == '_'))
+                if (i == memberStart)
                 {
-                    i++;
+                    throw new ArgumentException(
+                        $"Invalid JSON path '{jsonPath}': a '.' must be followed by a member name of one or " +
+                        "more characters, none of which is U+0000, an apostrophe, a '.' or a '['.",
+                        paramName);
                 }
             }
             else if (jsonPath[i] == '[')
@@ -1455,7 +1532,8 @@ internal static class SqlGenerator
             else
             {
                 throw new ArgumentException(
-                    $"Invalid JSON path '{jsonPath}': only '.member' and '[index]' segments are supported.",
+                    $"Invalid JSON path '{jsonPath}': only '.member' and '[index]' segments are supported, " +
+                    "so every segment after the '$' must begin with a '.' or a '['.",
                     paramName);
             }
         }
