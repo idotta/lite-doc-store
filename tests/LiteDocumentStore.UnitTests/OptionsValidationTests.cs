@@ -162,6 +162,67 @@ public sealed class OptionsValidationTests
         Assert.Contains("private in-memory database", ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// An empty data source names a private temporary database that SQLite deletes when the
+    /// connection closes, so a pool of them is one database per connection. None of these shapes
+    /// is in-memory, so the rejection has to stand on its own rather than behind that
+    /// classification.
+    /// </summary>
+    /// <remarks>
+    /// Measured before the split, at <c>MaxPoolSize = 4</c> with four concurrent leases each
+    /// re-issuing the idempotent DDL: four documents written, one read back, no exception, no log
+    /// and <c>IsHealthyAsync</c> still true.
+    /// </remarks>
+    [Theory]
+    // An empty and an absent Data Source are indistinguishable — the builder reports "" for both.
+    [InlineData("Data Source=")]
+    [InlineData("Cache=Shared")]
+    // The URI spelling, with and without a query behind it.
+    [InlineData("Data Source=file:")]
+    [InlineData("Data Source=file:?cache=shared")]
+    // A raw path that is not empty but decodes to one, with no mode stated: a private temp file
+    // database rather than a private in-memory one, which is why the in-memory branch misses it.
+    [InlineData("Data Source=file:%00?cache=shared")]
+    [InlineData("Data Source=file:%00x?cache=shared")]
+    public void Validate_WithAnEmptyDataSource_Throws(string connectionString)
+    {
+        var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
+
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Contains("empty data source", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(nameof(DocumentStoreOptions.ConnectionString), ex.ParamName);
+    }
+
+    /// <summary>
+    /// WAL is the store's default, and an empty data source is refused whatever it is set to: the
+    /// configuration cannot be pooled at all, so reporting a journal mode would understate it.
+    /// This is why the WAL rejection needed no equivalent split.
+    /// </summary>
+    [Fact]
+    public void Validate_WithAnEmptyDataSourceAndWalMode_ThrowsAboutTheDataSource()
+    {
+        var options = new DocumentStoreOptions("Data Source=") { EnableWalMode = true };
+
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Contains("empty data source", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("WAL mode", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The in-memory spellings of an empty filename keep reporting themselves as private
+    /// in-memory, which is the more specific diagnosis and what every existing caller is told.
+    /// </summary>
+    [Theory]
+    [InlineData("Data Source=file:?mode=memory&cache=shared")]
+    [InlineData("Mode=Memory;Cache=Shared")]
+    public void Validate_WithAnEmptyInMemoryFilename_StillReportsItAsPrivateInMemory(string connectionString)
+    {
+        var options = new DocumentStoreOptions(connectionString) { EnableWalMode = false };
+
+        var ex = Assert.Throws<ArgumentException>(options.Validate);
+        Assert.Contains("private in-memory database", ex.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("Data Source=lds-wal-memory;Mode=Memory;Cache=Shared")]
     [InlineData("Data Source=file:lds-wal-memory?mode=memory&cache=shared")]
