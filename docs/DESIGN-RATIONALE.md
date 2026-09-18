@@ -578,6 +578,10 @@ it. The resolver-less half of the constructor check is JIT-reachable and is pinn
 `DocumentStoreTests.Constructor_WithSerializerOptionsCarryingNoResolver_ThrowsNamingSerializerOptions`;
 the constructor's AOT-null half is covered by inspection only.
 
+The example is also its own counterexample for how `IsDynamicCodeSupported` is decided: `PublishAot`
+writes the `DynamicCodeSupport` switch into the project's runtimeconfig, so a plain `dotnet run` of it
+already reports the property **false**, with no native publish involved.
+
 ---
 
 ## json-metadata

@@ -352,16 +352,19 @@ re-check: `ReturnCore`'s clean branch plus `Initialize`/`InitializeAsync`. `Disc
 → rationale#connection-model
 
 `_disposed` is an `int` flipped with `Interlocked.Exchange`, so double-dispose is atomic and every
-operation guard (`ThrowIfDisposed`) sees it. The DI registration is **Singleton only** — a thread-safe
-store with its own pool has nothing for a scoped registration to isolate.
+operation guard (`ThrowIfDisposed`) sees it. The DI registration is **Singleton only** — the
+`ServiceLifetime` parameter is gone, because a thread-safe store with its own pool has nothing for a
+scoped registration to isolate.
 
 **SQLite version guard.** `jsonb()` shipped in SQLite 3.45.0, so `SqliteConnectionPool` runs
 `SqliteVersionGuard.EnsureSupported(Async)` on **every physical connection as it is opened** and throws
 `UnsupportedSqliteVersionException` (carrying `ActualVersion` + `MinimumVersion`) instead of letting the
-first write fail with `no such function: jsonb`. It lives in the pool, not in
-`DefaultConnectionFactory`, because `IConnectionFactory` is public — a consumer-supplied factory would
-otherwise open unguarded connections. Same reason for `SqlitePageSizeGuard`. The result is deliberately
-**not cached**. `IsHealthyAsync` re-checks through the same guard and maps the exception to `false`.
+first write fail with `no such function: jsonb`. The async path reads the version through
+`SchemaIntrospector.GetSqliteVersionAsync`, the sync path queries `SELECT sqlite_version()` directly —
+the introspector is async-only. It lives in the pool, not in `DefaultConnectionFactory`, because
+`IConnectionFactory` is public — a consumer-supplied factory would otherwise open unguarded
+connections. Same reason for `SqlitePageSizeGuard`. The result is deliberately **not cached**.
+`IsHealthyAsync` re-checks through the same guard and maps the exception to `false` at warning level.
 
 ### Options validation and the snapshot
 
@@ -425,9 +428,10 @@ silence: a store that cannot honour an option now refuses to open rather than pr
 - **`PRAGMA page_size` must precede `journal_mode`.** SQLite refuses to change the page size of a
   database in WAL mode, so the old order made `PageSize` a no-op *even on a brand-new file*. On an
   *existing* database the PRAGMA is ignored regardless of order, so `SqlitePageSizeGuard` reads the
-  value back on every physical connection and throws `IncompatiblePageSizeException`. **`PageSize = 0`
-  is the escape hatch** — no statement, no check, keep whatever the database has. Converting an existing
-  database needs a `VACUUM`, and that only works outside WAL mode.
+  value back on every physical connection and throws `IncompatiblePageSizeException` (carrying
+  `RequestedPageSize`/`ActualPageSize`). **`PageSize = 0` is the escape hatch** — no statement, no
+  check, keep whatever the database has. Converting an existing database needs a `VACUUM`, and that
+  only works outside WAL mode.
 - **`EnableForeignKeys = false` did nothing.** The provider opens connections with `foreign_keys`
   already ON, so both states are now stated: `PRAGMA foreign_keys = ON|OFF`.
 - **WAL mode on an in-memory database is refused.** `PRAGMA journal_mode = WAL` answers `memory` there —
@@ -578,9 +582,11 @@ unique constraint accepted every duplicate, silently. → rationale#json-path-re
 
 The derivation refuses rather than guessing — `ArgumentException` when `SerializerOptions` has no
 metadata for a type along the path, when the member has no serialized counterpart, when it is
-`[JsonIgnore]`d, when it is `[JsonExtensionData]` (its entries serialize into the *containing* object,
-so the member's own name appears in no document), and when the serialized name is not expressible as a
-JSON path — reported against the member that produced it. The chain must bottom out at the **lambda's
+`[JsonIgnore]`d, when it is `[JsonExtensionData]` (tested as `JsonPropertyInfo.IsExtensionData`: its
+entries serialize into the *containing* object, so the member's own name appears in no document), and
+when the serialized name is not expressible as a JSON path — reported against the member that produced
+it. The chain must bottom out at the **lambda's own parameter**; `Convert` nodes are unwrapped at every
+hop, so `x => ((Base)x).Name` still resolves.
 own parameter**; `Convert` nodes are unwrapped at every hop, so `x => ((Base)x).Name` still resolves.
 
 One consequence: on a store whose names diverge, the derived index name changes with the path, so an
@@ -641,9 +647,11 @@ spends two function arguments while binding one parameter, and a remove binds no
 `MaxPatchSetOperations` (499) and `MaxPatchRemoveOperations` (999) are independent and throw at
 generation; integration tests execute a patch at each cap against real SQLite.
 
-Values are scalars only, normalized through `DocumentQuery<T>.ValidateValue`/`NormalizeBoundValue` (both
-`internal` for this), so a patched field still matches a query over it. Three types travel as JSON
-*text* wrapped in `json(@pN)` — the `AsJson` flag on `PatchOperation`: `bool`, `decimal`, and a `ulong`
+Values are scalars only — so a patch needs no `JsonTypeInfo<TValue>`, which a consumer's
+source-generated context has no reason to include for an `int` — and are normalized through
+`DocumentQuery<T>.ValidateValue`/`NormalizeBoundValue` (both `internal` for this), so a patched field
+still matches a query over it. Three types travel as JSON *text* wrapped in `json(@pN)` — the `AsJson`
+flag on `PatchOperation`: `bool`, `decimal`, and a `ulong`
 above `long.MaxValue`. `Set(path, null)` binds SQL NULL, which `jsonb_set` writes as JSON null — the
 field stays present, unlike `Remove`. Nested objects stay an `ExecuteRawAsync` job.
 
@@ -694,10 +702,12 @@ parameters in a partial index, so a value-comparing filter would have to inline 
 injection surface. Richer filters stay an `ExecuteRawAsync` job.
 
 `SqlGenerator.BuildCreateIndexSql` is the one place the DDL is assembled, and it validates the two
-interpolated pieces — the collation name (`ValidateIdentifier`) and the filter paths
-(`ValidateJsonPath`, re-checked even though `IndexFilter` validates at build time). Default options emit
-exactly the statement the generators emitted before options existed. On a composite index the collation
-and direction apply to **every** column; mixed per-column direction stays raw SQL.
+interpolated pieces — the collation name (`ValidateIdentifier`, so custom collations work but `]` and
+quotes do not) and the filter paths (`ValidateJsonPath`, re-checked even though `IndexFilter` validates
+at build time). Default options emit exactly the statement the generators emitted before options
+existed: no `UNIQUE`, no `COLLATE`, no direction (ascending is SQLite's own default, so no `ASC` is
+written) and no `WHERE`. On a composite index the collation and direction apply to **every** column;
+mixed per-column direction stays raw SQL.
 
 **The `sqlite_master` name pre-check compares definitions rather than skipping blindly.** Identical
 text — the ordinary idempotent re-create — is a Debug-logged skip; a difference is an
@@ -862,7 +872,8 @@ variant), and blob ids carry no secondary indexes, so listing is ordered by id a
 holds **one rented connection** for its lifetime; `CommitAsync`/`RollbackAsync` finish it, and disposing
 without committing rolls back. `ExecuteInTransactionAsync(Func<IDocumentTransaction, Task>)` is the
 ergonomic wrapper. Every operation goes through `ActiveTransaction()` first, so a call made after
-commit/rollback/disposal throws instead of running on a connection the pool has already re-leased.
+commit/rollback/disposal throws `InvalidOperationException` — or `ObjectDisposedException` once
+disposed — instead of running on a connection the pool has already re-leased.
 
 **The transaction object is the unit of work**: operations must be invoked **on it**, because operations
 invoked on the store rent their own connection and commit independently. That is the point of the design
@@ -890,11 +901,11 @@ an opt-in retry on `ExecuteInTransactionAsync` alone with a documented idempoten
 
 **Batch chunking.** A batch is split into chunks of `SqlGenerator.MaxBatchItemsPerStatement` (500) —
 an upsert binds 2N parameters, so one unbounded statement blew past `SQLITE_MAX_VARIABLE_NUMBER` (32766)
-at ~16383 items. `GenerateBulkUpsertSql`/`GenerateBulkDeleteSql` throw above the cap so the unbounded
-shape cannot be reintroduced. `DocumentOperations.RunBatchAsync` runs the loop and sums affected rows; a
-multi-chunk batch is wrapped in a transaction so it stays all-or-nothing, a single-chunk batch is left
-alone. `DocumentOperations` takes an `inAmbientTransaction` flag — explicit rather than probed off
-`SqliteConnection`, which does not expose its pending transaction publicly.
+at ~16383 items. `GenerateBulkUpsertSql`/`GenerateBulkDeleteSql` throw `ArgumentOutOfRangeException`
+above the cap so the unbounded shape cannot be reintroduced. `DocumentOperations.RunBatchAsync` runs the
+loop and sums affected rows; a multi-chunk batch is wrapped in a transaction so it stays all-or-nothing,
+a single-chunk batch is left alone. `DocumentOperations` takes an `inAmbientTransaction` flag — explicit
+rather than probed off `SqliteConnection`, which does not expose its pending transaction publicly.
 
 Every item is validated **and serialized** before the first chunk runs, so a bad item anywhere throws
 with nothing written. `UpsertManyAsync` rejects duplicate ids naming the id and both indices; SQLite
@@ -902,9 +913,11 @@ would otherwise fail the whole statement with the opaque `ON CONFLICT DO UPDATE 
 row a second time`. `DeleteManyAsync` drops repeats silently — an `id IN (...)` list is unambiguous.
 
 `GetManyAsync<T>` borrows that 500-item chunk size but runs its own loop rather than `RunBatchAsync`,
-which sums affected-row counts a read never produces and opens a transaction a read does not need. The
-result is an `IReadOnlyDictionary<string, T>` and not a list precisely so the caller can tell which ids
-were missing: a missing id is an absent key, never a null value. An empty input short-circuits without a
+which sums affected-row counts a read never produces and opens a transaction a read does not need.
+`SqlGenerator.GenerateBulkGetSql` reuses the `id IN (@Id0..@IdN)` shape and the caps of
+`GenerateBulkDeleteSql`, and the batch writers bind explicit `@Id{i}`/`@Data{i}` parameters. The result
+is an `IReadOnlyDictionary<string, T>` and not a list precisely so the caller can tell which ids were
+missing: a missing id is an absent key, never a null value. An empty input short-circuits without a
 round trip. Because a large read spans several statements, it is a point-in-time snapshot only when the
 call is made on a transaction.
 
