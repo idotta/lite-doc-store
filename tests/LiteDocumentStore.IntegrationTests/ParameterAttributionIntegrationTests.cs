@@ -127,6 +127,28 @@ public sealed class ParameterAttributionIntegrationTests : IAsyncLifetime
         AssertBlamesTheConvention(await Record.ExceptionAsync(
             () => _badlyNamedStore.AddVirtualColumnAsync<Gadget>("$.Name", "name_col", createIndex: true)));
 
+    // The existing-column branch is the one shape in this PR that used to *work*: the short-circuit
+    // returned before the generator ever saw the table name, so the same call threw on a fresh
+    // database and no-opped once the column was there. It needs its own fact, because the fresh-branch
+    // fact above reverts to an ArgumentException while this one reverts to no exception at all.
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_OverAColumnAddedByRawSql_NoLongerNoOps()
+    {
+        // Only raw SQL can create a table under a name the store itself refuses to write.
+        await _badlyNamedStore.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await connection.ExecuteAsync(
+                "CREATE TABLE [bad-name] (id TEXT PRIMARY KEY, data BLOB NOT NULL, " +
+                "version INTEGER NOT NULL DEFAULT 1, name_col TEXT)",
+                ct);
+            return 0;
+        });
+
+        AssertBlamesTheConvention(await Record.ExceptionAsync(
+            () => _badlyNamedStore.AddVirtualColumnAsync<Gadget>("$.Name", "name_col", createIndex: false)));
+    }
+
     // The guard sits at the one point every operation passes, so the refusal is not specific to
     // the DDL: the store never opens a table under a name it cannot write into a statement.
 

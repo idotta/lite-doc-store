@@ -220,7 +220,9 @@ invent one, which is the mis-attribution class this rule exists to end. Only a c
 reach it — the default fold throws `NotSupportedException` instead of producing such a name. Closing it
 here makes two downstream blames correct rather than patching them: `RequireDerivableName` can honestly
 blame the caller's path, since `idx_` joined to two identifiers is an identifier, and no generator's
-`tableName` check is reachable through the typed surface any more. → rationale#table-naming
+`tableName` check is reachable through the typed surface any more. The break reaches
+`GetTableName<T>()` too, which handed such a name back silently and now throws, so a consumer who was
+bracket-quoting it themselves inside `ExecuteRawAsync` loses that. → rationale#table-naming
 
 **Types the fold cannot name throw `NotSupportedException`** naming the type (and, when reached through
 a generic argument, the requested type as well) rather than producing a name the identifier validator

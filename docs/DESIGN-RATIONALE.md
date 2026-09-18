@@ -217,7 +217,10 @@ statement.
 Cost: one `IsValidIdentifier` scan of a short name per `GetTableName` call, beside the dictionary hit the
 guard already paid. Behaviour break, custom conventions only: calls that used to fail with an
 `ArgumentException` now fail with an `InvalidOperationException`, and a previously-silent no-op
-(`AddVirtualColumnAsync` over an existing column) now throws.
+(`AddVirtualColumnAsync` over an existing column) now throws. It reaches one member that genuinely
+worked before: `IDocumentOperations.GetTableName<T>()` returned the non-identifier name silently — it is
+documented as the feed for the raw-SQL escape hatch, so a consumer bracket-quoting it themselves in
+`ExecuteRawAsync` had a working setup — and now throws like every other operation.
 
 ## connection-model
 
@@ -1385,8 +1388,11 @@ The fix is not a fourth hoist: `TableNameCollisionGuard` screens the convention-
 call cannot reach the column check at all and the generator's own `tableName` check becomes unreachable
 through the typed surface. The inline `idx_{tableName}_{columnName}` derivation is covered by the same
 screening — both halves are validated before it is built, so it cannot produce a non-identifier name.
-`ParameterAttributionIntegrationTests` pins all three rows; reverting the screening turns each back into
-the `ArgumentException` above, quoted in the unit's revert table.
+`ParameterAttributionIntegrationTests` pins all three rows. Reverting the screening turns the first and
+third back into the `ArgumentException` above, and the middle one back into the **silent no-op** — which
+is why that row needs a test of its own: no other fact in the suite exercises the existing-column branch,
+and a revert there produces no exception to assert against. Both failures are quoted in the unit's revert
+table.
 
 ## blobs
 
