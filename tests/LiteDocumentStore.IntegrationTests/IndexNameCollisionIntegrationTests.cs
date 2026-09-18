@@ -141,6 +141,43 @@ public sealed class IndexNameCollisionIntegrationTests : IAsyncLifetime
         Assert.Equal(before, await IndexDdlAsync($"idx_{Table}_Email"));
     }
 
+    // --- AddVirtualColumnAsync refuses before it commits anything -------------------------
+
+    private Task<long> ColumnCountAsync(string columnName) =>
+        _store.ExecuteRawAsync((connection, ct) => connection.ExecuteScalarAsync<long>(
+            $"SELECT COUNT(*) FROM pragma_table_xinfo('{Table}') WHERE name = @Name",
+            ct,
+            ("Name", columnName)));
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenAnExpressionIndexHoldsTheName_AddsNoColumn()
+    {
+        // The ALTER commits immediately outside an ambient transaction, so refusing the index
+        // after it would leave the call half applied — the column added and the call failed.
+        await _store.CreateIndexAsync<Member>(x => x.Email!);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.AddVirtualColumnAsync<Member>("$.Email", "Email", createIndex: true));
+
+        Assert.Equal(0, await ColumnCountAsync("Email"));
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenTheColumnExistsAndAnIndexHoldsTheName_Throws()
+    {
+        // The existing-column short-circuit skips the ALTER, so this path never wrote anything
+        // either way — it must still refuse, and refuse identically.
+        await _store.AddVirtualColumnAsync<Member>("$.Email", "Email", createIndex: false);
+        await _store.DropIndexAsync($"idx_{Table}_Email");
+        await _store.CreateIndexAsync<Member>("$.Age", $"idx_{Table}_Email");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.AddVirtualColumnAsync<Member>("$.Email", "Email", createIndex: true));
+
+        Assert.Equal(1, await ColumnCountAsync("Email"));
+        Assert.Contains("json_extract(data, '$.Age')", exception.Message, StringComparison.Ordinal);
+    }
+
     // --- The index SQLite made for itself, which has no CREATE statement to compare -------
 
     [Fact]
