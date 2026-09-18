@@ -57,6 +57,158 @@ internal readonly struct DocumentOperations
         _inAmbientTransaction = inAmbientTransaction;
     }
 
+    // ---- Argument validation -------------------------------------------------------------
+    //
+    // These run at both boundaries, and the duplication is the point. DocumentStoreTransaction
+    // calls straight into the operations below, so the guards have to stay here; DocumentStore
+    // rents a pooled connection first, so a guard that only lived here would make a bad argument
+    // wait for a free connection — on a saturated pool that surfaces as a TimeoutException
+    // blaming undisposed transactions, or as an OperationCanceledException, instead of the
+    // ArgumentException the caller earned. Sharing one helper per guard is what keeps the two
+    // copies from drifting. Every one of them is pure and idempotent, so running it twice on the
+    // store path costs nothing but the check.
+
+    /// <summary>Rejects a null, empty or whitespace document or blob id.</summary>
+    internal static void ValidateId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
+        }
+    }
+
+    /// <summary>Rejects a negative expected version on a compare-and-swap operation.</summary>
+    internal static void ValidateExpectedVersion(long expectedVersion) =>
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+
+    /// <summary>Rejects a null, empty or whitespace generated-column name.</summary>
+    internal static void ValidateColumnName(string? columnName)
+    {
+        if (string.IsNullOrWhiteSpace(columnName))
+        {
+            throw new ArgumentException("Column name cannot be null or empty.", nameof(columnName));
+        }
+    }
+
+    /// <summary>Rejects a null, empty or whitespace index name.</summary>
+    internal static void ValidateIndexName(string? indexName)
+    {
+        if (string.IsNullOrWhiteSpace(indexName))
+        {
+            throw new ArgumentException("Index name cannot be null or empty.", nameof(indexName));
+        }
+    }
+
+    /// <summary>Rejects a blank JSON path argument on the DDL overloads.</summary>
+    internal static void ValidateJsonPathArgument(string? jsonPath) =>
+        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+
+    /// <summary>Rejects a blank JSON path argument on the simple query overload.</summary>
+    internal static void ValidateQueryJsonPath(string? jsonPath)
+    {
+        if (string.IsNullOrWhiteSpace(jsonPath))
+        {
+            throw new ArgumentException("JSON path cannot be null or empty.", nameof(jsonPath));
+        }
+    }
+
+    /// <summary>Rejects a null, empty or blank-element composite index path array.</summary>
+    internal static void ValidateJsonPathArguments(string[] jsonPaths)
+    {
+        ArgumentNullException.ThrowIfNull(jsonPaths);
+        if (jsonPaths.Length == 0)
+        {
+            throw new ArgumentException("At least one JSON path is required for composite index.", nameof(jsonPaths));
+        }
+
+        foreach (var path in jsonPaths)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path, nameof(jsonPaths));
+        }
+    }
+
+    /// <inheritdoc cref="ValidateJsonPathArguments" />
+    internal static void ValidateJsonPathExpressions<T>(Expression<Func<T, object>>[] jsonPaths)
+    {
+        ArgumentNullException.ThrowIfNull(jsonPaths);
+        if (jsonPaths.Length == 0)
+        {
+            throw new ArgumentException("At least one JSON path is required for composite index.", nameof(jsonPaths));
+        }
+
+        foreach (var path in jsonPaths)
+        {
+            ArgumentNullException.ThrowIfNull(path, nameof(jsonPaths));
+        }
+    }
+
+    /// <summary>Rejects a byte-array blob write the store cannot honour.</summary>
+    internal static void ValidateBlobWriteArguments(
+        string? id,
+        ReadOnlyMemory<byte> data,
+        BlobWriteOptions? options)
+    {
+        ValidateId(id);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((long)data.Length, BlobLimits.MaxBlobLength, nameof(data));
+        options?.Validate();
+    }
+
+    /// <summary>
+    /// Rejects a streamed blob write the store cannot honour, before anything is written.
+    /// </summary>
+    /// <remarks>
+    /// Only inspects the source's capabilities and, when it is seekable, its length and position
+    /// — never its bytes — so it is safe to run on both boundaries.
+    /// </remarks>
+    internal static void ValidateBlobStreamArguments(
+        string? id,
+        Stream source,
+        long length,
+        BlobWriteOptions? options,
+        long? expectedVersion)
+    {
+        ValidateId(id);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(length, BlobLimits.MaxBlobLength);
+        options?.Validate();
+
+        if (expectedVersion is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedVersion));
+        }
+
+        if (!source.CanRead)
+        {
+            throw new ArgumentException("The source stream is not readable.", nameof(source));
+        }
+
+        // A seekable source can be measured before anything is written, so a wrong length fails
+        // the call rather than the copy. A non-seekable one cannot: see CopyExactlyAsync, which
+        // reads exactly 'length' bytes and never probes past them.
+        if (source.CanSeek)
+        {
+            var available = source.Length - source.Position;
+            if (available != length)
+            {
+                throw new ArgumentException(
+                    $"The source stream holds {available} bytes from its current position, " +
+                    $"but {length} were declared.",
+                    nameof(length));
+            }
+        }
+    }
+
+    /// <summary>Rejects a negative paging window on a blob listing.</summary>
+    internal static void ValidateListBlobsArguments(int skip, int? take)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(skip);
+        if (take is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(take));
+        }
+    }
+
     /// <inheritdoc cref="IDocumentOperations.CreateTableAsync{T}" />
     public async Task CreateTableAsync<T>(CancellationToken cancellationToken)
     {
@@ -69,10 +221,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.UpsertAsync{T}" />
     public async Task<int> UpsertAsync<T>(string id, T data, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         ArgumentNullException.ThrowIfNull(data);
 
@@ -151,13 +300,10 @@ internal readonly struct DocumentOperations
         long expectedVersion,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         ArgumentNullException.ThrowIfNull(data);
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+        ValidateExpectedVersion(expectedVersion);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var jsonBytes = JsonHelper.SerializeToUtf8Bytes(data, _serializerOptions);
@@ -202,12 +348,9 @@ internal readonly struct DocumentOperations
         long expectedVersion,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+        ValidateExpectedVersion(expectedVersion);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateVersionedDeleteSql(tableName);
@@ -238,7 +381,7 @@ internal readonly struct DocumentOperations
         long expectedVersion,
         CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+        ValidateExpectedVersion(expectedVersion);
         return PatchCoreAsync(id, patch, expectedVersion, cancellationToken);
     }
 
@@ -255,10 +398,7 @@ internal readonly struct DocumentOperations
         long? expectedVersion,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         ArgumentNullException.ThrowIfNull(patch);
 
@@ -345,10 +485,7 @@ internal readonly struct DocumentOperations
         string id,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetWithVersionSql(tableName);
@@ -380,10 +517,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.GetAsync{T}" />
     public async Task<T?> GetAsync<T>(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateGetByIdSql(tableName);
@@ -501,10 +635,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.DeleteAsync{T}" />
     public async Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateDeleteSql(tableName);
@@ -625,10 +756,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.ExistsAsync{T}(string, CancellationToken)" />
     public async Task<bool> ExistsAsync<T>(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateExistsSql(tableName);
@@ -652,10 +780,7 @@ internal readonly struct DocumentOperations
         TValue value,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(jsonPath))
-        {
-            throw new ArgumentException("JSON path cannot be null or empty.", nameof(jsonPath));
-        }
+        ValidateQueryJsonPath(jsonPath);
 
         ArgumentNullException.ThrowIfNull(value);
 
@@ -762,7 +887,7 @@ internal readonly struct DocumentOperations
         IndexOptions? options,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+        ValidateJsonPathArgument(jsonPath);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
 
@@ -807,16 +932,11 @@ internal readonly struct DocumentOperations
         IndexOptions? options,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(jsonPaths);
-        if (jsonPaths.Length == 0)
-        {
-            throw new ArgumentException("At least one JSON path is required for composite index.", nameof(jsonPaths));
-        }
+        ValidateJsonPathExpressions(jsonPaths);
 
         var pathStrings = new string[jsonPaths.Length];
         for (var i = 0; i < jsonPaths.Length; i++)
         {
-            ArgumentNullException.ThrowIfNull(jsonPaths[i], nameof(jsonPaths));
             pathStrings[i] = ExtractJsonPath(jsonPaths[i], nameof(jsonPaths));
         }
 
@@ -830,11 +950,7 @@ internal readonly struct DocumentOperations
         IndexOptions? options,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(jsonPaths);
-        if (jsonPaths.Length == 0)
-        {
-            throw new ArgumentException("At least one JSON path is required for composite index.", nameof(jsonPaths));
-        }
+        ValidateJsonPathArguments(jsonPaths);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var pathStrings = new List<string>(jsonPaths.Length);
@@ -842,7 +958,6 @@ internal readonly struct DocumentOperations
         // Validated before the name is derived from them, for the reason in CreateIndexAsync.
         foreach (var path in jsonPaths)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(path, nameof(jsonPaths));
             pathStrings.Add(SqlGenerator.ValidateJsonPath(path, nameof(jsonPaths), allowRoot: false));
         }
 
@@ -903,12 +1018,8 @@ internal readonly struct DocumentOperations
         string columnType,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
-
-        if (string.IsNullOrWhiteSpace(columnName))
-        {
-            throw new ArgumentException("Column name cannot be null or empty.", nameof(columnName));
-        }
+        ValidateJsonPathArgument(jsonPath);
+        ValidateColumnName(columnName);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
 
@@ -983,10 +1094,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.DropIndexAsync(string, CancellationToken)" />
     public async Task DropIndexAsync(string indexName, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(indexName))
-        {
-            throw new ArgumentException("Index name cannot be null or empty.", nameof(indexName));
-        }
+        ValidateIndexName(indexName);
 
         var sql = SqlGenerator.GenerateDropIndexSql(indexName);
         await _connection.ExecuteAsync(sql, cancellationToken).ConfigureAwait(false);
@@ -1194,7 +1302,7 @@ internal readonly struct DocumentOperations
         CancellationToken cancellationToken)
     {
         var payload = ValidateBlobWrite(id, data, options);
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+        ValidateExpectedVersion(expectedVersion);
 
         var contentType = options?.ContentType;
         long? newVersion;
@@ -1237,13 +1345,7 @@ internal readonly struct DocumentOperations
     /// </summary>
     private static byte[] ValidateBlobWrite(string id, ReadOnlyMemory<byte> data, BlobWriteOptions? options)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
-
-        ArgumentOutOfRangeException.ThrowIfGreaterThan((long)data.Length, BlobLimits.MaxBlobLength, nameof(data));
-        options?.Validate();
+        ValidateBlobWriteArguments(id, data, options);
 
         // Bind the underlying array directly when the memory spans a whole array
         // to avoid copying potentially large payloads.
@@ -1258,10 +1360,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.GetBlobAsync" />
     public async Task<byte[]?> GetBlobAsync(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var sql = SqlGenerator.GenerateGetBlobSql();
 
@@ -1290,40 +1389,7 @@ internal readonly struct DocumentOperations
         long? expectedVersion,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
-
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentOutOfRangeException.ThrowIfNegative(length);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(length, BlobLimits.MaxBlobLength);
-        options?.Validate();
-
-        if (expectedVersion is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(expectedVersion));
-        }
-
-        if (!source.CanRead)
-        {
-            throw new ArgumentException("The source stream is not readable.", nameof(source));
-        }
-
-        // A seekable source can be measured before anything is written, so a wrong length fails
-        // the call rather than the copy. A non-seekable one cannot: see CopyExactlyAsync, which
-        // reads exactly 'length' bytes and never probes past them.
-        if (source.CanSeek)
-        {
-            var available = source.Length - source.Position;
-            if (available != length)
-            {
-                throw new ArgumentException(
-                    $"The source stream holds {available} bytes from its current position, " +
-                    $"but {length} were declared.",
-                    nameof(length));
-            }
-        }
+        ValidateBlobStreamArguments(id, source, length, options, expectedVersion);
 
         // Reserve and fill are two statements, and a failure between them would otherwise leave
         // the id holding zero bytes, destroying whatever it held before.
@@ -1552,10 +1618,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.BlobLengthAsync" />
     public async Task<long?> BlobLengthAsync(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         // Row presence decides "not found" here too, and the storage class has to be checked
         // even though the payload is never read: length() counts characters on a TEXT value and
@@ -1577,10 +1640,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.DeleteBlobAsync" />
     public async Task<bool> DeleteBlobAsync(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var sql = SqlGenerator.GenerateDeleteBlobSql();
         var affectedRows = await _connection.ExecuteAsync(sql, cancellationToken, ("Id", id))
@@ -1594,12 +1654,9 @@ internal readonly struct DocumentOperations
         long expectedVersion,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedVersion);
+        ValidateExpectedVersion(expectedVersion);
 
         var affectedRows = await _connection.ExecuteAsync(
             SqlGenerator.GenerateVersionedDeleteBlobSql(), cancellationToken,
@@ -1619,10 +1676,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.GetBlobInfoAsync" />
     public async Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var results = await ReadBlobInfosAsync(
             SqlGenerator.GenerateBlobInfoSql(), cancellationToken, ("Id", id)).ConfigureAwait(false);
@@ -1643,11 +1697,7 @@ internal readonly struct DocumentOperations
         int? take,
         CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(skip);
-        if (take is < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(take));
-        }
+        ValidateListBlobsArguments(skip, take);
 
         var parameters = new List<(string, object?)>();
         var hasPrefix = !string.IsNullOrEmpty(idPrefix);
@@ -1722,10 +1772,7 @@ internal readonly struct DocumentOperations
     /// <inheritdoc cref="IDocumentOperations.BlobExistsAsync" />
     public async Task<bool> BlobExistsAsync(string id, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            throw new ArgumentException("ID cannot be null or empty.", nameof(id));
-        }
+        ValidateId(id);
 
         var sql = SqlGenerator.GenerateBlobExistsSql();
         return await _connection.ExecuteScalarAsync<bool>(sql, cancellationToken, ("Id", id))
