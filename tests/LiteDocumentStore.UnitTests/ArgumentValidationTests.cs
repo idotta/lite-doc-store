@@ -515,4 +515,48 @@ public sealed class ArgumentValidationTests
         var outOfRange = Assert.IsType<ArgumentOutOfRangeException>(exception);
         Assert.Equal("mode", outOfRange.ParamName);
     }
+
+    // ---- Composite index arrays: which fault wins when there are two ------------------------
+
+    /// <summary>
+    /// Both composite overloads screen the whole array for null or blank elements before any
+    /// element is parsed, so for an array carrying <em>two different</em> faults the cheap
+    /// structural check reports first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the one behaviour hoisting the guards changed, and it changed identically on both
+    /// boundaries. Before, each element was checked and then parsed before the loop advanced, so
+    /// element 0's unparseable path was reported and element 1's null was never reached. A
+    /// single-fault array is unaffected either way, which is what the theories above cover.
+    /// </para>
+    /// <para>
+    /// Pinned rather than merely disclosed: nothing else fails if the interleaved order comes
+    /// back, so without these two the ordering is a comment that a refactor can silently undo.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreateCompositeIndexAsync_WithAnUnparseablePathBeforeANullOne_ReportsTheNull()
+    {
+        await using var store = await CreateStoreAsync();
+
+        var exception = await Record.ExceptionAsync(
+            () => store.CreateCompositeIndexAsync<Doc>(["not-a-path", null!]));
+
+        var nullException = Assert.IsType<ArgumentNullException>(exception);
+        Assert.Equal("jsonPaths", nullException.ParamName);
+    }
+
+    /// <inheritdoc cref="CreateCompositeIndexAsync_WithAnUnparseablePathBeforeANullOne_ReportsTheNull" />
+    [Fact]
+    public async Task CreateCompositeIndexAsync_WithAnUnsupportedExpressionBeforeANullOne_ReportsTheNull()
+    {
+        await using var store = await CreateStoreAsync();
+
+        var exception = await Record.ExceptionAsync(
+            () => store.CreateCompositeIndexAsync<Doc>([d => d.Name.Length.ToString(), null!]));
+
+        var nullException = Assert.IsType<ArgumentNullException>(exception);
+        Assert.Equal("jsonPaths", nullException.ParamName);
+    }
 }
