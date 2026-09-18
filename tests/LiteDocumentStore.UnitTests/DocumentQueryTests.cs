@@ -261,7 +261,10 @@ public class DocumentQueryTests
     [Theory]
     [InlineData("$.a'; DROP TABLE x--")]
     [InlineData("no-dollar")]
-    [InlineData("$.a b")]
+    // "$.a b" was here and is now legal: the member rule admits any character but an apostrophe,
+    // a '.' and a '[', which is what SQLite's own unquoted path label accepts.
+    [InlineData("$.")]
+    [InlineData("$.Tags[x]")]
     public void Where_WithAMalformedPath_ThrowsArgumentException(string jsonPath)
     {
         Assert.Throws<ArgumentException>(

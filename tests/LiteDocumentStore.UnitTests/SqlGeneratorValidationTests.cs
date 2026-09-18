@@ -221,4 +221,111 @@ public class SqlGeneratorValidationTests
             new IndexOptions { Filter = IndexFilter.IsNotNull("$") });
         Assert.Contains("json_extract(data, '$') IS NOT NULL", filtered, StringComparison.Ordinal);
     }
+
+    // --- The widened member rule (C18 Tier 1) --------------------------------------------------
+    //
+    // A member is one or more characters, none of which is an apostrophe, a '.' or a '['. That
+    // mirrors SQLite's own unquoted path label: measured against 3.53.3, every shape below resolves
+    // unquoted in json_extract, jsonb_set, jsonb_remove and json_each. The old identifier-shaped
+    // rule made a store on JsonNamingPolicy.KebabCaseLower ("FullName" -> "full-name") unable to use
+    // any typed path API at all.
+
+    [Theory]
+    [InlineData("$.full-name")]          // JsonNamingPolicy.KebabCaseLower
+    [InlineData("$.a b")]                // a space
+    [InlineData("$.caf\u00e9")]              // non-ASCII
+    [InlineData("$.a\U0001F600b")]           // outside the BMP
+    [InlineData("$.2024")]               // leading digit
+    [InlineData("$.a$b")]                // the path's own root marker, mid-member
+    [InlineData("$.a]b")]                // a ']' is not structural in a path
+    [InlineData("$.a\nb")]               // a newline
+    [InlineData("$.a\tb")]               // a tab
+    [InlineData("$.full-name.a b")]      // chained widened members
+    [InlineData("$.a-b[3].c d")]         // widened members either side of an indexer
+    public void WidenedJsonPathMembers_AreAccepted(string jsonPath)
+    {
+        Assert.Equal(jsonPath, SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)));
+        Assert.Contains(
+            $"json_extract(data, '{jsonPath}')",
+            SqlGenerator.GenerateQueryByJsonPathSql("Person", jsonPath),
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // A '.' and a '[' stay structural, so a member cannot carry one: "$.a.b" is unambiguously the
+    // nested path a -> b, never the single key "a.b", and "$.a[b" is read as an indexer. Reaching a
+    // key that really contains one needs the $."quoted" form (C18 Tier 2), which is not implemented;
+    // what is pinned here is that widening the member rule did not make these ambiguous or legal.
+    [InlineData("$..Email")]             // an empty member between two dots
+    [InlineData("$.a.")]                 // an empty trailing member
+    [InlineData("$.")]                   // the empty member: SQLite errors on it
+    [InlineData("$.a[b")]                // a '[' opens an indexer, which must be decimal
+    [InlineData("$.a[b].c")]
+    public void StructuralCharactersAndTheEmptyMember_StayRejected(string jsonPath)
+    {
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)));
+    }
+
+    // THE INJECTION BOUNDARY. The path is interpolated into a single-quoted SQL literal
+    // (json_extract(data, '...')), so an apostrophe is the one character that can escape it and is
+    // the only reason this validator exists. It is deliberately not supported by doubling: SQLite
+    // matches a query against an expression index only when the indexed expression appears
+    // literally, so rewriting the emitted text would silently disable every index CreateIndexAsync
+    // creates. Widening the member rule must not widen this.
+    [Theory]
+    [InlineData("$.a'b")]
+    [InlineData("$.Email'")]
+    [InlineData("$.a') = 1 OR 1=1 --")]
+    [InlineData("$.full-name') UNION SELECT 1 --")]
+    [InlineData("$.a'b.c")]
+    [InlineData("$.a[0].b'c")]
+    public void AnApostropheInAMember_StaysRejected_SoTheSqlLiteralCannotBeClosed(string jsonPath)
+    {
+        var ex = Assert.Throws<ArgumentException>(
+            () => SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)));
+
+        Assert.Contains("apostrophe", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnApostropheInAMember_IsRejectedByEveryPathGenerator()
+    {
+        const string Injected = "$.a') = 1 OR 1=1 --";
+
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateQueryByJsonPathSql("Person", Injected));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateJsonIndexSql("Person", "idx_x", Injected));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateCompositeJsonIndexSql("Person", "idx_x", ["$.Email", Injected]));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "vc", Injected));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Injected, PatchOperationKind.Set, 1, false)], false));
+    }
+
+    // The identifier rule stays narrow while the path rule widens, and the non-throwing form
+    // RequireDerivableName screens a derived index name through must agree with the throwing one.
+    [Theory]
+    [InlineData("Person", true)]
+    [InlineData("_private", true)]
+    [InlineData("Order2", true)]
+    [InlineData("idx_Person_full-name", false)]
+    [InlineData("idx_Person_a b", false)]
+    [InlineData("2Fast", false)]
+    [InlineData("", false)]
+    public void IsValidIdentifier_AgreesWithValidateIdentifier(string identifier, bool expected)
+    {
+        Assert.Equal(expected, SqlGenerator.IsValidIdentifier(identifier));
+
+        if (expected)
+        {
+            Assert.Contains($"[{identifier}]", SqlGenerator.GenerateGetByIdSql(identifier), StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Throws<ArgumentException>(() => SqlGenerator.GenerateGetByIdSql(identifier));
+        }
+    }
 }

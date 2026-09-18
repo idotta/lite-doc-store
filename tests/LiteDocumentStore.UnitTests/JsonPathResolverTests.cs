@@ -37,6 +37,14 @@ public class JsonPathResolverTests
         [JsonPropertyName("full-name")]
         public string Display { get; set; } = "";
 
+        // The two shapes the widened grammar still cannot express: '.' and '[' are structural in a
+        // path, and an apostrophe would close the SQL literal the path is written into.
+        [JsonPropertyName("a.b")]
+        public string Dotted { get; set; } = "";
+
+        [JsonPropertyName("a'b")]
+        public string Quoted { get; set; } = "";
+
         [JsonExtensionData]
         public Dictionary<string, object>? Extra { get; set; }
     }
@@ -58,6 +66,18 @@ public class JsonPathResolverTests
 
     private static JsonSerializerOptions Reflection() =>
         new() { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+
+    private sealed class Person
+    {
+        public string FullName { get; set; } = "";
+    }
+
+    private static JsonSerializerOptions KebabCase() =>
+        new()
+        {
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+            PropertyNamingPolicy = JsonNamingPolicy.KebabCaseLower
+        };
 
     private static JsonSerializerOptions CamelCase() =>
         new()
@@ -134,14 +154,38 @@ public class JsonPathResolverTests
         Assert.Contains("not serialized", exception.Message, StringComparison.Ordinal);
     }
 
+    // The member rule the resolver re-checks against is one or more characters, none of which is an
+    // apostrophe, a '.' or a '['. A kebab-cased name is the mundane case and used to be refused:
+    // JsonNamingPolicy.KebabCaseLower turns "FullName" into "full-name", so a store on the BCL's own
+    // policy could build no index, query or patch path at all.
+
     [Fact]
-    public void Resolve_WithASerializedNameThePathGrammarCannotExpress_ThrowsNamingTheMember()
+    public void Resolve_WithAKebabCasedSerializedName_ResolvesIt()
     {
-        var exception = Assert.Throws<ArgumentException>(() => Resolve<Customer>(x => x.Display, Reflection()));
+        Assert.Equal("$.full-name", Resolve<Customer>(x => x.Display, Reflection()));
+        Assert.Equal("$.full-name", Resolve<Person>(x => x.FullName, KebabCase()));
+    }
+
+    [Fact]
+    public void Resolve_WithASerializedNameCarryingAStructuralCharacter_ThrowsNamingTheMember()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => Resolve<Customer>(x => x.Dotted, Reflection()));
 
         Assert.Equal("jsonPath", exception.ParamName);
-        Assert.Contains("full-name", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("Display", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("a.b", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Dotted", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The injection boundary, reached through the expression overload rather than a string path.
+    [Fact]
+    public void Resolve_WithASerializedNameCarryingAnApostrophe_ThrowsNamingTheMember()
+    {
+        var exception = Assert.Throws<ArgumentException>(() => Resolve<Customer>(x => x.Quoted, Reflection()));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+        Assert.Contains("a'b", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Quoted", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("apostrophe", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

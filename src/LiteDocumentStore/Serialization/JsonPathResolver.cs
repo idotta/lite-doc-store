@@ -159,19 +159,23 @@ internal static class JsonPathResolver
     /// </summary>
     private static string ValidPathMember(string name, Type container, string memberName, string paramName)
     {
-        var valid = name.Length > 0 && (char.IsAsciiLetter(name[0]) || name[0] == '_');
+        // The rule the grammar states: one or more characters, none of which is an apostrophe (the
+        // injection boundary - it would close the single-quoted SQL literal the path is written
+        // into), a '.' or a '[' (both structural in the path grammar). A serialized name carrying
+        // one of the latter two needs the $."quoted" form, which is not implemented.
+        var valid = name.Length > 0;
 
-        for (var i = 1; valid && i < name.Length; i++)
+        for (var i = 0; valid && i < name.Length; i++)
         {
-            valid = char.IsAsciiLetterOrDigit(name[i]) || name[i] == '_';
+            valid = name[i] != '\'' && name[i] != '.' && name[i] != '[';
         }
 
         if (!valid)
         {
             throw new ArgumentException(
                 $"'{container.Name}.{memberName}' serializes as '{name}', which is not expressible as a " +
-                "JSON path member (only ASCII letters, digits and underscores are supported, and the first " +
-                "character cannot be a digit). Index it through ExecuteRawAsync.",
+                "JSON path member (it must be one or more characters, none of which is an apostrophe, " +
+                "a '.' or a '['). Index it through ExecuteRawAsync.",
                 paramName);
         }
 

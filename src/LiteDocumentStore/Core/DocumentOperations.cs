@@ -775,7 +775,7 @@ internal readonly struct DocumentOperations
         string finalIndexName;
         if (indexName is null)
         {
-            RequireDerivableName(pathString, nameof(jsonPath));
+            RequireDerivableName(tableName, pathString, nameof(jsonPath));
             finalIndexName = GenerateIndexName(tableName, pathString);
         }
         else
@@ -851,7 +851,7 @@ internal readonly struct DocumentOperations
         {
             foreach (var path in pathStrings)
             {
-                RequireDerivableName(path, nameof(jsonPaths));
+                RequireDerivableName(tableName, path, nameof(jsonPaths));
             }
 
             finalIndexName = GenerateCompositeIndexName(tableName, pathStrings);
@@ -1003,9 +1003,17 @@ internal readonly struct DocumentOperations
         // index that call creates for the same path. An explicitly named index has to go
         // through the string overload.
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var indexName = GenerateIndexName(tableName, ExtractJsonPath(expression, nameof(expression)));
+        var jsonPath = ExtractJsonPath(expression, nameof(expression));
 
-        return DropIndexAsync(indexName, cancellationToken);
+        // Screened for the same reason CreateIndexAsync screens it, and reported against the
+        // expression because that is the only parameter this overload has: the path grammar admits
+        // a member a SQL identifier does not, so under a kebab-case naming policy "$.full-name"
+        // derives "idx_T_full-name" and ValidateIdentifier would reject it against an indexName no
+        // caller passed. Such an index cannot have been created by the expression overload either,
+        // so there is nothing this refusal makes undroppable — the string overload names it.
+        RequireDerivableName(tableName, jsonPath, nameof(expression));
+
+        return DropIndexAsync(GenerateIndexName(tableName, jsonPath), cancellationToken);
     }
 
     /// <inheritdoc cref="IDocumentOperations.CreateBlobTableAsync" />
@@ -1983,16 +1991,38 @@ internal readonly struct DocumentOperations
     /// it — reported against the index name the caller never passed. Rewriting the brackets is
     /// not the fix: the scheme already maps distinct paths onto one name, and the
     /// <c>sqlite_master</c> pre-check turns a collision into a silently skipped creation, so
-    /// widening it trades a loud error for a quiet one. Only expression-derived paths reach the
-    /// derivation without an indexer, and those cannot contain one.
+    /// widening it trades a loud error for a quiet one.
+    ///
+    /// The indexer is not the only shape: the member grammar admits any character but an
+    /// apostrophe, a <c>.</c> and a <c>[</c>, which is wider than a SQL identifier, so a
+    /// kebab-cased serialized name reaches the derivation too. An expression-derived path cannot
+    /// carry an indexer but can carry such a member, which is why both shapes are screened here.
     /// </remarks>
-    private static void RequireDerivableName(string jsonPath, string paramName)
+    private static void RequireDerivableName(string tableName, string jsonPath, string paramName)
     {
         if (jsonPath.Contains('[', StringComparison.Ordinal))
         {
             throw new ArgumentException(
                 $"No index name can be derived from '{jsonPath}': a path with an array indexer needs " +
                 "an explicit index name.",
+                paramName);
+        }
+
+        // The path grammar admits any member character but an apostrophe, a '.' and a '[', which is
+        // wider than a SQL identifier: under JsonNamingPolicy.KebabCaseLower, "$.full-name" derives
+        // "idx_T_full-name", which ValidateIdentifier rejects against an indexName the caller never
+        // passed - the exact mis-attribution this helper exists to prevent. Screened through
+        // SqlGenerator so the identifier rule keeps one owner rather than being re-implemented here.
+        //
+        // The single-path derivation is the probe even for a composite index, because both
+        // derivations apply the same transform to each path ("$." stripped, '.' folded to '_'), so a
+        // character one rejects the other rejects too.
+        if (!SqlGenerator.IsValidIdentifier(GenerateIndexName(tableName, jsonPath)))
+        {
+            throw new ArgumentException(
+                $"No index name can be derived from '{jsonPath}': the derived name " +
+                $"'{GenerateIndexName(tableName, jsonPath)}' is not a valid SQL identifier. Pass an " +
+                "explicit index name.",
                 paramName);
         }
     }
