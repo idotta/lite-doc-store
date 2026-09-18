@@ -238,6 +238,8 @@ public class SqlGeneratorValidationTests
     [InlineData("$.2024")]               // leading digit
     [InlineData("$.a$b")]                // the path's own root marker, mid-member
     [InlineData("$.a]b")]                // a ']' is not structural in a path
+    // A newline and a tab are ACCEPTED and must stay so: measured, neither terminates the SQL
+    // string and each reads back its own key. Only U+0000 truncates the statement.
     [InlineData("$.a\nb")]               // a newline
     [InlineData("$.a\tb")]               // a tab
     [InlineData("$.full-name.a b")]      // chained widened members
@@ -303,6 +305,60 @@ public class SqlGeneratorValidationTests
             () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "vc", Injected));
         Assert.Throws<ArgumentException>(
             () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Injected, PatchOperationKind.Set, 1, false)], false));
+    }
+
+    // U+0000 is the one character the widened rule would otherwise have admitted that the old
+    // identifier-shaped rule rejected. sqlite3_prepare reads a NUL-terminated string, so a NUL in
+    // an interpolated path truncates the whole statement at that byte; the path always sits
+    // immediately after an opening apostrophe, so the prefix always ends inside an unterminated
+    // literal and SQLite always answers SQLITE_ERROR "unrecognized token" — measured across every
+    // generator that interpolates a path. Loud, but a raw SqliteException carrying a truncated,
+    // misleading message, leaked from a typed API for an argument this validator should refuse.
+    //
+    // It is NOT a C18 Tier 2 shape. Quoting cannot rescue it, measured both interpolated and bound:
+    // $."a\0b" and $['a\0b'] fail too, so such a key is unaddressable by every form.
+    [Theory]
+    [InlineData("$.\0ab")]               // at the start of a member
+    [InlineData("$.a\0b")]               // in the middle
+    [InlineData("$.ab\0")]               // at the end
+    [InlineData("$.a\0b.c")]             // in a leading member of a chain
+    [InlineData("$.a[0].b\0c")]          // after an indexer
+    public void ANulInAMember_IsRejected_BecauseItTruncatesTheStatement(string jsonPath)
+    {
+        var ex = Assert.Throws<ArgumentException>(
+            () => SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)));
+
+        Assert.Contains("U+0000", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ANulInAMember_IsRejectedByEveryPathGenerator()
+    {
+        const string Nul = "$.a\0b";
+
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateQueryByJsonPathSql("Person", Nul));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateJsonIndexSql("Person", "idx_x", Nul));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateCompositeJsonIndexSql("Person", "idx_x", ["$.Email", Nul]));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "vc", Nul));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Nul, PatchOperationKind.Set, 1, false)], false));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Nul, PatchOperationKind.Remove, null, false)], false));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateQuerySql("Person", [new QueryPredicate(Nul, QueryOperator.Equal, 1, [])], [], null, null));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateQuerySql("Person", [], [new QueryOrdering(Nul, false)], null, null));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredCountSql("Person", [new QueryPredicate(Nul, QueryOperator.Equal, 1, [])]));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredExistsSql("Person", [new QueryPredicate(Nul, QueryOperator.Equal, 1, [])]));
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateCreateJsonIndexSql(
+                "Person", "idx_x", "$.Email", new IndexOptions { Filter = IndexFilter.IsNotNull(Nul) }));
     }
 
     // The identifier rule stays narrow while the path rule widens, and the non-throwing form

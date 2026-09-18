@@ -1391,8 +1391,8 @@ internal static class SqlGenerator
         return null;
     }
 
-    // Grammar: $(.member|[index])*, where a member is one or more characters, none of which is an
-    // apostrophe, a '.' or a '['.
+    // Grammar: $(.member|[index])*, where a member is one or more characters, none of which is
+    // U+0000, an apostrophe, a '.' or a '['.
     //
     // That mirrors SQLite's own unquoted path label, which terminates only at '.' or '['. Measured
     // against 3.53.3 in json_extract, jsonb_set, jsonb_remove and json_each, all unquoted:
@@ -1408,6 +1408,25 @@ internal static class SqlGenerator
     // deliberately *not* supported by doubling - SQLite only matches a query against an expression
     // index when the indexed expression appears literally, so the emitted text must stay
     // byte-identical to what CreateIndexAsync wrote, and a rewrite would break that.
+    //
+    // U+0000 is rejected for a different reason, and permanently. sqlite3_prepare reads a
+    // NUL-terminated string, so a NUL in an interpolated path truncates the whole SQL statement at
+    // that byte. The path always sits immediately after an opening apostrophe, so the truncated
+    // prefix always ends inside an unterminated literal and SQLite always answers SQLITE_ERROR
+    // "unrecognized token" - measured across every generator that interpolates a path (query
+    // predicates, IN, json_each, ordering, count, exists, patch set, patch remove, create index,
+    // create composite index, index filter terms, query-by-path, add virtual column): none of the
+    // truncated prefixes is valid SQL. So the failure is loud, but it is a raw SqliteException
+    // leaked from six typed APIs carrying a truncated, misleading message, for an argument the
+    // validator should refuse up front - the same class as the jsonb_remove(data, '$') NOT NULL
+    // leak the root guard below closes. (Bound as a parameter, which this library never does, the
+    // quirk is worse and silent: json_extract(doc, @p) with "$.a\0b" reads key "a", and jsonb_set /
+    // jsonb_remove write and remove it. Worth knowing when binding a path through ExecuteRawAsync.)
+    //
+    // U+0000 is NOT a Tier 2 shape, and quoting cannot rescue it - measured both ways: interpolated
+    // $."a\0b" fails with "unrecognized token", bound $."a\0b" fails with "bad JSON path". Unquoted,
+    // $."quoted" and $['bracket-quoted'] all fail, so such a key is unaddressable by every form.
+    // json_each does list it, so one can exist in a stored document and simply cannot be reached.
     //
     // '.' and '[' stay rejected inside a member because they are structural in this grammar, and the
     // empty member stays rejected because SQLite errors on it. Those three shapes - a key containing
@@ -1472,6 +1491,15 @@ internal static class SqlGenerator
                             paramName);
                     }
 
+                    if (jsonPath[i] == '\0')
+                    {
+                        throw new ArgumentException(
+                            $"Invalid JSON path '{jsonPath}': a member name cannot contain U+0000, which " +
+                            "truncates the SQL statement the path is written into. No quoting form can " +
+                            "address such a key.",
+                            paramName);
+                    }
+
                     i++;
                 }
 
@@ -1479,7 +1507,7 @@ internal static class SqlGenerator
                 {
                     throw new ArgumentException(
                         $"Invalid JSON path '{jsonPath}': a '.' must be followed by a member name of one or " +
-                        "more characters, none of which is an apostrophe, a '.' or a '['.",
+                        "more characters, none of which is U+0000, an apostrophe, a '.' or a '['.",
                         paramName);
                 }
             }

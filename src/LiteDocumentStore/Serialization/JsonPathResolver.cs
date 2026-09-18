@@ -159,23 +159,26 @@ internal static class JsonPathResolver
     /// </summary>
     private static string ValidPathMember(string name, Type container, string memberName, string paramName)
     {
-        // The rule the grammar states: one or more characters, none of which is an apostrophe (the
-        // injection boundary - it would close the single-quoted SQL literal the path is written
-        // into), a '.' or a '[' (both structural in the path grammar). A serialized name carrying
-        // one of the latter two needs the $."quoted" form, which is not implemented.
+        // The rule the grammar states: one or more characters, none of which is U+0000 (it
+        // terminates the SQL string sqlite3_prepare reads, truncating the whole statement; no
+        // quoting form can address such a key, so it is rejected permanently rather than deferred
+        // to C18 Tier 2), an apostrophe (the injection boundary - it would close the single-quoted
+        // SQL literal the path is written into), a '.' or a '[' (both structural in the path
+        // grammar). A serialized name carrying one of the latter two needs the $."quoted" form,
+        // which is not implemented.
         var valid = name.Length > 0;
 
         for (var i = 0; valid && i < name.Length; i++)
         {
-            valid = name[i] != '\'' && name[i] != '.' && name[i] != '[';
+            valid = name[i] != '\0' && name[i] != '\'' && name[i] != '.' && name[i] != '[';
         }
 
         if (!valid)
         {
             throw new ArgumentException(
                 $"'{container.Name}.{memberName}' serializes as '{name}', which is not expressible as a " +
-                "JSON path member (it must be one or more characters, none of which is an apostrophe, " +
-                "a '.' or a '['). Index it through ExecuteRawAsync.",
+                "JSON path member (it must be one or more characters, none of which is U+0000, an " +
+                "apostrophe, a '.' or a '['). Index it through ExecuteRawAsync.",
                 paramName);
         }
 
