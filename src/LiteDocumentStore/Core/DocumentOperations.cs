@@ -788,13 +788,19 @@ internal readonly struct DocumentOperations
         var sql = SqlGenerator.GenerateCreateJsonIndexSql(tableName, finalIndexName, pathString, options);
 
         // Check if index already exists
-        var indexExists = await _connection.ExecuteScalarAsync<int>(
+        var existing = await _connection.QueryFirstStringRowAsync(
             SqlGenerator.GenerateCheckIndexExistsSql(),
             cancellationToken,
             ("IndexName", finalIndexName)).ConfigureAwait(false);
 
-        if (indexExists > 0)
+        if (existing.Found)
         {
+            EnsureIndexDefinitionMatches(
+                finalIndexName,
+                existing.Text,
+                SqlGenerator.GenerateCreateJsonIndexSql(
+                    tableName, finalIndexName, pathString, options, ifNotExists: false));
+
             _logger.LogDebug("Index {IndexName} already exists, skipping creation", finalIndexName);
             return;
         }
@@ -867,13 +873,19 @@ internal readonly struct DocumentOperations
         var sql = SqlGenerator.GenerateCreateCompositeJsonIndexSql(tableName, finalIndexName, pathStrings, options);
 
         // Check if index already exists
-        var indexExists = await _connection.ExecuteScalarAsync<int>(
+        var existing = await _connection.QueryFirstStringRowAsync(
             SqlGenerator.GenerateCheckIndexExistsSql(),
             cancellationToken,
             ("IndexName", finalIndexName)).ConfigureAwait(false);
 
-        if (indexExists > 0)
+        if (existing.Found)
         {
+            EnsureIndexDefinitionMatches(
+                finalIndexName,
+                existing.Text,
+                SqlGenerator.GenerateCreateCompositeJsonIndexSql(
+                    tableName, finalIndexName, pathStrings, options, ifNotExists: false));
+
             _logger.LogDebug("Composite index {IndexName} already exists, skipping creation", finalIndexName);
             return;
         }
@@ -942,13 +954,19 @@ internal readonly struct DocumentOperations
             var indexName = $"idx_{tableName}_{columnName}";
 
             // Check if index already exists
-            var indexExists = await _connection.ExecuteScalarAsync<int>(
+            var existing = await _connection.QueryFirstStringRowAsync(
                 SqlGenerator.GenerateCheckIndexExistsSql(),
                 cancellationToken,
                 ("IndexName", indexName)).ConfigureAwait(false);
 
-            if (indexExists > 0)
+            if (existing.Found)
             {
+                EnsureIndexDefinitionMatches(
+                    indexName,
+                    existing.Text,
+                    SqlGenerator.GenerateCreateColumnIndexSql(
+                        tableName, indexName, columnName, ifNotExists: false));
+
                 _logger.LogDebug("Index {IndexName} already exists, skipping creation", indexName);
             }
             else
@@ -1841,6 +1859,41 @@ internal readonly struct DocumentOperations
         // Remove special characters and convert to valid index name
         var pathPart = jsonPath.Replace("$.", "").Replace(".", "_");
         return $"idx_{tableName}_{pathPart}";
+    }
+
+    /// <summary>
+    /// Refuses to skip index creation when the index already sitting under that name is not the
+    /// one the caller asked for.
+    /// </summary>
+    /// <remarks>
+    /// The derived-name scheme is not injective — <c>$.A.B</c> and <c>$.A_B</c> flatten alike,
+    /// a composite of <c>["$.A","$.B"]</c> collides with a single <c>$.A.B</c>, and a virtual
+    /// column's <c>idx_{table}_{column}</c> collides with the expression index for the same
+    /// member — so the <c>sqlite_master</c> pre-check would otherwise turn a collision into a
+    /// silently skipped creation, leaving every query over the losing path on a table scan.
+    /// Making the scheme injective would cost a name nobody can read in a SQL client, so the
+    /// residual collision is made loud instead, the way
+    /// <c>TableNameCollisionGuard</c> does for table names.
+    /// </remarks>
+    /// <param name="indexName">The index name both definitions claim</param>
+    /// <param name="storedSql">
+    /// The <c>CREATE INDEX</c> text SQLite has stored for it, or null for an index SQLite
+    /// created itself
+    /// </param>
+    /// <param name="expectedSql">The stored form of the definition the caller asked for</param>
+    private static void EnsureIndexDefinitionMatches(string indexName, string? storedSql, string expectedSql)
+    {
+        if (string.Equals(storedSql, expectedSql, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Index '{indexName}' already exists with a different definition. " +
+            $"Existing: {storedSql ?? "<an internal index with no CREATE statement>"}. " +
+            $"Requested: {expectedSql}. " +
+            "Two different JSON paths can derive the same index name, and changing IndexOptions " +
+            "does not change the name either; drop the existing index before creating this one.");
     }
 
     /// <summary>

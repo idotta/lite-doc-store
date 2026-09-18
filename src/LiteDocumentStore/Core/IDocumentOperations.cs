@@ -345,6 +345,12 @@ public interface IDocumentOperations
     /// Thrown when <paramref name="jsonPath"/> is not a property access, when the serializer has
     /// no metadata for a type along it, or when the member it names is not serialized
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string? indexName = null,
@@ -370,6 +376,12 @@ public interface IDocumentOperations
     /// Thrown when <paramref name="jsonPath"/> is null, empty, whitespace, not a valid JSON path,
     /// or the bare document root <c>$</c>, which would index the whole serialized document
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task CreateIndexAsync<T>(
         string jsonPath,
         string? indexName = null,
@@ -383,8 +395,9 @@ public interface IDocumentOperations
     /// An overload rather than an extra parameter on
     /// <see cref="CreateIndexAsync{T}(Expression{Func{T, object}}, string, CancellationToken)"/>:
     /// inserting one before the trailing token would break every caller passing the token
-    /// positionally. Creation is skipped when the name exists, options and all, so changing an
-    /// existing index's options means dropping it first.
+    /// positionally. Creation is skipped when an index of that name already carries exactly this
+    /// definition, and refused when it carries a different one, so changing an existing index's
+    /// options means dropping it first.
     /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="jsonPath">A property-access expression, e.g. <c>x => x.Email</c></param>
@@ -394,6 +407,12 @@ public interface IDocumentOperations
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="options"/> is null</exception>
     /// <exception cref="ArgumentException">
     /// Thrown when <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
     /// </exception>
     Task CreateIndexAsync<T>(
         Expression<Func<T, object>> jsonPath,
@@ -419,6 +438,12 @@ public interface IDocumentOperations
     /// root <c>$</c>, which would index the whole serialized document, or when
     /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task CreateIndexAsync<T>(
         string jsonPath,
         string? indexName,
@@ -432,6 +457,12 @@ public interface IDocumentOperations
     /// <param name="jsonPaths">Property-access expressions, in index column order</param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName = null,
@@ -451,6 +482,12 @@ public interface IDocumentOperations
     /// Thrown when <paramref name="jsonPaths"/> is empty or holds a path that is null, empty,
     /// whitespace, not a valid JSON path, or the bare document root <c>$</c>, which would index
     /// the whole serialized document
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
     /// </exception>
     Task CreateCompositeIndexAsync<T>(
         string[] jsonPaths,
@@ -478,6 +515,12 @@ public interface IDocumentOperations
     /// Thrown when <paramref name="jsonPaths"/> is empty, or when
     /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task CreateCompositeIndexAsync<T>(
         Expression<Func<T, object>>[] jsonPaths,
         string? indexName,
@@ -502,6 +545,12 @@ public interface IDocumentOperations
     /// document root <c>$</c>, which would index the whole serialized document, or when
     /// <see cref="IndexOptions.Collation"/> is not a valid SQL identifier
     /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task CreateCompositeIndexAsync<T>(
         string[] jsonPaths,
         string? indexName,
@@ -518,6 +567,12 @@ public interface IDocumentOperations
     /// <param name="createIndex">Whether to also index the column</param>
     /// <param name="columnType">The column's SQLite type (default TEXT)</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// </exception>
     Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
         string columnName,
@@ -540,6 +595,12 @@ public interface IDocumentOperations
     /// whitespace, when the path is not a valid JSON path or is the bare document root <c>$</c>,
     /// which would duplicate the whole serialized document into the column, or when
     /// <paramref name="columnType"/> is not a SQLite storage class
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when an index of that name already exists with a different definition. The derived
+    /// name is not injective — two distinct JSON paths, or a virtual column and the expression
+    /// index for the same member, can claim one name — and different
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
     /// </exception>
     Task AddVirtualColumnAsync<T>(
         string jsonPath,

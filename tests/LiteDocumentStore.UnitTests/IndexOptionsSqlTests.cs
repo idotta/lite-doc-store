@@ -199,4 +199,73 @@ public class IndexOptionsSqlTests
         Assert.Equal("$.Email", filter.Terms[1].JsonPath);
         Assert.False(filter.Terms[1].RequiresNull);
     }
+
+    // --- The stored comparison form -------------------------------------------------------
+
+    [Fact]
+    public void GenerateCheckIndexExistsSql_SelectsTheStoredCreateStatement()
+    {
+        var sql = SqlGenerator.GenerateCheckIndexExistsSql();
+
+        Assert.Equal(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=@IndexName",
+            sql);
+        Assert.DoesNotContain("COUNT(*)", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenerateCreateJsonIndexSql_WithoutIfNotExists_DropsOnlyThatToken()
+    {
+        var executed = SqlGenerator.GenerateCreateJsonIndexSql(Table, Index, "$.Email");
+        var stored = SqlGenerator.GenerateCreateJsonIndexSql(Table, Index, "$.Email", null, ifNotExists: false);
+
+        Assert.Contains("IF NOT EXISTS ", executed, StringComparison.Ordinal);
+        Assert.DoesNotContain("IF NOT EXISTS", stored, StringComparison.Ordinal);
+        Assert.Equal(executed.Replace("IF NOT EXISTS ", "", StringComparison.Ordinal), stored);
+    }
+
+    [Fact]
+    public void GenerateCreateJsonIndexSql_WithEveryOptionAndWithoutIfNotExists_DropsOnlyThatToken()
+    {
+        var options = new IndexOptions
+        {
+            Unique = true,
+            Collation = "NOCASE",
+            Descending = true,
+            Filter = IndexFilter.IsNotNull("$.Email").AndIsNull("$.DeletedAt"),
+        };
+
+        var executed = SqlGenerator.GenerateCreateJsonIndexSql(Table, Index, "$.Email", options);
+        var stored = SqlGenerator.GenerateCreateJsonIndexSql(Table, Index, "$.Email", options, ifNotExists: false);
+
+        Assert.Contains("IF NOT EXISTS ", executed, StringComparison.Ordinal);
+        Assert.DoesNotContain("IF NOT EXISTS", stored, StringComparison.Ordinal);
+        Assert.Equal(executed.Replace("IF NOT EXISTS ", "", StringComparison.Ordinal), stored);
+        Assert.StartsWith("CREATE UNIQUE INDEX [idx_Person_Email] ON ", stored, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenerateCreateCompositeJsonIndexSql_WithoutIfNotExists_DropsOnlyThatToken()
+    {
+        var options = new IndexOptions { Collation = "NOCASE", Descending = true };
+
+        var executed = SqlGenerator.GenerateCreateCompositeJsonIndexSql(Table, Index, ["$.City", "$.Age"], options);
+        var stored = SqlGenerator.GenerateCreateCompositeJsonIndexSql(
+            Table, Index, ["$.City", "$.Age"], options, ifNotExists: false);
+
+        Assert.Contains("IF NOT EXISTS ", executed, StringComparison.Ordinal);
+        Assert.DoesNotContain("IF NOT EXISTS", stored, StringComparison.Ordinal);
+        Assert.Equal(executed.Replace("IF NOT EXISTS ", "", StringComparison.Ordinal), stored);
+    }
+
+    [Fact]
+    public void GenerateCreateColumnIndexSql_WithoutIfNotExists_DropsOnlyThatToken()
+    {
+        var executed = SqlGenerator.GenerateCreateColumnIndexSql(Table, Index, "Email");
+        var stored = SqlGenerator.GenerateCreateColumnIndexSql(Table, Index, "Email", ifNotExists: false);
+
+        Assert.Equal("CREATE INDEX IF NOT EXISTS [idx_Person_Email] ON [Person] ([Email])", executed);
+        Assert.Equal("CREATE INDEX [idx_Person_Email] ON [Person] ([Email])", stored);
+        Assert.Equal(executed.Replace("IF NOT EXISTS ", "", StringComparison.Ordinal), stored);
+    }
 }
