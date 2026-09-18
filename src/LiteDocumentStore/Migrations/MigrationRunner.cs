@@ -156,6 +156,7 @@ internal sealed class MigrationRunner
     {
         ArgumentNullException.ThrowIfNull(migration);
         ArgumentNullException.ThrowIfNull(options);
+        RequirePositiveVersion(migration, nameof(migration));
 
         await EnsureMigrationTableExistsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -232,6 +233,7 @@ internal sealed class MigrationRunner
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(migration);
+        RequirePositiveVersion(migration, nameof(migration));
 
         await EnsureMigrationTableExistsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -327,8 +329,8 @@ internal sealed class MigrationRunner
     }
 
     /// <summary>
-    /// Materializes the supplied migrations in ascending version order, rejecting a null element
-    /// or a duplicate version before anything is applied.
+    /// Materializes the supplied migrations in ascending version order, rejecting a null element,
+    /// a non-positive version or a duplicate version before anything is applied.
     /// </summary>
     private static List<IMigration> Validate(IEnumerable<IMigration> migrations, string parameterName)
     {
@@ -345,6 +347,8 @@ internal sealed class MigrationRunner
                 throw new ArgumentException($"Migration at index {i} is null.", parameterName);
             }
 
+            RequirePositiveVersion(migration, parameterName);
+
             if (seen.TryGetValue(migration.Version, out var firstIndex))
             {
                 throw new ArgumentException(
@@ -356,6 +360,24 @@ internal sealed class MigrationRunner
         }
 
         return [.. list.OrderBy(m => m.Version)];
+    }
+
+    /// <summary>
+    /// Rejects a migration whose version is not positive. Version 0 is the sentinel
+    /// <see cref="GetCurrentVersionAsync"/> returns for "nothing applied" and the floor
+    /// <see cref="RollbackToVersionAsync"/> accepts, so a migration at or below it applies but can
+    /// never be reported or rolled back through the public API. <see cref="Migration"/>'s
+    /// constructor already refuses one; this is the same rule for a hand-written
+    /// <see cref="IMigration"/>.
+    /// </summary>
+    private static void RequirePositiveVersion(IMigration migration, string parameterName)
+    {
+        if (migration.Version <= 0)
+        {
+            throw new ArgumentException(
+                $"Migration version must be greater than zero, but migration '{migration.Name}' has version {migration.Version}.",
+                parameterName);
+        }
     }
 
     private static void VerifyChecksum(IMigration migration, string? storedChecksum)

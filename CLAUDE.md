@@ -1030,6 +1030,14 @@ so two starting processes cannot both issue the ALTER.
 `ArgumentOutOfRangeException`, and `RollbackToVersionAsync` refuses the whole range when any migration in
 it has no definition.
 
+**`IMigration.Version` must be positive**, enforced at every entry point rather than only in
+`Migration`'s constructor — one `RequirePositiveVersion` helper called from three sites (`Validate`'s
+per-element loop, plus `ApplyMigrationAsync`/`RollbackMigrationAsync`, which do not go through
+`Validate`). A hand-written `IMigration` at version 0 used to **apply** while
+`GetCurrentMigrationVersionAsync` answered `0` (the "nothing applied" sentinel) and
+`RollbackToVersionAsync(0)` would not roll it back: applied, unreportable and unrollbackable.
+**Behaviour break** for such a consumer, and the only outcome that says so. → rationale#migrations
+
 Source breaks accepted: `MigrationRunner` is no longer public, the five members on `IDocumentStore` break
 an external implementation of that interface, and `MigrateAsync(migrations, default)` is ambiguous
 because the `MigrationOptions` overload was added rather than a parameter inserted.
