@@ -304,7 +304,7 @@ public class SqlGeneratorValidationTests
         Assert.Throws<ArgumentException>(
             () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "vc", Injected));
         Assert.Throws<ArgumentException>(
-            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Injected, PatchOperationKind.Set, 1, false)], false));
+            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Injected, PatchOperationKind.Set, 1, false)], false, "patch"));
     }
 
     // U+0000 is the one character the widened rule would otherwise have admitted that the old
@@ -345,9 +345,9 @@ public class SqlGeneratorValidationTests
         Assert.Throws<ArgumentException>(
             () => SqlGenerator.GenerateAddVirtualColumnSql("Person", "vc", Nul));
         Assert.Throws<ArgumentException>(
-            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Nul, PatchOperationKind.Set, 1, false)], false));
+            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Nul, PatchOperationKind.Set, 1, false)], false, "patch"));
         Assert.Throws<ArgumentException>(
-            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Nul, PatchOperationKind.Remove, null, false)], false));
+            () => SqlGenerator.GeneratePatchSql("Person", [new PatchOperation(Nul, PatchOperationKind.Remove, null, false)], false, "patch"));
         Assert.Throws<ArgumentException>(
             () => SqlGenerator.GenerateQuerySql("Person", [new QueryPredicate(Nul, QueryOperator.Equal, 1, [])], [], null, null));
         Assert.Throws<ArgumentException>(

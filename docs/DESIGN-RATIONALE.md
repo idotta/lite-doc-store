@@ -180,6 +180,45 @@ baseline table on a hand-managed connection, so those literals are correct; only
 
 ---
 
+### C29 — a convention-produced table name had no honest blame
+
+A custom `ITableNamingConvention` returning `bad-name` reached two different validators, and both of
+them blamed the caller. Measured on a store built with such a convention, before the fix:
+
+| Call | `ParamName` produced | Why it is wrong |
+|---|---|---|
+| `CreateIndexAsync<T>(x => x.Email)` | `jsonPath` | The path `$.Email` is perfectly valid; the derived `idx_bad-name_Email` failed |
+| `CreateCompositeIndexAsync<T>(["$.Email", "$.Id"])` | `jsonPaths` | same |
+| `DropIndexAsync<T>(x => x.Email)` | `expression` | same, reported against the only parameter that overload has |
+| `AddVirtualColumnAsync<T>(...)` | `tableName` | The caller passed a type, not a table name |
+| `CreateTableAsync<T>()` | `tableName` | same |
+
+Only a custom convention can produce such a name: `DefaultTableNamingConvention` throws
+`NotSupportedException` for any segment that is not an ASCII SQL identifier rather than folding one.
+
+**The decision was the exception type.** There were two precedents. `SqlGenerator.ValidateIdentifier`
+throws `ArgumentException` — but every `ArgumentException` has to name a parameter, and a
+convention-produced name has none, which is the whole defect. `TableNameCollisionGuard` throws
+`InvalidOperationException` naming both offenders for a name the *configuration* produced. The second
+one fits: the fault is in the configured convention, not at the call site, and the same guard already
+owns every convention-produced name. So the screening went into `TableNameCollisionGuard.Claim`, ahead
+of the claim, through `SqlGenerator.IsValidIdentifier` — the non-throwing form, so the identifier rule
+still has exactly one owner — and the message names the convention's type, the offending name and the
+type it was asked about.
+
+Putting it there rather than at the five sites makes the downstream blames *correct* instead of merely
+different: `RequireDerivableName` can honestly report the caller's path, because with a valid table name
+`idx_` joined to two identifiers by underscores is an identifier, so only the path can break a derived
+index name. Every operation passes the guard (`DocumentStore` wraps the configured convention in it and
+both `DocumentOperations` and `DocumentStoreTransaction` resolve names through the wrapper), so the
+refusal is not DDL-specific — the store never opens a table under a name it cannot write into a
+statement.
+
+Cost: one `IsValidIdentifier` scan of a short name per `GetTableName` call, beside the dictionary hit the
+guard already paid. Behaviour break, custom conventions only: calls that used to fail with an
+`ArgumentException` now fail with an `InvalidOperationException`, and a previously-silent no-op
+(`AddVirtualColumnAsync` over an existing column) now throws.
+
 ## connection-model
 
 ### Measured cost of pooling
@@ -1047,6 +1086,38 @@ writes into the value the first set installed.
 
 ---
 
+### C29 — who a patch rejection blames
+
+Measured through `PatchAsync` against real SQLite, before the fix:
+
+| Shape | `ParamName` produced | Caller's parameter |
+|---|---|---|
+| `Set("$.Email", a).AndSet("$.Email", b)` | `operation` | `jsonPath` |
+| 500 sets, one past `MaxPatchSetOperations` | `operations` | `patch` |
+| 1000 removes, one past `MaxPatchRemoveOperations` | `operations` | `patch` |
+
+`operation` is the private `WithOperation`'s parameter and `operations` is `GeneratePatchSql`'s; neither
+exists at any call site. The caps are **not** a defensive second layer — grepped and confirmed:
+`DocumentPatch<T>` counts nothing, so the generator is the first and only validator of both, reached
+straight from `PatchCoreAsync`. Both were re-attributed by threading the caller's name in rather than
+duplicating the rule: `GeneratePatchSql` now takes a `paramName` and `PatchCoreAsync` hands it
+`nameof(patch)`; `WithOperation` takes one and `AndSet`/`AndRemove` hand it `nameof(jsonPath)`.
+
+The four other `nameof(operations)` reports inside `GeneratePatchSql` — the empty-`operations` check, the
+unknown-`Kind` check and the two `ValidateJsonPath` re-checks, one per loop — were confirmed unreachable
+through the public surface and left as defence, now carrying the threaded name for free:
+
+- **Empty.** `DocumentPatch<T>.Empty` is `private static` and no public member returns it: `Set`/`Remove`
+  are the only entry points and each goes through `Empty.AndSet`/`AndRemove`, which appends one
+  operation. A patch reaching `PatchAsync` therefore has at least one; a null patch is an
+  `ArgumentNullException` before this.
+- **Unknown `Kind`.** `PatchOperationKind` has exactly `Set` and `Remove`, and `PatchOperation` is
+  `internal`, so no caller can construct a third value.
+- **The two path re-checks.** `DocumentQuery<T>.NormalizePath(jsonPath, allowRoot: false)` runs
+  `SqlGenerator.ValidateJsonPath` with the same rule and the same `allowRoot` at build time, on the same
+  string the generator re-validates. Same function, same input, same answer — the unit tests reach them
+  only by hand-building a `PatchOperation`, which is what `internal` is for.
+
 ## corrupt-rows
 
 ### Why a null document is an error rather than a skipped row
@@ -1296,6 +1367,26 @@ derived-index-name scheme (still non-injective, still its own job), and any wide
 `ValidateColumnType` accepts — the five SQLite storage classes stay as they are.
 
 ---
+
+### C29 — the `tableName` gap PR #99 documented is closed at the source
+
+PR #99 hoisted `AddVirtualColumnAsync`'s generator checks past the existing-column short-circuit but
+left `tableName` there deliberately, because hoisting it would have raised an `ArgumentException`
+against a parameter no caller passed. Measured on a store whose convention returns `bad-name`, both
+branches were wrong in their own way:
+
+| Call | Before | After |
+|---|---|---|
+| `AddVirtualColumnAsync<T>("$.Name", "name_col", createIndex: false)` | `ArgumentException` **ParamName=`tableName`** — "Invalid SQL identifier 'bad-name'" | `InvalidOperationException` naming the convention |
+| same call, column already added by raw SQL | silent no-op (short-circuit skips the generator) | `InvalidOperationException` naming the convention |
+| `createIndex: true` | `ArgumentException` **ParamName=`tableName`** | `InvalidOperationException` naming the convention |
+
+The fix is not a fourth hoist: `TableNameCollisionGuard` screens the convention-produced name, so the
+call cannot reach the column check at all and the generator's own `tableName` check becomes unreachable
+through the typed surface. The inline `idx_{tableName}_{columnName}` derivation is covered by the same
+screening — both halves are validated before it is built, so it cannot produce a non-identifier name.
+`ParameterAttributionIntegrationTests` pins all three rows; reverting the screening turns each back into
+the `ArgumentException` above, quoted in the unit's revert table.
 
 ## blobs
 

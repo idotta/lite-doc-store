@@ -204,12 +204,23 @@ SQL client, and readable tables are the point of a store that stays open to raw 
 even though it does not delimit, because it separates two same-named generics of different arity.
 → rationale#table-naming
 
-**`TableNameCollisionGuard` makes the residual loud.** It is `internal`, wraps **whatever convention is
-configured**, is applied in `DocumentStore`'s constructor, keeps a `ConcurrentDictionary<string, Type>`
-of claims **keyed `OrdinalIgnoreCase`**, and throws `InvalidOperationException` naming both types when a
-second type claims a name. The comparer is load-bearing: SQLite folds ASCII case in identifiers, so
+**`TableNameCollisionGuard` makes the residual loud, and screens the name.** It is `internal`, wraps
+**whatever convention is configured**, is applied in `DocumentStore`'s constructor, keeps a
+`ConcurrentDictionary<string, Type>` of claims **keyed `OrdinalIgnoreCase`**, and throws
+`InvalidOperationException` naming both types when a second type claims a name. The comparer is load-bearing: SQLite folds ASCII case in identifiers, so
 `[Order]` and `[order]` are one table, and C# names are case-sensitive. The guard is per store instance
 and in process. Cost is one dictionary hit per operation, on a path whose cheapest operation is ~4.5 µs.
+
+**It also runs the identifier rule over the name, at the one point every operation passes**, through
+`SqlGenerator.IsValidIdentifier` — the same non-throwing form `RequireDerivableName` uses, so the rule
+keeps one owner — and throws `InvalidOperationException` naming the configured convention's **type** and
+the name it returned. That exception type is the decision, not an oversight: a convention-produced name
+has no caller parameter behind it (the caller passed a type), so an `ArgumentException` would have to
+invent one, which is the mis-attribution class this rule exists to end. Only a custom convention can
+reach it — the default fold throws `NotSupportedException` instead of producing such a name. Closing it
+here makes two downstream blames correct rather than patching them: `RequireDerivableName` can honestly
+blame the caller's path, since `idx_` joined to two identifiers is an identifier, and no generator's
+`tableName` check is reachable through the typed surface any more. → rationale#table-naming
 
 **Types the fold cannot name throw `NotSupportedException`** naming the type (and, when reached through
 a generic argument, the requested type as well) rather than producing a name the identifier validator
@@ -647,6 +658,14 @@ spends two function arguments while binding one parameter, and a remove binds no
 `MaxPatchSetOperations` (499) and `MaxPatchRemoveOperations` (999) are independent and throw at
 generation; integration tests execute a patch at each cap against real SQLite.
 
+**A rejection names the caller's own parameter.** Nothing in `DocumentPatch<T>` counts operations, so
+`GeneratePatchSql` is the first *and only* validator of both caps and is reached straight from
+`PatchAsync` — it therefore takes a `paramName` and is handed `nameof(patch)`, rather than reporting its
+own `operations`. Same rule one level up: the duplicate-path check lives in the private
+`WithOperation`, and is handed `nameof(jsonPath)` by `AndSet`/`AndRemove` rather than blaming its own
+`operation`. Threading the name, not duplicating the check, is the pattern — the cap and the identifier
+and path rules each keep one owner. → rationale#patching
+
 Values are scalars only — so a patch needs no `JsonTypeInfo<TValue>`, which a consumer's
 source-generated context has no reason to include for an `int` — and are normalized through
 `DocumentQuery<T>.ValidateValue`/`NormalizeBoundValue` (both `internal` for this), so a patched field
@@ -765,16 +784,17 @@ owner, and the generator's own checks stay. The hoist lives in `DocumentOperatio
 validation intrinsic to SQL generation, not a plain argument guard, and the transaction boundary needs
 it there.
 
-**The generator's fourth check, `tableName`, is deliberately not hoisted**, so on the short-circuit
-branch a non-identifier table name is still left to database state. It is a *derived* name — the caller
-passes a type, not a string — so hoisting it would raise an `ArgumentException` against a parameter no
-caller passed, which is the mis-attribution class this codebase fixes separately: a derived name failing
-validation must be reported against whatever produced it, not against a caller's argument. The shape is
-only reachable through a custom `ITableNamingConvention` returning a non-identifier name **and** a table
-created by raw SQL under it, since every other path through `SqlGenerator` (`GenerateCreateTableSql`
-included) refuses it. And it is not an injection surface: `SchemaIntrospector.GetColumnsAsync`
+**The generator's fourth check, `tableName`, is not hoisted — and no longer needs to be.** It is a
+*derived* name (the caller passes a type, not a string), so hoisting it would raise an
+`ArgumentException` against a parameter no caller passed. It is refused where it is produced instead:
+`TableNameCollisionGuard` screens every convention-produced name through the identifier rule, so a
+non-identifier table name never reaches this method on either branch, and the short-circuit can no
+longer decide by database state what an argument decides. The generator's own check stays as the
+generator's own contract. It was never an injection surface either: `SchemaIntrospector.GetColumnsAsync`
 double-quotes the table name and doubles any embedded `"` itself before interpolating it into
-`PRAGMA table_xinfo(...)`. → rationale#index-ddl
+`PRAGMA table_xinfo(...)`. The same screening is why `AddVirtualColumnAsync`'s inline
+`idx_{tableName}_{columnName}` cannot derive a non-identifier index name: both halves are validated
+before it is built. → rationale#index-ddl
 
 ### Blobs
 

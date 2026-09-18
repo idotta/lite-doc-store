@@ -35,7 +35,34 @@ public class TableNameCollisionGuardTests
         public string GetTableName(Type type) => type == typeof(First) ? "OneTable" : "onetable";
     }
 
+    /// <summary>Returns a name no SQL identifier rule accepts, the way a kebab-cased fold would.</summary>
+    private sealed class NonIdentifierConvention : ITableNamingConvention
+    {
+        public string GetTableName<T>() => "bad-name";
+
+        public string GetTableName(Type type) => "bad-name";
+    }
+
     private static TableNameCollisionGuard Guard(ITableNamingConvention inner) => new(inner);
+
+    // A convention-produced name has no caller parameter behind it: the caller passed a type.
+    // Left unscreened it reached a generator, which blamed its own 'tableName' parameter, and the
+    // index-name derivation, which blamed the caller's perfectly valid 'jsonPath'. The refusal is
+    // an InvalidOperationException for the same reason the collision refusal is — there is no
+    // argument to name — and it names the convention and the name it returned instead.
+
+    [Fact]
+    public void ANonIdentifierName_IsRefusedAgainstTheConvention()
+    {
+        var guard = Guard(new NonIdentifierConvention());
+
+        var exception = Assert.Throws<InvalidOperationException>(() => guard.GetTableName<First>());
+
+        Assert.Contains(nameof(NonIdentifierConvention), exception.Message, StringComparison.Ordinal);
+        Assert.Contains("bad-name", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(First), exception.Message, StringComparison.Ordinal);
+    }
+
 
     [Fact]
     public void GetTableName_ForTheSameTypeRepeatedly_KeepsWorking()

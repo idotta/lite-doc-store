@@ -3,8 +3,8 @@ using System.Collections.Concurrent;
 namespace LiteDocumentStore;
 
 /// <summary>
-/// Wraps an <see cref="ITableNamingConvention"/> and refuses to hand the same table name to two
-/// different types.
+/// Wraps an <see cref="ITableNamingConvention"/> and refuses to hand out a table name that is not
+/// a SQL identifier, or the same table name for two different types.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -27,8 +27,21 @@ namespace LiteDocumentStore;
 /// both types before any damage is possible.
 /// </para>
 /// <para>
+/// It also screens the name through the identifier rule, at the one point every operation passes.
+/// A convention that returns a name like <c>bad-name</c> otherwise reaches a generator, which
+/// reports it as a bad <c>tableName</c> argument — a parameter no caller passed, since the caller
+/// passes a type — and reaches the index-name derivation, which reported it against the caller's
+/// perfectly valid <c>jsonPath</c>. Screening here gives the failure one owner and one accurate
+/// diagnosis, and leaves every derived name downstream failing only for its own reasons.
+/// </para>
+/// <para>
+/// The refusal is an <see cref="InvalidOperationException"/>, not an
+/// <see cref="ArgumentException"/>, for the reason the collision refusal is: the offending value
+/// came from the configured convention, not from an argument, so there is no parameter to name.
+/// </para>
+/// <para>
 /// One <see cref="ConcurrentDictionary{TKey, TValue}"/> hit per operation, on a path whose cheapest
-/// operation is ~4.5 µs.
+/// operation is ~4.5 µs, plus a linear scan of a short name.
 /// </para>
 /// </remarks>
 internal sealed class TableNameCollisionGuard(ITableNamingConvention inner) : ITableNamingConvention
@@ -51,6 +64,16 @@ internal sealed class TableNameCollisionGuard(ITableNamingConvention inner) : IT
 
     private string Claim(string tableName, Type type)
     {
+        if (!SqlGenerator.IsValidIdentifier(tableName))
+        {
+            throw new InvalidOperationException(
+                $"The configured {nameof(ITableNamingConvention)} '{_inner.GetType()}' returned " +
+                $"'{tableName}' for '{type}', which is not a valid SQL identifier: a table name must " +
+                "start with an ASCII letter or an underscore and continue with ASCII letters, digits " +
+                "and underscores. Bracket quoting alone is not enough, and a derived index name " +
+                "built from it would be refused against the caller's own arguments.");
+        }
+
         var owner = _claims.GetOrAdd(tableName, type);
 
         if (owner != type)

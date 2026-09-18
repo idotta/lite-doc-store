@@ -1060,24 +1060,31 @@ internal static class SqlGenerator
     /// True to guard the update with <c>AND version = @ExpectedVersion</c> for a compare-and-swap
     /// patch; false to patch whichever version is stored
     /// </param>
+    /// <param name="paramName">
+    /// The name of the <em>caller's</em> parameter the operations came from — <c>patch</c> on the
+    /// way in from <c>PatchAsync</c>. The generator is the only validator of the operation caps
+    /// (nothing in <c>DocumentPatch&lt;T&gt;</c> counts them), so a cap rejection has to name an
+    /// argument the caller actually passed rather than this method's own <c>operations</c>.
+    /// </param>
     public static GeneratedQuery GeneratePatchSql(
         string tableName,
         IReadOnlyList<PatchOperation> operations,
-        bool versioned)
+        bool versioned,
+        string paramName)
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ArgumentNullException.ThrowIfNull(operations);
 
         if (operations.Count == 0)
         {
-            throw new ArgumentException("A patch needs at least one operation.", nameof(operations));
+            throw new ArgumentException("A patch needs at least one operation.", paramName);
         }
 
         var values = new List<object?>();
         var sb = new StringBuilder(160);
         sb.Append("UPDATE [").Append(tableName).Append("] SET data = ");
 
-        AppendPatchExpression(sb, operations, values);
+        AppendPatchExpression(sb, operations, values, paramName);
 
         sb.Append(", version = version + 1 WHERE id = @Id");
         if (versioned)
@@ -1095,7 +1102,8 @@ internal static class SqlGenerator
     private static void AppendPatchExpression(
         StringBuilder sb,
         IReadOnlyList<PatchOperation> operations,
-        List<object?> values)
+        List<object?> values,
+        string paramName)
     {
         var setCount = 0;
         var removeCount = 0;
@@ -1111,7 +1119,7 @@ internal static class SqlGenerator
                     break;
                 default:
                     throw new ArgumentException(
-                        $"Unsupported patch operation '{operations[i].Kind}'.", nameof(operations));
+                        $"Unsupported patch operation '{operations[i].Kind}'.", paramName);
             }
         }
 
@@ -1124,7 +1132,7 @@ internal static class SqlGenerator
             throw new ArgumentException(
                 $"The patch sets {setCount} paths, more than the supported maximum of " +
                 $"{MaxPatchSetOperations}. Split it into several patches.",
-                nameof(operations));
+                paramName);
         }
 
         if (removeCount > MaxPatchRemoveOperations)
@@ -1132,7 +1140,7 @@ internal static class SqlGenerator
             throw new ArgumentException(
                 $"The patch removes {removeCount} paths, more than the supported maximum of " +
                 $"{MaxPatchRemoveOperations}. Split it into several patches.",
-                nameof(operations));
+                paramName);
         }
 
         var hasSets = setCount > 0;
@@ -1158,7 +1166,7 @@ internal static class SqlGenerator
                 continue;
             }
 
-            sb.Append(", '").Append(ValidateJsonPath(operation.JsonPath, nameof(operations), allowRoot: false)).Append("', ");
+            sb.Append(", '").Append(ValidateJsonPath(operation.JsonPath, paramName, allowRoot: false)).Append("', ");
 
             var parameter = NextParameter(values, operation.Value);
             if (operation.AsJson)
@@ -1181,7 +1189,7 @@ internal static class SqlGenerator
             if (operations[i].Kind == PatchOperationKind.Remove)
             {
                 sb.Append(", '")
-                    .Append(ValidateJsonPath(operations[i].JsonPath, nameof(operations), allowRoot: false))
+                    .Append(ValidateJsonPath(operations[i].JsonPath, paramName, allowRoot: false))
                     .Append('\'');
             }
         }
@@ -1362,10 +1370,11 @@ internal static class SqlGenerator
     }
 
     /// <summary>
-    /// The non-throwing form of the identifier rule, for a caller that <em>derives</em> a name rather
-    /// than receiving one: <c>DocumentOperations.RequireDerivableName</c> screens the index name it is
-    /// about to derive from a JSON path, and has to report the failure against the path the caller
-    /// actually passed. It shares <see cref="IdentifierError" /> with
+    /// The non-throwing form of the identifier rule, for a caller that has no parameter to blame:
+    /// <c>DocumentOperations.RequireDerivableName</c> screens the index name it is about to derive
+    /// from a JSON path, and has to report the failure against the path the caller actually passed,
+    /// while <c>TableNameCollisionGuard</c> screens the name the configured convention returned and
+    /// reports it against the convention. It shares <see cref="IdentifierError" /> with
     /// <see cref="ValidateIdentifier" /> so the identifier rule keeps one owner.
     /// </summary>
     internal static bool IsValidIdentifier(string identifier) => IdentifierError(identifier) is null;

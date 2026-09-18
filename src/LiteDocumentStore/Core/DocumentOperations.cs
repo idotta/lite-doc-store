@@ -403,7 +403,8 @@ internal readonly struct DocumentOperations
         ArgumentNullException.ThrowIfNull(patch);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var generated = SqlGenerator.GeneratePatchSql(tableName, patch.Operations, expectedVersion.HasValue);
+        var generated = SqlGenerator.GeneratePatchSql(
+            tableName, patch.Operations, expectedVersion.HasValue, nameof(patch));
 
         var parameters = expectedVersion.HasValue
             ? BindPositionally(generated, ("Id", id), ("ExpectedVersion", expectedVersion.Value))
@@ -2048,6 +2049,11 @@ internal readonly struct DocumentOperations
     /// apostrophe, a <c>.</c> and a <c>[</c>, which is wider than a SQL identifier, so a
     /// kebab-cased serialized name reaches the derivation too. An expression-derived path cannot
     /// carry an indexer but can carry such a member, which is why both shapes are screened here.
+    ///
+    /// Blaming <c>paramName</c> — the caller's path parameter — is accurate because the other half
+    /// of the derived name cannot be the offender: <c>TableNameCollisionGuard</c> has already
+    /// refused a table name that is not an identifier, and <c>idx_</c> joined to two identifiers
+    /// with an underscore is one, so only the path can break the derived name.
     /// </remarks>
     private static void RequireDerivableName(string tableName, string jsonPath, string paramName)
     {
