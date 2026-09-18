@@ -66,6 +66,13 @@ internal static class JsonHelper
                 typeof(T),
                 ex);
         }
+        catch (InvalidOperationException ex)
+        {
+            throw new DocumentSerializationException(
+                InvalidMetadataMessage<T>("serialize"),
+                typeof(T),
+                ex);
+        }
     }
 
     /// <summary>
@@ -95,6 +102,13 @@ internal static class JsonHelper
         {
             throw new DocumentSerializationException(
                 UnsupportedTypeMessage<T>("deserialize"),
+                typeof(T),
+                ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new DocumentSerializationException(
+                InvalidMetadataMessage<T>("deserialize"),
                 typeof(T),
                 ex);
         }
@@ -131,6 +145,13 @@ internal static class JsonHelper
                 typeof(T),
                 ex);
         }
+        catch (InvalidOperationException ex)
+        {
+            throw new DocumentSerializationException(
+                InvalidMetadataMessage<T>("deserialize"),
+                typeof(T),
+                ex);
+        }
     }
 
     /// <summary>
@@ -143,4 +164,14 @@ internal static class JsonHelper
         $"Cannot {verb} type {typeof(T).Name} with the configured JsonSerializerOptions: the type " +
         "has no JsonTypeInfo metadata (register it with the source-generated JsonSerializerContext, " +
         "or supply a TypeInfoResolver that covers it), or it is not serializable.";
+
+    /// <summary>
+    /// The message for an <see cref="InvalidOperationException"/> raised while the configured
+    /// <see cref="JsonSerializerOptions"/> build or resolve the type's metadata — an invalid
+    /// contract on the type itself, or a <see cref="IJsonTypeInfoResolver"/> that fails.
+    /// </summary>
+    private static string InvalidMetadataMessage<T>(string verb) =>
+        $"Cannot {verb} type {typeof(T).Name} with the configured JsonSerializerOptions: its JSON " +
+        "type metadata is invalid or could not be resolved (for example two members mapping to the " +
+        "same JSON property name, an ambiguous [JsonConstructor], or a failing TypeInfoResolver).";
 }

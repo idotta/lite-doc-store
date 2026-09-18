@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using LiteDocumentStore.Exceptions;
 using Xunit;
@@ -17,6 +18,18 @@ public sealed class JsonHelperTests
     private sealed class Doc
     {
         public string Name { get; set; } = string.Empty;
+    }
+
+    private sealed class CollidingDoc
+    {
+        [JsonPropertyName("x")] public string One { get; set; } = string.Empty;
+        [JsonPropertyName("x")] public string Two { get; set; } = string.Empty;
+    }
+
+    private sealed class ThrowingResolver : IJsonTypeInfoResolver
+    {
+        public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options) =>
+            throw new InvalidOperationException("resolver failed");
     }
 
     private static JsonSerializerOptions Covering() =>
@@ -82,5 +95,49 @@ public sealed class JsonHelperTests
 
         Assert.Equal("n", JsonHelper.Deserialize<Doc>(bytes.AsSpan(), options)?.Name);
         Assert.Equal("n", JsonHelper.Deserialize<Doc>("""{"Name":"n"}""", options)?.Name);
+    }
+
+    [Fact]
+    public void SerializeToUtf8Bytes_WithCollidingJsonPropertyNames_ThrowsDocumentSerialization()
+    {
+        var ex = Assert.Throws<DocumentSerializationException>(
+            () => JsonHelper.SerializeToUtf8Bytes(new CollidingDoc(), Covering()));
+
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("type metadata is invalid", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeserializeString_WithCollidingJsonPropertyNames_ThrowsDocumentSerialization()
+    {
+        var ex = Assert.Throws<DocumentSerializationException>(
+            () => JsonHelper.Deserialize<CollidingDoc>("""{"x":"n"}""", Covering()));
+
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("type metadata is invalid", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeserializeUtf8_WithCollidingJsonPropertyNames_ThrowsDocumentSerialization()
+    {
+        var ex = Assert.Throws<DocumentSerializationException>(
+            () => JsonHelper.Deserialize<CollidingDoc>("""{"x":"n"}"""u8.ToArray().AsSpan(), Covering()));
+
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Contains("type metadata is invalid", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AllThreeMethods_WithAResolverThatThrows_ThrowDocumentSerialization()
+    {
+        // A second, resolver-side cause of the same InvalidOperationException.
+        var options = new JsonSerializerOptions { TypeInfoResolver = new ThrowingResolver() };
+
+        Assert.IsType<InvalidOperationException>(Assert.Throws<DocumentSerializationException>(
+            () => JsonHelper.SerializeToUtf8Bytes(new Doc(), options)).InnerException);
+        Assert.IsType<InvalidOperationException>(Assert.Throws<DocumentSerializationException>(
+            () => JsonHelper.Deserialize<Doc>("""{"Name":"n"}""", options)).InnerException);
+        Assert.IsType<InvalidOperationException>(Assert.Throws<DocumentSerializationException>(
+            () => JsonHelper.Deserialize<Doc>("""{"Name":"n"}"""u8.ToArray().AsSpan(), options)).InnerException);
     }
 }
