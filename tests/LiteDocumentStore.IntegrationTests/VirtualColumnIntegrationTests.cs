@@ -168,6 +168,78 @@ public class VirtualColumnIntegrationTests : IDisposable
         Assert.Contains(columns, c => c.Name == "category");
     }
 
+    /// <summary>
+    /// The short-circuit on an existing column skips <c>GenerateAddVirtualColumnSql</c> and with it
+    /// the generator's <c>columnType</c> check, so the type is validated at the call site too: the
+    /// identical call fails on the first run and on every later one. Before the hoist the second
+    /// call was accepted.
+    /// </summary>
+    [Fact]
+    public async Task AddVirtualColumnAsync_WithAnUnsupportedType_ThrowsWhetherOrNotTheColumnExists()
+    {
+        await _store.CreateTableAsync<Product>();
+
+        // Column absent: the pre-existing generator-side throw.
+        var first = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.AddVirtualColumnAsync<Product>("$.Category", "category", false, "NOT_A_TYPE"));
+        Assert.Equal("columnType", first.ParamName);
+
+        // The column now exists, added the way a caller would.
+        await _store.AddVirtualColumnAsync<Product>("$.Category", "category", false, "TEXT");
+
+        // Same call, same failure — the short-circuit no longer accepts it.
+        var second = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.AddVirtualColumnAsync<Product>("$.Category", "category", false, "NOT_A_TYPE"));
+        Assert.Equal("columnType", second.ParamName);
+
+        var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductTable));
+        Assert.Equal("TEXT", Assert.Single(columns, c => c.Name == "category").Type);
+    }
+
+    /// <summary>
+    /// The same defect on <c>columnName</c>. <c>ColumnExistsAsync</c> compares against the table's
+    /// real columns, so a column added by raw SQL under a name <c>ValidateIdentifier</c> rejects is
+    /// reported present, and with <c>createIndex: false</c> nothing else looked at the name.
+    /// </summary>
+    [Theory]
+    [InlineData("weird name")]
+    [InlineData("bad]name")]
+    public async Task AddVirtualColumnAsync_WithAnInvalidName_ThrowsWhetherOrNotTheColumnExists(string columnName)
+    {
+        await _store.CreateTableAsync<Product>();
+
+        var first = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.AddVirtualColumnAsync<Product>("$.Category", columnName));
+        Assert.Equal("columnName", first.ParamName);
+
+        // Only raw SQL can create such a column; the double quote takes a ] where [ ] cannot.
+        await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteAsync(
+            $"ALTER TABLE [{ProductTable}] ADD COLUMN \"{columnName}\" TEXT", ct));
+
+        var second = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.AddVirtualColumnAsync<Product>("$.Category", columnName));
+        Assert.Equal("columnName", second.ParamName);
+    }
+
+    /// <summary>
+    /// A transaction holds its own connection and never rents, so it reaches
+    /// <c>DocumentOperations</c> directly — the hoist has to sit there to cover it.
+    /// </summary>
+    [Fact]
+    public async Task AddVirtualColumnAsync_OnATransactionOverAnExistingColumn_StillThrows()
+    {
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>("$.Category", "category");
+
+        await using var transaction = await _store.BeginTransactionAsync();
+
+        var typeException = await Assert.ThrowsAsync<ArgumentException>(
+            () => transaction.AddVirtualColumnAsync<Product>("$.Category", "category", false, "NOT_A_TYPE"));
+        Assert.Equal("columnType", typeException.ParamName);
+
+        await transaction.RollbackAsync();
+    }
+
     [Fact]
     public async Task AddVirtualColumnAsync_VirtualColumnValues_AreCorrect()
     {

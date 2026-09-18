@@ -1213,6 +1213,53 @@ generator entirely, so without it the same call is a silent no-op rather than a 
 overloads need nothing: `JsonPathResolver` always appends at least one member, so a bare `$` is unreachable
 there.
 
+### Why `columnType` and `columnName` are hoisted with it
+
+The same short-circuit hides the *rest* of `GenerateAddVirtualColumnSql`'s validation, not just the root
+check. Measured on current `main` against a real file database (`DocumentStoreOptions.ForFile`), one store,
+one table, verbatim:
+
+| call | before | after |
+| --- | --- | --- |
+| `("$.Category", "cat1", false, "NOT_A_TYPE")`, column absent | `ArgumentException` `ParamName=columnType` — *"Unsupported column type 'NOT_A_TYPE'. Supported types are TEXT, INTEGER, REAL, BLOB and NUMERIC."* | unchanged |
+| same call after a successful `(..., "cat2", false, "TEXT")` | **accepted, no throw** | `ArgumentException` `ParamName=columnType` |
+| `("$.Category", "weird name", false, "TEXT")`, column absent | `ArgumentException` `ParamName=columnName` — *"Invalid SQL identifier 'weird name': only ASCII letters, digits and underscores are supported."* | unchanged |
+| same, after `ALTER TABLE [t] ADD COLUMN "weird name" TEXT` | **accepted, no throw** | `ArgumentException` `ParamName=columnName` |
+| the `"bad]name"` shape, both branches | identical to `weird name` | identical |
+| `("$.Category", "weird name", true, ...)`, column present | `ArgumentException` `ParamName=`**`indexName`** — blaming the *derived* `idx_<table>_weird name` | `ParamName=columnName` |
+| `("$.Category", "cat2", true, "NOT_A_TYPE")`, column present | **accepted** — the index preflight validates the name, never the type | `ArgumentException` `ParamName=columnType` |
+| all of the above on `IDocumentTransaction` | identical | identical |
+
+So the filed finding was real on `columnType` and the entry's claim that `columnName` is "effectively
+covered" was **wrong on the branch that matters**: `SchemaIntrospector.ColumnExistsAsync` compares against
+`pragma_table_info`, i.e. the table's real columns, so a column created by raw SQL under a name the
+identifier rule rejects is reported present, and with `createIndex: false` nothing else looks at the name.
+With `createIndex: true` the index preflight did catch it — but reported against `indexName`, a name the
+caller never passed, and it catches nothing about `columnType`.
+
+No injection surface either way: on the short-circuit branch neither value reaches SQL at all. What it cost
+was idempotence — the same arguments threw on a fresh database and were a silent no-op on the next run,
+which is exactly the property the root hoist was added to restore.
+
+The fix is two lines beside the existing path hoist, in the generator's own order (`columnName`, then
+`jsonPath`, then `columnType`) so the first fault reported is the same on both branches.
+`SqlGenerator.ValidateColumnType` went `private` → `internal` and `ValidateIdentifier` the same, rather than
+forking either rule: `IdentifierError` stays the one owner, and `IsValidIdentifier` (the non-throwing form,
+for *derived* names) is unchanged. The generator keeps its own checks — both boundaries, as with `jsonPath`.
+The hoist is **not** duplicated into `DocumentStore`, matching the path precedent: it is validation
+intrinsic to SQL generation rather than a plain argument guard, and `DocumentStoreTransaction` calls
+`DocumentOperations` directly, so putting it there covers both surfaces.
+
+Reverting either line, rebuilt: dropping the `columnName` line fails
+`AddVirtualColumnAsync_WithAnInvalidName_ThrowsWhetherOrNotTheColumnExists` (both `InlineData` shapes) and
+its unit counterpart with *"Assert.Throws() Failure: No exception was thrown"*; dropping the `columnType`
+line fails `AddVirtualColumnAsync_WithAnUnsupportedType_ThrowsWhetherOrNotTheColumnExists` and
+`..._OnATransactionOverAnExistingColumn_StillThrows` the same way.
+
+Out of scope, deliberately: the index-definition preflight, the derived-index-name scheme (still
+non-injective, still its own job), and any widening of what `ValidateColumnType` accepts — the five SQLite
+storage classes stay as they are.
+
 ---
 
 ## blobs
