@@ -1276,8 +1276,9 @@ measured reasons:
 1. **It is a derived name, not an argument.** `AddVirtualColumnAsync<T>` takes a type; the string comes from
    `_tableNamingConvention.GetTableName<T>()`. Hoisting the check would raise an `ArgumentException` with
    `ParamName=tableName` against a parameter the caller never supplied — the same mis-attribution the
-   `createIndex: true` row above shows for `indexName`, and the class **C29** addresses directly. Fixing it
-   here would mean picking a `ParamName` before that decision is made.
+   `createIndex: true` row above shows for `indexName`, and the class **C29** addresses directly: a *derived*
+   name failing validation must be reported against whatever produced it, not against a caller's argument.
+   Fixing it here would mean picking a `ParamName` before that decision is made.
 2. **The shape needs two deliberate steps to reach.** A custom `ITableNamingConvention` has to return a
    non-identifier name *and* the table has to have been created by raw SQL under it: every other path
    through `SqlGenerator` refuses the name, `GenerateCreateTableSql` (`SqlGenerator.cs:76`) included, so a

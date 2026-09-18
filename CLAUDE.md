@@ -768,12 +768,13 @@ it there.
 **The generator's fourth check, `tableName`, is deliberately not hoisted**, so on the short-circuit
 branch a non-identifier table name is still left to database state. It is a *derived* name — the caller
 passes a type, not a string — so hoisting it would raise an `ArgumentException` against a parameter no
-caller passed, which is the mis-attribution class C29 addresses. The shape is only reachable through a
-custom `ITableNamingConvention` returning a non-identifier name **and** a table created by raw SQL under
-it, since every other path through `SqlGenerator` (`GenerateCreateTableSql` included) refuses it. And it
-is not an injection surface: `SchemaIntrospector.GetColumnsAsync` double-quotes the table name and
-doubles any embedded `"` itself before interpolating it into `PRAGMA table_xinfo(...)`.
-→ rationale#index-ddl
+caller passed, which is the mis-attribution class this codebase fixes separately: a derived name failing
+validation must be reported against whatever produced it, not against a caller's argument. The shape is
+only reachable through a custom `ITableNamingConvention` returning a non-identifier name **and** a table
+created by raw SQL under it, since every other path through `SqlGenerator` (`GenerateCreateTableSql`
+included) refuses it. And it is not an injection surface: `SchemaIntrospector.GetColumnsAsync`
+double-quotes the table name and doubles any embedded `"` itself before interpolating it into
+`PRAGMA table_xinfo(...)`. → rationale#index-ddl
 
 ### Blobs
 
