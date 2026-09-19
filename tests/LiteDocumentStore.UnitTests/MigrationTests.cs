@@ -143,6 +143,21 @@ public class MigrationTests
     }
 
     [Fact]
+    public void Checksum_WhenSubclassHidesItWithNew_InterfaceStillReportsTheBaseDigest()
+    {
+        // Pins the trap both CLAUDE.md and docs/DESIGN-RATIONALE.md document: `new`-hiding
+        // compiles and reads correctly off the concrete type, but the runner reads through
+        // IMigration, and interface dispatch lands on the base. Without this test the doc claim
+        // could rot silently — the compiler never complains, and nothing else exercises the shape.
+        var hiding = new HidingMigration();
+        var baseline = new Migration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+
+        // Not vacuous: the hiding member really is reachable, just not through the interface.
+        Assert.Equal("HIDDEN", hiding.Checksum);
+        Assert.Equal(baseline.Checksum, ((IMigration)hiding).Checksum);
+    }
+
+    [Fact]
     public void Checksum_WhenSubclassOverridesChecksum_ReportsTheOverrideThroughTheInterface()
     {
         IMigration migration = new CoveredMigration("OVERRIDDEN");
@@ -184,6 +199,16 @@ public class MigrationTests
     {
         public override Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Hides <see cref="Migration.Checksum"/> with <c>new</c> instead of overriding it — the shape
+    /// the docs call out as silently ignored, kept here so that claim stays tested.
+    /// </summary>
+    private sealed class HidingMigration()
+        : Migration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+    {
+        public new string Checksum => "HIDDEN";
     }
 
     /// <summary>
