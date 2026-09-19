@@ -80,6 +80,8 @@ public class Migration : IMigration
 
     /// <inheritdoc />
     /// <remarks>
+    /// See <see cref="IMigration.UpAsync"/> for the connection contract every override inherits;
+    /// this remark adds to it rather than replacing it.
     /// Overriding this changes what the checksum has to describe, so cover <see cref="Checksum"/>
     /// too — override it and return a value that changes with this method's behaviour. An override
     /// that just delegates (<c>await base.UpAsync(connection, cancellationToken)</c> and adds no
@@ -94,6 +96,8 @@ public class Migration : IMigration
 
     /// <inheritdoc />
     /// <remarks>
+    /// See <see cref="IMigration.DownAsync"/> for the connection contract every override inherits;
+    /// this remark adds to it rather than replacing it.
     /// Overriding this needs no checksum work: only the up definition is covered, and rollback
     /// never verifies checksums at all.
     /// </remarks>

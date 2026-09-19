@@ -1092,14 +1092,14 @@ decouple the work from the history-row `INSERT`, and "half-applied" there is pre
 `MigrationConnectionContractIntegrationTests` pins the whole contract. → rationale#migrations
 
 **Checksums.** `IMigration.Checksum` is a default interface member returning null (so existing
-implementations still compile); `Migration.Checksum` is **`virtual`** and returns the uppercase SHA-256
-hex of its **up** SQL only —
-the down SQL is not part of what was applied, and rollback never verifies checksums at all. The checksum
-is stored with the history row and compared on later runs, throwing `MigrationChecksumMismatchException`
-(`ExpectedChecksum` = stored, `ActualChecksum` = supplied) unless `MigrationOptions.VerifyChecksums` is
-false. Either side null skips the check, which keeps pre-checksum history usable: a legacy three-column
-table is `ALTER TABLE`-ed on first use, re-checking `pragma_table_info` under an immediate transaction
-so two starting processes cannot both issue the ALTER.
+implementations still compile); `Migration.Checksum` is **`virtual`** and returns the uppercase
+SHA-256 hex of its **up** SQL only — the down SQL is not part of what was applied, and rollback
+never verifies checksums at all. The checksum is stored with the history row and compared on later
+runs, throwing `MigrationChecksumMismatchException` (`ExpectedChecksum` = stored, `ActualChecksum` =
+supplied) unless `MigrationOptions.VerifyChecksums` is false. Either side null skips the check,
+which keeps pre-checksum history usable: a legacy three-column table is `ALTER TABLE`-ed on first
+use, re-checking `pragma_table_info` under an immediate transaction so two starting processes cannot
+both issue the ALTER.
 
 **Input is validated before anything runs**: a null element or a duplicate version throws
 `ArgumentException` naming the version and both indices, a negative rollback target throws
