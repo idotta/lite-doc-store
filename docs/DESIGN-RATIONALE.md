@@ -2077,10 +2077,24 @@ Two alternatives rejected:
 - **A positional `record`.** Out of scope for this unit, and a larger break than the one being fixed:
   it changes equality and `ToString` as well.
 
-**The break class.** A **source** break for a consumer that wrote to a property after construction
-(object-initializer use is unaffected — that is exactly what `init` supports, and the runner's own
-call site compiles unchanged). Also a **binary** break, because an init-only setter carries an
-`IsExternalInit` `modreq` that changes the setter's signature, so an assembly already compiled against
-the `set;` form does not bind against the new one. The source half is measured here (the library and
-both test projects build with 0 warnings against the `init` form); the binary half is verifier's
-independent measurement.
+**The break class.** A **source** break for a consumer that wrote to a property after construction —
+`record.Name = "x"` now fails to compile with `CS8852: Init-only property or indexer
+'MigrationHistoryRecord.Name' can only be assigned in an object initializer, or on 'this' or 'base' in
+an instance constructor or an 'init' accessor.` Source-compatible for an object initializer, which is
+exactly what `init` supports — the runner's own call site compiles unchanged, and the library and both
+test projects build with 0 warnings against the `init` form.
+
+Also a **binary** break, because an init-only setter carries an `IsExternalInit` `modreq` that changes
+the setter's signature, so an assembly already compiled against the `set;` form does not bind against
+the new one: `System.MissingMethodException: Method not found: 'Void
+LiteDocumentStore.MigrationHistoryRecord.set_Name(System.String)'`. **The binary break is wider than
+the source one:** an object initializer emits the same `set_Name` call, so a consumer who only ever
+used an initializer compiles fine against the new form but still fails with `MissingMethodException`
+if it is not recompiled. Both halves are measured — the source half here, the binary half
+independently by the unit's verifier, which reproduced the identical exception text from an
+initializer-only consumer.
+
+Measured against a control: adding `virtual` to `Migration.Checksum` (the preceding change, and the
+checksum subsection above) is **neither** a source nor a binary break — `virtual` widens what a
+subclass may do without altering the property's signature, so nothing a caller compiled against the
+non-virtual form has to be recompiled. The modreq is what makes this change different in kind.
