@@ -104,7 +104,8 @@ public sealed class DefaultConnectionFactory : IConnectionFactory
     [SuppressMessage("Performance", "CA1822",
         Justification = "Must stay a public instance member: this is the delegation seam. A custom " +
                         "IConnectionFactory decorates this sealed class by holding one and calling " +
-                        "_inner.ConfigureConnection(...), which a static member would not compile.")]
+                        "_inner.ConfigureConnection(...), which does not compile against a static " +
+                        "member (CS0176).")]
     public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(connection);
@@ -172,7 +173,8 @@ public sealed class DefaultConnectionFactory : IConnectionFactory
     [SuppressMessage("Performance", "CA1822",
         Justification = "Must stay a public instance member: this is the delegation seam. A custom " +
                         "IConnectionFactory decorates this sealed class by holding one and calling " +
-                        "_inner.ConfigureConnection(...), which a static member would not compile.")]
+                        "_inner.ConfigureConnection(...), which does not compile against a static " +
+                        "member (CS0176).")]
     public async Task ConfigureConnectionAsync(
         SqliteConnection connection,
         DocumentStoreOptions options,
