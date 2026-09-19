@@ -383,10 +383,10 @@ connections. Same reason for `SqlitePageSizeGuard`. The result is deliberately *
 
 `DocumentStoreOptions.Validate()` is called from `DocumentStoreFactory.CreateStore`, so it covers the DI
 path too — `AddLiteDocumentStore` hands the factory an options object nothing else has validated, and
-options built by hand never pass through `DocumentStoreOptionsBuilder`. It rejects a non-power-of-2 `PageSize`, a negative
-`BusyTimeoutMs`, a `MaxPoolSize` below 1, a `PoolWaitTimeoutMs` of 0 or negative other than
-`Timeout.Infinite`, and a blank `AdditionalPragmas` entry, each naming the offending option as
-`ParamName`; `Build()` calls it too, so a builder cannot produce options the factory then refuses.
+options built by hand never pass through `DocumentStoreOptionsBuilder`. It rejects a non-power-of-2
+`PageSize`, a negative `BusyTimeoutMs`, a `MaxPoolSize` below 1, a `PoolWaitTimeoutMs` of 0 or negative
+other than `Timeout.Infinite`, and a blank `AdditionalPragmas` entry, each naming the offending option
+as `ParamName`; `Build()` calls it too, so a builder cannot produce options the factory then refuses.
 
 **Two serializer rejections live together in `ThrowIfSerializerOptionsUnusable`**, resolver-less first
 then AOT-null, and **both must run at both boundaries**:
@@ -412,8 +412,8 @@ The window was real: a caller-supplied `ILoggerFactory` runs as arbitrary code b
 construction, on the mutable object the caller still holds, and an ordinary concurrent setter reaches it
 with no custom logger at all. → rationale#options-snapshot
 
-**The DI registration snapshots too, at registration — that is the fourth `Clone()` and it is the only
-one whose *moment* is part of the contract.** Both instance overloads
+**The DI registration snapshots too, and it is the only one of the four `Clone()`s whose *moment* is
+part of the contract** — it runs at registration, before the three above. Both instance overloads
 (`AddLiteDocumentStore(options)` / `AddKeyedLiteDocumentStore(key, options)`) call `options.Clone()` in
 the method body and capture the clone, not the caller's instance. Capturing the instance deferred the
 whole configuration to the factory's clone at *first resolution*, so what a store opened depended on
