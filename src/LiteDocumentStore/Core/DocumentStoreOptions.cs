@@ -109,10 +109,11 @@ public sealed class DocumentStoreOptions
     {
         get;
         // Validated here too, not just in the builder: SemaphoreSlim's own exception names
-        // "maxCount" and never mentions which option was wrong.
+        // "maxCount" and never mentions which option was wrong. ParamName is the option for the
+        // same reason — "value" is the setter's own parameter, and names nothing the caller can fix.
         set
         {
-            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1, nameof(MaxPoolSize));
             field = value;
         }
     } = Math.Clamp(Environment.ProcessorCount, 2, 16);
@@ -144,13 +145,14 @@ public sealed class DocumentStoreOptions
     {
         get;
         // Validated here too, for MaxPoolSize's reason: SemaphoreSlim's own exception names
-        // "millisecondsTimeout" and never mentions which option was wrong.
+        // "millisecondsTimeout" and never mentions which option was wrong. ParamName names the
+        // option for that same reason, not the setter's own "value".
         set
         {
             if (value is 0 or < Timeout.Infinite)
             {
                 throw new ArgumentOutOfRangeException(
-                    nameof(value),
+                    nameof(PoolWaitTimeoutMs),
                     value,
                     "Pool wait timeout must be positive, or -1 to wait forever.");
             }

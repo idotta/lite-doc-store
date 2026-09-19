@@ -727,6 +727,70 @@ The example is also its own counterexample for how `IsDynamicCodeSupported` is d
 writes the `DynamicCodeSupport` switch into the project's runtimeconfig, so a plain `dotnet run` of it
 already reports the property **false**, with no native publish involved.
 
+### The two setter-validated options named `value`
+
+`MaxPoolSize` and `PoolWaitTimeoutMs` are the only options that validate inside their own setter, and
+both threw with `ParamName = "value"` while carrying a comment saying they existed *precisely because*
+`SemaphoreSlim`'s exception "never mentions which option was wrong". They reproduced the defect they
+were written to fix.
+
+Two tests asserted the naming in their **name** only — `MaxPoolSize_BelowOne_ThrowsNamingTheOption` and
+`PoolWaitTimeout_WithAnUnusableValue_ThrowsNamingTheOption` — and both were green. The `ParamName`
+assertions were added *before* any production edit and run against the unfixed setters:
+
+```
+MaxPoolSize_BelowOne_ThrowsNamingTheOption(maxPoolSize: 0 | -1)
+  Assert.Equal() Failure: Strings differ   Expected: "MaxPoolSize"        Actual: "value"
+PoolWaitTimeout_WithAnUnusableValue_ThrowsNamingTheOption(timeoutMs: 0 | -2)
+  Assert.Equal() Failure: Strings differ   Expected: "PoolWaitTimeoutMs"  Actual: "value"
+```
+
+For a property setter `value` genuinely *is* the parameter, so this is a choice rather than a bug fix
+in the mechanical sense. It goes the other way for the reason `ThrowIfSerializerOptionsUnusable` does:
+the reader of the exception is someone configuring an option, and every sibling — `PageSize`,
+`BusyTimeoutMs`, `AdditionalPragmas`, `SerializerOptions`, and these same two through `Validate()` —
+already names the option. Leaving these two on `value` made the same rejected value report a different
+name depending on whether it arrived through the setter or through `Validate()`. The builder's
+`WithMaxPoolSize`/`WithPoolWaitTimeout` keep naming their own parameter, which is correct: there the
+caller really did pass one.
+
+Unlike the `SerializerOptions` pair this costs no `CA2208` suppression — the analyzer does not flag a
+property accessor for naming its own property.
+
+**No accepted value changed at either setter. The message did change, asymmetrically — and that is the
+better argument for the change than "nothing moved".** Measured on .NET 10 against the shipped
+assembly, `MaxPoolSize = 0`:
+
+```
+before: value ('0') must be greater than or equal to '1'. (Parameter 'value')
+        Actual value was 0.
+after:  MaxPoolSize ('0') must be greater than or equal to '1'. (Parameter 'MaxPoolSize')
+        Actual value was 0.
+```
+
+`ArgumentOutOfRangeException.ThrowIfLessThan` formats `paramName` into the message **body**, not only
+into the framework's trailing `(Parameter '…')`. So the sentence a caller actually reads stopped naming
+a parameter that appears nowhere in their source and started naming the option they set — the whole
+point of the fix, delivered twice over.
+
+`PoolWaitTimeoutMs` is the other half of the asymmetry: its body is hand-written and is byte-identical
+before and after — `Pool wait timeout must be positive, or -1 to wait forever.` — and only the trailing
+`(Parameter 'value')` became `(Parameter 'PoolWaitTimeoutMs')`, as it does at any re-attribution.
+
+That the old `MaxPoolSize` setter really resolved to `"value"`, rather than to the caller's assigning
+expression, is its own measurement: a control property whose setter calls `ThrowIfLessThan(value, 1)`
+with no name argument reports `ParamName = "value"` — `[CallerArgumentExpression]` captures the
+accessor's implicit parameter, not the call site.
+
+The three re-validation branches behind the setters (`Validate()`'s `MaxPoolSize < 1` and
+`PoolWaitTimeoutMs is 0 or < Timeout.Infinite`, and `Build()`'s `MaxPoolSize < 1`) are unreachable and
+stay: `field` auto-properties have no writer but their own setter, and every writer in `src/` and
+`tests/` goes through it — object initializers (including `Clone()`'s), the builder's
+`WithMaxPoolSize`/`WithPoolWaitTimeout`, plain assignments in tests, and `OptionsSnapshotTests`'
+reflective `PropertyInfo.SetValue`. The three presets — `ForFile`, `ForInMemory` and
+`ForSharedInMemory` — write neither option at all. Nothing deserializes or `UnsafeAccessor`s the
+backing field.
+
 ---
 
 ## json-metadata

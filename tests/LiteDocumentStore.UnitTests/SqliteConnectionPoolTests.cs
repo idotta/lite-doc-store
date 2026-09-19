@@ -502,7 +502,8 @@ public sealed class SqliteConnectionPoolTests
     {
         var options = DocumentStoreOptions.ForInMemory();
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => options.MaxPoolSize = maxPoolSize);
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => options.MaxPoolSize = maxPoolSize);
+        Assert.Equal(nameof(DocumentStoreOptions.MaxPoolSize), ex.ParamName);
         Assert.True(options.MaxPoolSize >= 1);
     }
 
