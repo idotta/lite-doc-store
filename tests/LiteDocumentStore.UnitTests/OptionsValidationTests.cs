@@ -300,6 +300,7 @@ public sealed class OptionsValidationTests
         var options = DocumentStoreOptions.ForFile("some.db");
 
         var ex = Assert.Throws<ArgumentOutOfRangeException>(() => options.PoolWaitTimeoutMs = timeoutMs);
+        Assert.Equal(nameof(DocumentStoreOptions.PoolWaitTimeoutMs), ex.ParamName);
         Assert.Equal(30_000, options.PoolWaitTimeoutMs);
         Assert.Contains("-1", ex.Message, StringComparison.Ordinal);
     }

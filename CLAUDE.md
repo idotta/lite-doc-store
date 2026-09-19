@@ -388,6 +388,13 @@ options built by hand never pass through `DocumentStoreOptionsBuilder`. It rejec
 other than `Timeout.Infinite`, and a blank `AdditionalPragmas` entry, each naming the offending option
 as `ParamName`; `Build()` calls it too, so a builder cannot produce options the factory then refuses.
 
+**`MaxPoolSize` and `PoolWaitTimeoutMs` validate in their setter as well, and name the option there
+too.** Both are `field` auto-properties, so an out-of-range value is refused before `Validate()` can
+ever see it — which is also why those two `Validate()` branches and `Build()`'s `MaxPoolSize` check are
+unreachable belt-and-braces. Each setter passes the option's own name as `ParamName`, not the setter's
+implicit `value`: one condition reports one name wherever it fires, and `value` names nothing a caller
+can go and fix. → rationale#options-snapshot
+
 **Two serializer rejections live together in `ThrowIfSerializerOptionsUnusable`**, resolver-less first
 then AOT-null, and **both must run at both boundaries**:
 
