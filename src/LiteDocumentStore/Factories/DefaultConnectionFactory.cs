@@ -1,4 +1,5 @@
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Data.Sqlite;
 
 namespace LiteDocumentStore;
@@ -88,7 +89,23 @@ public sealed class DefaultConnectionFactory : IConnectionFactory
         }
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Applies the command timeout and the PRAGMA block for <paramref name="options"/> to an
+    /// already-open connection.
+    /// </summary>
+    /// <remarks>
+    /// Not declared on <see cref="IConnectionFactory"/>, deliberately: the store only ever calls
+    /// <see cref="CreateConnection(DocumentStoreOptions)"/>, so an interface declaration here
+    /// invited an implementer to configure in a member nothing calls. It stays public on this
+    /// sealed class because that is what a delegating factory calls on its inner instance.
+    /// </remarks>
+    /// <param name="connection">The connection to configure. Opened first if it is not already.</param>
+    /// <param name="options">The options whose settings are applied.</param>
+    [SuppressMessage("Performance", "CA1822",
+        Justification = "Must stay a public instance member: this is the delegation seam. A custom " +
+                        "IConnectionFactory decorates this sealed class by holding one and calling " +
+                        "_inner.ConfigureConnection(...), which does not compile against a static " +
+                        "member (CS0176).")]
     public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(connection);
@@ -141,7 +158,23 @@ public sealed class DefaultConnectionFactory : IConnectionFactory
         }
     }
 
-    /// <inheritdoc/>
+    /// <summary>
+    /// Applies the command timeout and the PRAGMA block for <paramref name="options"/> to an
+    /// already-open connection.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="ConfigureConnection(SqliteConnection, DocumentStoreOptions)"/> for why this
+    /// is public on the sealed class but absent from <see cref="IConnectionFactory"/>.
+    /// </remarks>
+    /// <param name="connection">The connection to configure. Opened first if it is not already.</param>
+    /// <param name="options">The options whose settings are applied.</param>
+    /// <param name="cancellationToken">Cancels the configuration round trips.</param>
+    /// <returns>A task representing the asynchronous operation.</returns>
+    [SuppressMessage("Performance", "CA1822",
+        Justification = "Must stay a public instance member: this is the delegation seam. A custom " +
+                        "IConnectionFactory decorates this sealed class by holding one and calling " +
+                        "_inner.ConfigureConnection(...), which does not compile against a static " +
+                        "member (CS0176).")]
     public async Task ConfigureConnectionAsync(
         SqliteConnection connection,
         DocumentStoreOptions options,

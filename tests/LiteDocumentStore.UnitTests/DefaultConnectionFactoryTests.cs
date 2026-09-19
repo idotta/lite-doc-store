@@ -153,14 +153,30 @@ public sealed class DefaultConnectionFactoryTests : IDisposable
                  {
                      nameof(IConnectionFactory.CreateConnection),
                      nameof(IConnectionFactory.CreateConnectionAsync),
-                     nameof(IConnectionFactory.ConfigureConnection),
-                     nameof(IConnectionFactory.ConfigureConnectionAsync),
+                     nameof(DefaultConnectionFactory.ConfigureConnection),
+                     nameof(DefaultConnectionFactory.ConfigureConnectionAsync),
                  })
         {
             var method = type.GetMethod(name);
             Assert.NotNull(method);
             Assert.True(method.IsPublic, $"{name} must be publicly callable on the delegation target.");
         }
+
+        // The interface itself declares only the two members the store actually calls. A
+        // Configure* declaration back on IConnectionFactory is the trap this cut removed: an
+        // implementer who reads the interface, configures there and returns a bare connection
+        // from CreateConnection gets silently unconfigured connections, because the pool never
+        // calls anything else. Nothing else fails when that comes back, so it is pinned here.
+        var declared = typeof(IConnectionFactory)
+            .GetMethods()
+            .Select(m => m.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            [nameof(IConnectionFactory.CreateConnection), nameof(IConnectionFactory.CreateConnectionAsync)],
+            declared);
+        Assert.DoesNotContain(declared, n => n.StartsWith("Configure", StringComparison.Ordinal));
     }
 
     public void Dispose()

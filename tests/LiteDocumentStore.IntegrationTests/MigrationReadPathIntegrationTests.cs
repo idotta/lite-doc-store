@@ -164,14 +164,5 @@ public sealed class MigrationReadPathIntegrationTests : IAsyncLifetime
             _inner.ConfigureConnection(connection, options);
             return connection;
         }
-
-        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
-            _inner.ConfigureConnection(connection, options);
-
-        public Task ConfigureConnectionAsync(
-            SqliteConnection connection,
-            DocumentStoreOptions options,
-            CancellationToken cancellationToken = default) =>
-            _inner.ConfigureConnectionAsync(connection, options, cancellationToken);
     }
 }
