@@ -1,28 +1,31 @@
 namespace LiteDocumentStore;
 
 /// <summary>
-/// Represents a record of an applied migration in the migration history table.
+/// Represents a record of an applied migration in the migration history table. An instance is a
+/// snapshot of one history row, rebuilt from the reader on every
+/// <see cref="IDocumentStore.GetAppliedMigrationsAsync(System.Threading.CancellationToken)"/> call,
+/// so the properties are <c>init</c>-only: a write would never have persisted.
 /// </summary>
 public sealed class MigrationHistoryRecord
 {
     /// <summary>
-    /// Gets or sets the migration version identifier.
+    /// Gets the migration version identifier.
     /// </summary>
-    public long Version { get; set; }
+    public long Version { get; init; }
 
     /// <summary>
-    /// Gets or sets the descriptive name of the migration.
+    /// Gets the descriptive name of the migration.
     /// </summary>
-    public string Name { get; set; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the timestamp when the migration was applied.
+    /// Gets the timestamp when the migration was applied.
     /// </summary>
-    public DateTimeOffset AppliedAt { get; set; }
+    public DateTimeOffset AppliedAt { get; init; }
 
     /// <summary>
-    /// Gets or sets the checksum recorded when the migration was applied, or null when the
+    /// Gets the checksum recorded when the migration was applied, or null when the
     /// migration carried none or the row predates checksum tracking.
     /// </summary>
-    public string? Checksum { get; set; }
+    public string? Checksum { get; init; }
 }

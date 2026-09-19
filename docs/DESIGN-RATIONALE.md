@@ -2036,3 +2036,51 @@ Two alternatives were rejected:
 - **Folding `GetType()` into the base checksum.** It detects only that *a subclass exists*, not that its
   behaviour drifted, and it invalidates every stored checksum for every existing subclass on the next
   run — a `MigrationChecksumMismatchException` on upgrade for consumers who changed nothing.
+
+### Why `MigrationHistoryRecord` is `init`-only
+
+The four properties were `get; set;` with XML docs saying "Gets or sets". Nothing a caller wrote could
+persist. The **sole** construction site is the object initializer in
+`MigrationRunner.GetAppliedMigrationsAsync`, which builds a fresh `List<>` of fresh instances from the
+reader on every call; `grep -rn MigrationHistoryRecord` over the repo finds no test, example or
+benchmark that constructs one or writes to one — every test site only reads `.Version` / `.Checksum`
+off a returned record.
+
+Measured, by a throwaway integration probe run before the fix and then deleted:
+
+```
+before: Version=1 Name=CreateProduct AppliedAt=2026-09-19T04:26:17.2216195+00:00 Checksum=45D0E078...
+after mutation (same instance): Version=999 Name=MUTATED AppliedAt=1970-01-01T00:00:00.0000000+00:00 Checksum=MUTATED-CHECKSUM
+re-read: Version=1 Name=CreateProduct AppliedAt=2026-09-19T04:26:17.2216195+00:00 Checksum=45D0E078...
+ReferenceEquals(first, second) = False
+```
+
+The mutation is invisible to the next read, and the two reads do not even share an instance. That
+measurement is recorded here rather than as a checked-in test, because **once the properties are
+`init` the probe is unwritable in C#**: the only database-observable claim behind the fix cannot
+survive as a test of the fixed code. What ships instead is a reflection unit test
+(`MigrationHistoryRecordTests`), since the fix is a compile-time shape of the public API and nothing
+about it varies with a database.
+
+The reflection test asserts on the `modreq`, not on `GetSetMethod() is null`: an init-only property
+**has** a setter, and what marks it init-only is a required custom modifier
+`System.Runtime.CompilerServices.IsExternalInit` on the setter's return parameter. A `[Theory]` with
+one `[InlineData]` per property distinguishes the four — reverting exactly one `init` fails exactly
+one case, naming that property — and a `[Fact]` enumerating every public instance property catches a
+newly added `get; set;` one.
+
+Two alternatives rejected:
+
+- **`private set`.** It compiles (the runner is in the same assembly) and stops the write, but says
+  nothing to a consumer reading the public surface — the type would still document a setter it does
+  not honour.
+- **A positional `record`.** Out of scope for this unit, and a larger break than the one being fixed:
+  it changes equality and `ToString` as well.
+
+**The break class.** A **source** break for a consumer that wrote to a property after construction
+(object-initializer use is unaffected — that is exactly what `init` supports, and the runner's own
+call site compiles unchanged). Also a **binary** break, because an init-only setter carries an
+`IsExternalInit` `modreq` that changes the setter's signature, so an assembly already compiled against
+the `set;` form does not bind against the new one. The source half is measured here (the library and
+both test projects build with 0 warnings against the `init` form); the binary half is verifier's
+independent measurement.
