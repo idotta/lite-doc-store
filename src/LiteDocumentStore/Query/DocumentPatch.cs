@@ -97,7 +97,7 @@ public sealed class DocumentPatch<T>
     /// that path
     /// </exception>
     public DocumentPatch<T> AndSet(string jsonPath, object? value) =>
-        WithOperation(CreateSet(jsonPath, value));
+        WithOperation(CreateSet(jsonPath, value), nameof(jsonPath));
 
     /// <summary>
     /// Starts a patch that removes <paramref name="jsonPath"/> from the document.
@@ -119,13 +119,21 @@ public sealed class DocumentPatch<T>
     /// or when the patch already touches that path
     /// </exception>
     public DocumentPatch<T> AndRemove(string jsonPath) =>
-        WithOperation(new PatchOperation(
-            DocumentQuery<T>.NormalizePath(jsonPath, allowRoot: false), PatchOperationKind.Remove, null, AsJson: false));
+        WithOperation(
+            new PatchOperation(
+                DocumentQuery<T>.NormalizePath(jsonPath, allowRoot: false),
+                PatchOperationKind.Remove,
+                null,
+                AsJson: false),
+            nameof(jsonPath));
 
     // Touching one path twice is a caller bug — a Set plus a Remove of the same path has no
     // defensible meaning, and two Sets silently drop one. UpsertManyAsync rejects duplicate
     // ids for the same reason.
-    private DocumentPatch<T> WithOperation(PatchOperation operation)
+    //
+    // The caller's own parameter name is threaded in: 'operation' is this private method's
+    // parameter, and a caller who wrote Set(jsonPath, value) has no such argument to fix.
+    private DocumentPatch<T> WithOperation(PatchOperation operation, string paramName)
     {
         for (var i = 0; i < _operations.Length; i++)
         {
@@ -134,7 +142,7 @@ public sealed class DocumentPatch<T>
                 throw new ArgumentException(
                     $"The patch already has an operation on '{operation.JsonPath}'; each path may be " +
                     "set or removed once.",
-                    nameof(operation));
+                    paramName);
             }
         }
 

@@ -24,8 +24,10 @@ public class PatchSqlTests
     private static PatchOperation Remove(string jsonPath) =>
         new(jsonPath, PatchOperationKind.Remove, null, AsJson: false);
 
+    // "patch" is the name PatchCoreAsync threads in — the caller's own parameter, which is what
+    // every rejection below has to blame.
     private static GeneratedQuery Generate(params PatchOperation[] operations) =>
-        SqlGenerator.GeneratePatchSql(Table, operations, versioned: false);
+        SqlGenerator.GeneratePatchSql(Table, operations, versioned: false, "patch");
 
     // --- Statement shape ---------------------------------------------------------------
 
@@ -72,7 +74,7 @@ public class PatchSqlTests
     [Fact]
     public void GeneratePatchSql_WhenVersioned_GuardsOnTheExpectedVersion()
     {
-        var patch = SqlGenerator.GeneratePatchSql(Table, [Set("$.Email", "a@b.c")], versioned: true);
+        var patch = SqlGenerator.GeneratePatchSql(Table, [Set("$.Email", "a@b.c")], versioned: true, "patch");
 
         Assert.Equal(
             "UPDATE [Person] SET data = jsonb_set(data, '$.Email', @p0), version = version + 1 " +
@@ -108,15 +110,16 @@ public class PatchSqlTests
     public void GeneratePatchSql_WithNoOperations_Throws()
     {
         var exception = Assert.Throws<ArgumentException>(
-            () => SqlGenerator.GeneratePatchSql(Table, NoOperations, versioned: false));
+            () => SqlGenerator.GeneratePatchSql(Table, NoOperations, versioned: false, "patch"));
 
-        Assert.Equal("operations", exception.ParamName);
+        Assert.Equal("patch", exception.ParamName);
     }
 
     [Fact]
     public void GeneratePatchSql_WithAnInjectedTableName_Throws() =>
         Assert.Throws<ArgumentException>(
-            () => SqlGenerator.GeneratePatchSql("Person]; DROP TABLE Person; --", [Set("$.A", 1)], versioned: false));
+            () => SqlGenerator.GeneratePatchSql(
+                "Person]; DROP TABLE Person; --", [Set("$.A", 1)], versioned: false, "patch"));
 
     [Fact]
     public void GeneratePatchSql_WithAMalformedPath_Throws()
@@ -124,7 +127,7 @@ public class PatchSqlTests
         var exception = Assert.Throws<ArgumentException>(
             () => Generate(Set("$.A'); DROP TABLE Person; --", 1)));
 
-        Assert.Equal("operations", exception.ParamName);
+        Assert.Equal("patch", exception.ParamName);
     }
 
     private static PatchOperation[] Sets(int count) =>
@@ -152,7 +155,7 @@ public class PatchSqlTests
         var exception = Assert.Throws<ArgumentException>(
             () => Generate(Sets(SqlGenerator.MaxPatchSetOperations + 1)));
 
-        Assert.Equal("operations", exception.ParamName);
+        Assert.Equal("patch", exception.ParamName);
         Assert.Contains(
             SqlGenerator.MaxPatchSetOperations.ToString(), exception.Message, StringComparison.Ordinal);
     }
@@ -172,7 +175,7 @@ public class PatchSqlTests
         var exception = Assert.Throws<ArgumentException>(
             () => Generate(Removes(SqlGenerator.MaxPatchRemoveOperations + 1)));
 
-        Assert.Equal("operations", exception.ParamName);
+        Assert.Equal("patch", exception.ParamName);
         Assert.Contains(
             SqlGenerator.MaxPatchRemoveOperations.ToString(), exception.Message, StringComparison.Ordinal);
     }
@@ -378,6 +381,39 @@ public class PatchSqlTests
         Assert.Equal("jsonPath", exception.ParamName);
     }
 
+    // --- Who a rejection blames ----------------------------------------------------------
+    //
+    // The duplicate-path check runs inside the private WithOperation, whose own parameter is
+    // called 'operation'. A caller wrote Set(jsonPath, value) and has no 'operation' argument to
+    // fix, so the caller's parameter name is threaded in. Both entry kinds are pinned because
+    // AndSet and AndRemove thread it separately.
+
+    [Fact]
+    public void AndSet_OnAPathTheSetAlreadyTouches_BlamesTheCallersPath()
+    {
+        var patch = DocumentPatch<Person>.Set("$.Email", "a@b.c");
+
+        var exception = Assert.Throws<ArgumentException>(() => patch.AndSet("$.Email", "d@e.f"));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+        Assert.Contains("$.Email", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndRemove_OnAPathTheSetAlreadyTouches_BlamesTheCallersPath()
+    {
+        var patch = DocumentPatch<Person>.Set("$.Email", "a@b.c");
+
+        var exception = Assert.Throws<ArgumentException>(() => patch.AndRemove("$.Email"));
+
+        Assert.Equal("jsonPath", exception.ParamName);
+        Assert.Contains("$.Email", exception.Message, StringComparison.Ordinal);
+    }
+
+    // The caps are the generator's alone — nothing in DocumentPatch<T> counts operations — so
+    // the name it reports is the name it was handed, and PatchCoreAsync hands it 'patch'
+    // (pinned above by the cap tests, and end to end by PatchIntegrationTests).
+
     // The two generator-side checks are separate ValidateJsonPath calls — one in the jsonb_set
     // loop, one in the jsonb_remove loop — so each needs its own test to be pinned.
 
@@ -386,7 +422,7 @@ public class PatchSqlTests
     {
         var exception = Assert.Throws<ArgumentException>(() => Generate(Set("$", 5)));
 
-        Assert.Equal("operations", exception.ParamName);
+        Assert.Equal("patch", exception.ParamName);
     }
 
     [Fact]
@@ -394,7 +430,7 @@ public class PatchSqlTests
     {
         var exception = Assert.Throws<ArgumentException>(() => Generate(Remove("$")));
 
-        Assert.Equal("operations", exception.ParamName);
+        Assert.Equal("patch", exception.ParamName);
     }
 
     // An indexer at the root reaches into the document rather than replacing it, so it stays
