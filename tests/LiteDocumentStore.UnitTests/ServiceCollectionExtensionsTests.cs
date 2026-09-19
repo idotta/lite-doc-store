@@ -159,6 +159,73 @@ public sealed class ServiceCollectionExtensionsTests
         await Assert.ThrowsAsync<ObjectDisposedException>(() => store.CountAsync<Doc>());
     }
 
+    /// <summary>
+    /// The options are snapshotted at registration: mutating the instance afterwards must not
+    /// retarget the store this registration resolves to. Asserted against the database that
+    /// received the write, not against a property of the options object.
+    /// </summary>
+    [Fact]
+    public async Task AddLiteDocumentStore_WithTheOptionsMutatedAfterRegistration_ResolvesTheRegisteredDatabase()
+    {
+        var registered = Options().ConnectionString;
+        var mutated = Options().ConnectionString;
+        var options = new DocumentStoreOptions { ConnectionString = registered, EnableWalMode = false };
+
+        var services = new ServiceCollection();
+        services.AddLiteDocumentStore(options);
+
+        // After registration and before the first resolution — the window in which the captured
+        // instance decided the store's configuration.
+        options.ConnectionString = mutated;
+
+        await using var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<IDocumentStore>();
+        await store.CreateTableAsync<Doc>();
+        await store.UpsertAsync("written-through-the-resolved-store", new Doc("a", 1));
+
+        // Open the registered database directly and look for the row there.
+        await using var onRegistered = new DocumentStoreFactory().Create(
+            new DocumentStoreOptions { ConnectionString = registered, EnableWalMode = false });
+        await onRegistered.CreateTableAsync<Doc>();
+
+        Assert.True(
+            await onRegistered.CountAsync<Doc>() == 1,
+            $"the resolved store wrote to {ConnectionStringOf(store)}; expected the registered {registered}");
+    }
+
+    /// <summary>
+    /// The documented multi-database pattern reconfigures one options instance between keys.
+    /// Capturing that instance made every key resolve to whatever it held last, so two keys named
+    /// one database — asserted by writing through one key and counting through the other.
+    /// </summary>
+    [Fact]
+    public async Task AddKeyedLiteDocumentStore_WithOneOptionsInstanceRegisteredTwice_KeepsTheKeysOnSeparateDatabases()
+    {
+        var firstDatabase = Options().ConnectionString;
+        var secondDatabase = Options().ConnectionString;
+        var options = new DocumentStoreOptions { ConnectionString = firstDatabase, EnableWalMode = false };
+
+        var services = new ServiceCollection();
+        services.AddKeyedLiteDocumentStore("a", options);
+        options.ConnectionString = secondDatabase;
+        services.AddKeyedLiteDocumentStore("b", options);
+
+        await using var provider = services.BuildServiceProvider();
+        var a = provider.GetRequiredKeyedService<IDocumentStore>("a");
+        var b = provider.GetRequiredKeyedService<IDocumentStore>("b");
+
+        await a.CreateTableAsync<Doc>();
+        await b.CreateTableAsync<Doc>();
+        await a.UpsertAsync("only-on-a", new Doc("a", 1));
+
+        Assert.Equal(1, await a.CountAsync<Doc>());
+        Assert.True(
+            await b.CountAsync<Doc>() == 0,
+            $"a write through key \"a\" was visible through key \"b\", so the two keys share one " +
+            $"database: a reached {ConnectionStringOf(a)} (expected {firstDatabase}), " +
+            $"b reached {ConnectionStringOf(b)} (expected {secondDatabase})");
+    }
+
     [Fact]
     public void AddLiteDocumentStore_WithNullArguments_Throws()
     {
