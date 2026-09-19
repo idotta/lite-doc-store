@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -121,8 +122,8 @@ public sealed class TransactionLeakIntegrationTests : IDisposable
     }
 
     /// <summary>
-    /// Starts a transaction, writes through it and drops it on the floor, returning only a weak
-    /// reference so the test can wait for the collection rather than assume it.
+    /// Starts a transaction, writes through it and drops it on the floor. Nothing in the caller's
+    /// frame roots it afterwards; the returned weak reference is only a diagnostic.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static async Task<WeakReference> LeakATransactionAsync(IDocumentStore store)
@@ -133,15 +134,53 @@ public sealed class TransactionLeakIntegrationTests : IDisposable
         return new WeakReference(transaction);
     }
 
-    private static void CollectUntilDead(WeakReference leaked)
+    /// <summary>
+    /// Drains the finalizer queue until the leaked transaction's finalizer has reported the leak,
+    /// or the deadline passes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wait is on the finalizer's own observable effect — the <c>Error</c> log it writes,
+    /// counted by <paramref name="logger"/> — and never on <paramref name="leaked"/>. A short
+    /// <see cref="WeakReference"/> is cleared when its target becomes <i>unreachable</i>, which
+    /// happens before the finalizer runs, so it cannot say that the finalizer ran; and once some
+    /// earlier unrelated collection has cleared it, a loop guarded on <c>IsAlive</c> drains
+    /// nothing at all and every later assertion about the finalizer's effect fails at random.
+    /// That was this class's flake. The drain is therefore unconditional, and
+    /// <paramref name="leaked"/> only enriches the failure message.
+    /// </para>
+    /// <para>
+    /// Checking the count <i>after</i> <see cref="GC.WaitForPendingFinalizers"/> returns is what
+    /// makes the slot release observable too: the count is incremented inside the finalizer, so a
+    /// drain that has returned with the count already raised has run the whole finalizer body,
+    /// including the <c>finally</c> that gives the slot back.
+    /// </para>
+    /// </remarks>
+    private static void DrainFinalizersUntilLeakReported(WeakReference leaked, ErrorCountingLogger logger)
     {
-        for (var attempt = 0; attempt < 10 && leaked.IsAlive; attempt++)
+        // Same bound as the watchdogs below: generous enough not to flake on a loaded machine,
+        // short enough that a genuine regression fails the run rather than hanging it.
+        var deadline = Stopwatch.StartNew();
+
+        while (true)
         {
             GC.Collect();
             GC.WaitForPendingFinalizers();
-        }
 
-        Assert.False(leaked.IsAlive, "the leaked transaction was still reachable, so its finalizer never ran");
+            if (Volatile.Read(ref logger.Errors) > 0)
+            {
+                return;
+            }
+
+            if (deadline.Elapsed >= TimeSpan.FromSeconds(20))
+            {
+                Assert.Fail(
+                    "the leaked transaction's finalizer never reported the leak within 20 s " +
+                    $"(leaked.IsAlive = {leaked.IsAlive})");
+            }
+
+            Thread.Sleep(25);
+        }
     }
 
     private static async Task ReadSucceedsAsync(IDocumentStore store)
@@ -162,7 +201,7 @@ public sealed class TransactionLeakIntegrationTests : IDisposable
         var logger = new ErrorCountingLogger(throwOnError: false);
         await using var store = await CreateStoreAsync(poolWaitTimeoutMs: 2000, logger);
 
-        CollectUntilDead(await LeakATransactionAsync(store));
+        DrainFinalizersUntilLeakReported(await LeakATransactionAsync(store), logger);
 
         Assert.True(Volatile.Read(ref logger.Errors) > 0, "the leak was never reported");
         await ReadSucceedsAsync(store);
@@ -176,7 +215,7 @@ public sealed class TransactionLeakIntegrationTests : IDisposable
         var logger = new ErrorCountingLogger(throwOnError: true);
         await using var store = await CreateStoreAsync(poolWaitTimeoutMs: 2000, logger);
 
-        CollectUntilDead(await LeakATransactionAsync(store));
+        DrainFinalizersUntilLeakReported(await LeakATransactionAsync(store), logger);
 
         Assert.True(Volatile.Read(ref logger.Errors) > 0, "the diagnostic was never attempted");
         await ReadSucceedsAsync(store);

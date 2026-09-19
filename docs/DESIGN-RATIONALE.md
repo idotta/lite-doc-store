@@ -482,6 +482,51 @@ it, so the slot comes back before the lock does — a *write* right after a reco
 window (it counts what the pool owns, like `DiscardBrokenConnection`) while the replacement the woken
 waiter opens means live handles can transiently exceed `MaxPoolSize`.
 
+### How the pinning test lied for months
+
+`TransactionLeakIntegrationTests` waited for the finalizer through a `WeakReference`:
+
+```csharp
+for (var attempt = 0; attempt < 10 && leaked.IsAlive; attempt++)
+{
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+}
+
+Assert.False(leaked.IsAlive, "…so its finalizer never ran");
+```
+
+A short `WeakReference` is cleared when its target becomes **unreachable**, which happens *before* the
+finalizer runs — so it can never report that the finalizer ran. Worse, the liveness guard made the
+drain conditional: once an unrelated allocation elsewhere in the suite had already collected the
+transaction, `IsAlive` was **false on entry**, the loop ran **zero** iterations,
+`GC.WaitForPendingFinalizers()` was **never called at all**, and `Assert.False(leaked.IsAlive)` passed
+against a finalizer still sitting in the queue. The next assertion — the one about the finalizer's
+*effect* — then failed. That is the repo's long-standing unnamed integration flake: roughly one failure
+in ~638 tests, never reproduced in isolation.
+
+Measured. Instrumenting the helper: in isolation `aliveOnEntry=True, iterations=1`; with a single bare
+`GC.Collect();` inserted before the loop — standing in for that unlucky background GC —
+`aliveOnEntry=False, iterations=0`, and the same **2 of 4** tests failed on **3 of 3** runs
+(`the leak was never reported` / `the diagnostic was never attempted`). Both are the two tests that use
+the helper.
+
+The rule the replacement satisfies: **never conclude the finalizer has run from the weak reference
+alone.** The drain is unconditional and the wait is on the finalizer's own observable effect — the
+`Error` log, counted by the test's logger — under a 20 s deadline. Checking that count *after*
+`GC.WaitForPendingFinalizers()` returns also makes the slot release observable, since the count is
+incremented inside the finalizer body whose `finally` releases the slot. With the same probe re-applied
+after the fix, **5 of 5** runs were green.
+
+`Assert.False(leaked.IsAlive, …)` is gone rather than repaired: it only ever asserted that *a
+collection had happened*, which is not what the class pins, and re-asserting it after a correct wait
+would be a fresh flake — a finalized object stays reachable from the finalizer queue and only becomes
+collectable on a *later* pass, so `IsAlive` can legitimately still read `true`. The `WeakReference`
+survives only to enrich the failure message.
+
+Every other `GC.WaitForPendingFinalizers()` in `tests/` is an unconditional drain, and no other site
+concludes anything from a `WeakReference`.
+
 ### `PoolWaitTimeoutMs` must be cloned
 
 It is where the pool reads it from: `Normalize` clones, so an omission in `Clone()` silently restores
