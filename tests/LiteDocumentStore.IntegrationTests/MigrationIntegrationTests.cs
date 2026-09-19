@@ -479,6 +479,32 @@ public class MigrationIntegrationTests : IAsyncLifetime
         Assert.True(await TableExistsAsync("T2"));
     }
 
+    [Fact]
+    public async Task MigrateAsync_WhenSubclassChecksumOverrideChanges_ThrowsChecksumMismatch()
+    {
+        // Only reachable if the runner reads the override rather than the base digest: both
+        // instances hand the base constructor the same up SQL.
+        await _store.MigrateAsync([new ChecksummedMigration(1, "T1", "CHECKSUM-A")]);
+
+        var ex = await Assert.ThrowsAsync<MigrationChecksumMismatchException>(() =>
+            _store.MigrateAsync([new ChecksummedMigration(1, "T1", "CHECKSUM-B")]));
+
+        Assert.Equal("CHECKSUM-A", ex.ExpectedChecksum);
+        Assert.Equal("CHECKSUM-B", ex.ActualChecksum);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WhenSubclassChecksumOverrideBecomesNull_SkipsVerification()
+    {
+        // The upgrade path the docs describe: a stored non-null checksum followed by a null one
+        // does not fail, verification simply stops for that migration.
+        await _store.MigrateAsync([new ChecksummedMigration(1, "T1", "CHECKSUM-A")]);
+
+        await _store.MigrateAsync([new OptedOutMigration(1, "T1")]);
+
+        Assert.Equal(1, await _store.GetCurrentMigrationVersionAsync());
+    }
+
     private sealed class ThrowingDownMigration(long version, string tableName)
         : Migration(
             version,
@@ -504,5 +530,32 @@ public class MigrationIntegrationTests : IAsyncLifetime
             await release;
             await base.UpAsync(connection, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Covers <see cref="Migration.Checksum"/> the way a subclass that changes what runs must.
+    /// </summary>
+    private sealed class ChecksummedMigration(long version, string tableName, string checksum)
+        : Migration(
+            version,
+            $"Create{tableName}",
+            $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY)",
+            $"DROP TABLE {tableName}")
+    {
+        public override string Checksum => checksum;
+    }
+
+    /// <summary>
+    /// Opts out of verification; the declared type is non-nullable, so the opt-out is
+    /// <c>null!</c>.
+    /// </summary>
+    private sealed class OptedOutMigration(long version, string tableName)
+        : Migration(
+            version,
+            $"Create{tableName}",
+            $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY)",
+            $"DROP TABLE {tableName}")
+    {
+        public override string Checksum => null!;
     }
 }

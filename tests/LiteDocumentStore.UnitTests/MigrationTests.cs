@@ -131,6 +131,48 @@ public class MigrationTests
         Assert.IsAssignableFrom<LiteDocumentStoreException>(ex);
     }
 
+    [Fact]
+    public void Checksum_WhenSubclassOverridesUpAsyncOnly_StillReportsTheBaseDigest()
+    {
+        // The documented limit: nothing detects the omission, so the interface read keeps
+        // describing the constructor's SQL while a different migration body runs.
+        IMigration migration = new UncoveredMigration();
+        var baseline = new Migration(1, "Uncovered", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+
+        Assert.Equal(baseline.Checksum, migration.Checksum);
+    }
+
+    [Fact]
+    public void Checksum_WhenSubclassHidesItWithNew_InterfaceStillReportsTheBaseDigest()
+    {
+        // Pins the trap both CLAUDE.md and docs/DESIGN-RATIONALE.md document: `new`-hiding
+        // compiles and reads correctly off the concrete type, but the runner reads through
+        // IMigration, and interface dispatch lands on the base. Without this test the doc claim
+        // could rot silently — the compiler never complains, and nothing else exercises the shape.
+        var hiding = new HidingMigration();
+        var baseline = new Migration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+
+        // Not vacuous: the hiding member really is reachable, just not through the interface.
+        Assert.Equal("HIDDEN", hiding.Checksum);
+        Assert.Equal(baseline.Checksum, ((IMigration)hiding).Checksum);
+    }
+
+    [Fact]
+    public void Checksum_WhenSubclassOverridesChecksum_ReportsTheOverrideThroughTheInterface()
+    {
+        IMigration migration = new CoveredMigration("OVERRIDDEN");
+
+        Assert.Equal("OVERRIDDEN", migration.Checksum);
+    }
+
+    [Fact]
+    public void Checksum_WhenSubclassOverrideReturnsNull_ReportsNullThroughTheInterface()
+    {
+        IMigration migration = new OptedOutMigration();
+
+        Assert.Null(migration.Checksum);
+    }
+
     /// <summary>
     /// A hand-written migration that implements the interface directly, so it takes the default
     /// <see cref="IMigration.Checksum"/>.
@@ -146,5 +188,48 @@ public class MigrationTests
 
         public Task DownAsync(SqliteConnection connection, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Overrides <see cref="Migration.UpAsync"/> and changes what runs, without covering
+    /// <see cref="Migration.Checksum"/> — the shape the checksum docs warn about.
+    /// </summary>
+    private sealed class UncoveredMigration()
+        : Migration(1, "Uncovered", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+    {
+        public override Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Hides <see cref="Migration.Checksum"/> with <c>new</c> instead of overriding it — the shape
+    /// the docs call out as silently ignored, kept here so that claim stays tested.
+    /// </summary>
+    private sealed class HidingMigration()
+        : Migration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+    {
+        public new string Checksum => "HIDDEN";
+    }
+
+    /// <summary>
+    /// Overrides both, which is what the docs require of a subclass that changes what runs.
+    /// </summary>
+    private sealed class CoveredMigration(string checksum)
+        : Migration(1, "Covered", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+    {
+        public override string Checksum => checksum;
+
+        public override Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Opts out of verification. The declared type is non-nullable, so the opt-out is written
+    /// <c>null!</c>.
+    /// </summary>
+    private sealed class OptedOutMigration()
+        : Migration(1, "OptedOut", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+    {
+        public override string Checksum => null!;
     }
 }

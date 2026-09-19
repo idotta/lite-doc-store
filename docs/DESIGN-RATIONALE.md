@@ -1985,3 +1985,54 @@ which needs no new package reference.
 
 Two source breaks were accepted: `MigrationRunner` is no longer public, and the five members on
 `IDocumentStore` break an external implementation of that interface.
+
+### Why `Migration.Checksum` is `virtual`
+
+`Migration` declares `UpAsync` and `DownAsync` `virtual` but declared `Checksum` non-virtual and set it
+once, in the constructor, from `upSql`. So a subclass could change **what actually runs** while the
+recorded checksum kept describing the SQL handed to the base constructor — and had no discoverable way
+to fix that, because the runner reads the checksum through `IMigration`
+(`ApplyMigrationAsync` stores `migration.Checksum`, `VerifyChecksum` compares it).
+
+Three dispatch outcomes, measured on .NET 10:
+
+| Shape on the derived type | Read through `IMigration` |
+| --- | --- |
+| `public new string Checksum => "..."` | the **base** digest — the override is compiled but never reached |
+| `class D : Migration, IMigration` with `string? IMigration.Checksum => "..."` | the derived value — it works, but nothing points at it |
+| `public override string Checksum => "..."` (after this change) | the derived value |
+
+The `new`-hiding row is the trap: it compiles, it reads correctly off the concrete type, and it is
+silently ignored by the only consumer that matters. Explicit interface re-implementation was already a
+working escape, but it is not a shape a consumer finds by looking at `Migration`.
+
+**One word.** `public virtual string Checksum { get; }` — a vtable slot, no reflection, AOT-clean by
+construction. The rest of the fix is documentation, because the capability alone does not tell a
+subclass author that they now owe something.
+
+**The declared type stays `string`, not `string?`.** Widening it would be a return-type change:
+a binary break for anything compiled against the old signature, and a nullable warning at every consumer
+assigning `migration.Checksum` to a `string`. So an override that opts out writes `=> null!`. That is
+ugly on purpose — opting out is meant to look like a decision.
+
+**Opting out is one-way, not a repair.** `VerifyChecksum` returns early when *either* side is null, so a
+history row already holding a non-null checksum followed by a later null does **not** fail; verification
+simply stops for that migration from then on. Pinned by
+`MigrateAsync_WhenSubclassChecksumOverrideBecomesNull_SkipsVerification`, and the `|| current is null`
+clause is load-bearing: deleting it makes that test fail with
+`Migration 1 (CreateT1) was applied with checksum CHECKSUM-A but the supplied definition has checksum .`
+
+**The honest limit: this does not detect drift.** A subclass that overrides `UpAsync` and forgets
+`Checksum` still reports the base digest, and nothing notices —
+`Checksum_WhenSubclassOverridesUpAsyncOnly_StillReportsTheBaseDigest` pins exactly that, as the residual
+defect rather than as a feature. What changed is that covering it is now possible and documented, so not
+covering it is the subclass author's responsibility rather than the library's omission.
+
+Two alternatives were rejected:
+
+- **Sealing `Migration` / dropping the virtuals.** That removes the problem by removing subclassing: a
+  source *and* binary break, about 33 lines of test rewrite in this repo alone, and no `[Obsolete]` shim
+  can soften it — a consumer's derived migration stops compiling with no migration path.
+- **Folding `GetType()` into the base checksum.** It detects only that *a subclass exists*, not that its
+  behaviour drifted, and it invalidates every stored checksum for every existing subclass on the next
+  run — a `MigrationChecksumMismatchException` on upgrade for consumers who changed nothing.

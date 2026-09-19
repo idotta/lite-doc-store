@@ -1071,6 +1071,15 @@ applied**.
 - **Do not call back into the store.** This is the run's only lease; at `MaxPoolSize = 1` it waits for a
   connection the run itself is holding. If it obtains another lease it runs on a *different* connection,
   so it is not enlisted in the migration's transaction and is not covered by its atomicity.
+- **Override `Checksum` when you override `UpAsync` and change what runs.** The base value digests only
+  the `upSql` handed to the constructor, so a subclass that adds or replaces work must `override` the
+  (now `virtual`) property and return a value that changes with its own behaviour; an override that only
+  delegates to `base.UpAsync` is already covered and needs nothing, and a `DownAsync` override needs
+  nothing either. `public new string Checksum` is **silently ignored** — the runner reads through
+  `IMigration`, so interface dispatch lands on the base. Nothing detects the omission; this is the
+  subclass author's responsibility. Opting out is `=> null!` (the property is declared non-nullable),
+  and it is one-way rather than a repair: a history row already holding a non-null checksum is simply
+  never verified again. → rationale#migrations
 
 `RollbackToVersionAsync` states the same shape its `MigrateAsync` sibling always did.
 
@@ -1083,13 +1092,14 @@ decouple the work from the history-row `INSERT`, and "half-applied" there is pre
 `MigrationConnectionContractIntegrationTests` pins the whole contract. → rationale#migrations
 
 **Checksums.** `IMigration.Checksum` is a default interface member returning null (so existing
-implementations still compile); `Migration` returns the uppercase SHA-256 hex of its **up** SQL only —
-the down SQL is not part of what was applied, and rollback never verifies checksums at all. The checksum
-is stored with the history row and compared on later runs, throwing `MigrationChecksumMismatchException`
-(`ExpectedChecksum` = stored, `ActualChecksum` = supplied) unless `MigrationOptions.VerifyChecksums` is
-false. Either side null skips the check, which keeps pre-checksum history usable: a legacy three-column
-table is `ALTER TABLE`-ed on first use, re-checking `pragma_table_info` under an immediate transaction
-so two starting processes cannot both issue the ALTER.
+implementations still compile); `Migration.Checksum` is **`virtual`** and returns the uppercase
+SHA-256 hex of its **up** SQL only — the down SQL is not part of what was applied, and rollback
+never verifies checksums at all. The checksum is stored with the history row and compared on later
+runs, throwing `MigrationChecksumMismatchException` (`ExpectedChecksum` = stored, `ActualChecksum` =
+supplied) unless `MigrationOptions.VerifyChecksums` is false. Either side null skips the check,
+which keeps pre-checksum history usable: a legacy three-column table is `ALTER TABLE`-ed on first
+use, re-checking `pragma_table_info` under an immediate transaction so two starting processes cannot
+both issue the ALTER.
 
 **Input is validated before anything runs**: a null element or a duplicate version throws
 `ArgumentException` naming the version and both indices, a negative rollback target throws
