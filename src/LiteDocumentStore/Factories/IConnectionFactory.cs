@@ -9,6 +9,12 @@ namespace LiteDocumentStore;
 /// </summary>
 /// <remarks>
 /// <para>
+/// Whatever an implementation configures, it must do so <em>before returning the connection from</em>
+/// <see cref="CreateConnection(DocumentStoreOptions)"/> or
+/// <see cref="CreateConnectionAsync(DocumentStoreOptions, CancellationToken)"/>: those are the only
+/// members the store ever calls, so configuration left to any other entry point never runs.
+/// </para>
+/// <para>
 /// An implementation that does not delegate to <see cref="DefaultConnectionFactory"/> owes every
 /// option it claims to honour, and two in particular, because neither has a readback guard and
 /// both fail silently when omitted.
@@ -54,27 +60,6 @@ public interface IConnectionFactory
     /// </param>
     /// <returns>An open SQLite connection</returns>
     Task<SqliteConnection> CreateConnectionAsync(
-        DocumentStoreOptions options,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Configures a SQLite connection with optimal performance settings
-    /// (e.g., WAL mode, synchronous level, page size, cache size).
-    /// </summary>
-    /// <param name="connection">The connection to configure</param>
-    /// <param name="options">Configuration options to apply</param>
-    void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options);
-
-    /// <summary>
-    /// Configures a SQLite connection with optimal performance settings
-    /// (e.g., WAL mode, synchronous level, page size, cache size).
-    /// </summary>
-    /// <param name="connection">The connection to configure</param>
-    /// <param name="options">Configuration options to apply</param>
-    /// <param name="cancellationToken">A token to cancel the configuration round trips</param>
-    /// <returns>A task representing the asynchronous operation</returns>
-    Task ConfigureConnectionAsync(
-        SqliteConnection connection,
         DocumentStoreOptions options,
         CancellationToken cancellationToken = default);
 }
