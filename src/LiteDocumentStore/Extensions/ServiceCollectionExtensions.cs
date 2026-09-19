@@ -22,6 +22,10 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="configureOptions">A delegate to configure the <see cref="DocumentStoreOptions"/></param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
+    /// <remarks>
+    /// The delegate runs here, at registration, and the configured values are snapshotted — a
+    /// reference to the options it was handed is of no further use to the caller.
+    /// </remarks>
     public static IServiceCollection AddLiteDocumentStore(
         this IServiceCollection services,
         Action<DocumentStoreOptions> configureOptions)
@@ -39,8 +43,16 @@ public static class ServiceCollectionExtensions
     /// Adds LiteDocumentStore services with pre-configured options.
     /// </summary>
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
-    /// <param name="options">The pre-configured <see cref="DocumentStoreOptions"/></param>
+    /// <param name="options">
+    /// The pre-configured <see cref="DocumentStoreOptions"/>. The values are snapshotted here, at
+    /// registration: mutating the instance afterwards does not change the store this registration
+    /// resolves to.
+    /// </param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
+    /// <remarks>
+    /// Registration does not validate the options — it cannot throw beyond the null checks. An
+    /// invalid value is reported by the first resolution of <see cref="IDocumentStore"/>.
+    /// </remarks>
     public static IServiceCollection AddLiteDocumentStore(
         this IServiceCollection services,
         DocumentStoreOptions options)
@@ -48,12 +60,18 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
+        // Snapshot here rather than letting the lambda capture the caller's instance: the factory's
+        // own Clone() runs at first resolution, so a capture would make the store's configuration
+        // whatever the object held at that unpredictable moment. Clone() does not validate, so
+        // registration still cannot throw.
+        var snapshot = options.Clone();
+
         AddCoreServices(services);
 
         // One store per database, shared by every consumer: it is thread-safe and owns the
         // connection pool.
         services.TryAddSingleton<IDocumentStore>(
-            sp => sp.GetRequiredService<IDocumentStoreFactory>().Create(options));
+            sp => sp.GetRequiredService<IDocumentStoreFactory>().Create(snapshot));
 
         return services;
     }
@@ -66,6 +84,10 @@ public static class ServiceCollectionExtensions
     /// <param name="serviceKey">The key to identify this store instance</param>
     /// <param name="configureOptions">A delegate to configure the <see cref="DocumentStoreOptions"/></param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
+    /// <remarks>
+    /// The delegate runs here, at registration, and the configured values are snapshotted — a
+    /// reference to the options it was handed is of no further use to the caller.
+    /// </remarks>
     public static IServiceCollection AddKeyedLiteDocumentStore(
         this IServiceCollection services,
         object serviceKey,
@@ -86,8 +108,16 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The <see cref="IServiceCollection"/> to add services to</param>
     /// <param name="serviceKey">The key to identify this store instance</param>
-    /// <param name="options">The pre-configured <see cref="DocumentStoreOptions"/></param>
+    /// <param name="options">
+    /// The pre-configured <see cref="DocumentStoreOptions"/>. The values are snapshotted here, at
+    /// registration, so one instance can be reconfigured and registered again under another key —
+    /// mutating it afterwards does not change the store this key resolves to.
+    /// </param>
     /// <returns>The <see cref="IServiceCollection"/> for method chaining</returns>
+    /// <remarks>
+    /// Registration does not validate the options — it cannot throw beyond the null checks. An
+    /// invalid value is reported by the first resolution of this key.
+    /// </remarks>
     public static IServiceCollection AddKeyedLiteDocumentStore(
         this IServiceCollection services,
         object serviceKey,
@@ -97,11 +127,16 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(serviceKey);
         ArgumentNullException.ThrowIfNull(options);
 
+        // Snapshot here, for the reason spelled out on the unkeyed overload — registering the same
+        // instance under two keys with a mutation in between is the shape that made both keys
+        // resolve to one database.
+        var snapshot = options.Clone();
+
         AddCoreServices(services);
 
         services.TryAddKeyedSingleton<IDocumentStore>(
             serviceKey,
-            (sp, _) => sp.GetRequiredService<IDocumentStoreFactory>().Create(options));
+            (sp, _) => sp.GetRequiredService<IDocumentStoreFactory>().Create(snapshot));
 
         return services;
     }

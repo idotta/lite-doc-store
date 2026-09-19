@@ -637,6 +637,64 @@ re-checks only the connection string, so a value that slips in after validation 
 factory instead of being caught again — measured, reverting the four constructor reads to `options`
 fails it on every run.
 
+### The DI registration's capture point
+
+The registration lambdas captured the caller's `DocumentStoreOptions` **instance**. The factory's own
+`Clone()` then ran at *first resolution*, so a store's configuration was whatever that object held at
+that moment — which registration order does not determine and a consumer cannot see.
+
+Measured on `main` @ `bdf5844`, against a real `ServiceCollection` + `BuildServiceProvider`, with
+uniquely-named shared-cache in-memory databases and temp-directory files. Every reading is the
+**database**: a row written through the resolved store, counted by a second store opened directly on
+each candidate connection string, or the presence of the file on disk.
+
+| shape | before | after |
+| --- | --- | --- |
+| unkeyed instance, register → mutate → resolve | resolved store opened **B**; A held 0 rows, B held 1 | opens **A**; A holds 1, B holds 0 |
+| keyed instance, register → mutate → resolve | same: opened **B** | opens **A** |
+| keyed instance, register "a" → mutate → register "b" | both keys opened **B**; a write through "a" was counted by "b" | "a" opens A, "b" opens B; "b" counts 0 |
+| unkeyed instance, two registrations | **one** descriptor (`TryAddSingleton` keeps the first), and it opened **B** | one descriptor, opens **A** |
+| unkeyed / keyed delegate, reference retained and mutated | opened **B** | opens **A** |
+| file databases, keyed, only "a" resolved | `b.db` existed, `a.db` did not | `a.db` exists, `b.db` does not |
+| register → resolve → mutate → resolve again | second resolution returns the **same singleton**; the mutation is ignored | unchanged |
+
+Two things in that table are narrower or wider than the finding as filed.
+
+The **unkeyed two-registration** shape is not "two registrations share one database": `TryAddSingleton`
+keeps the first registration, and the second call only supplies the mutated values it then reads. The
+surviving registration silently adopts a configuration it was never given — the same root cause, a
+different sentence.
+
+The **`Action<…>` overloads are not unaffected.** They allocate their own object, but the delegate is
+handed that object, so a caller who retains the reference and mutates it afterwards reaches exactly the
+same defect — measured, both the unkeyed and the keyed delegate opened B. They inherit the fix by
+forwarding to the instance overloads.
+
+**Does cloning at registration break a legitimate caller?** No. The effect it removes is not one a
+caller could have relied on: the last row of the table shows the window closes silently at the first
+resolution, so "register, then mutate, and the store sees it" works or does not depending on whether
+anything has resolved `IDocumentStore` yet — which is DI's business, not the caller's. A caller who
+genuinely wants late configuration finishes configuring **before** calling `Add…`, which is what every
+documented example already does, or registers a factory of their own.
+
+**Why registration and not first resolution.** `services.AddLiteDocumentStore(options)` reads as a
+call that takes values; a consumer predicts "the store gets what I passed" without opening the source.
+Cloning at first resolution instead makes the answer depend on when the provider is built, whether the
+store is resolved eagerly or lazily, and what touched the object in between — two programs differing
+only in resolution order get different databases, and neither is wrong-looking. That is the behaviour
+this fix removes, so the entry's choice of moment is the defensible one.
+
+Registration still cannot throw beyond its `ThrowIfNull`s: `Clone()` does not validate, and validation
+stays where it was, at the first resolution.
+
+**What a regression looks like.** Capturing `options` instead of `snapshot` in either lambda.
+`ServiceCollectionExtensionsTests.AddLiteDocumentStore_WithTheOptionsMutatedAfterRegistration_ResolvesTheRegisteredDatabase`
+fails on the unkeyed line, naming the database the resolved store wrote to and the one it was
+registered with.
+`ServiceCollectionExtensionsTests.AddKeyedLiteDocumentStore_WithOneOptionsInstanceRegisteredTwice_KeepsTheKeysOnSeparateDatabases`
+and its integration sibling fail on the keyed line — the integration one in the most literal form
+available, `a.db is missing; the directory holds b.db`.
+
 ### What `examples/AotVerification` still gates
 
 The AOT-null branch is unreachable from xUnit (the runner is JIT), so that example is its only gate.

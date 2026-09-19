@@ -382,8 +382,8 @@ connections. Same reason for `SqlitePageSizeGuard`. The result is deliberately *
 ### Options validation and the snapshot
 
 `DocumentStoreOptions.Validate()` is called from `DocumentStoreFactory.CreateStore`, so it covers the DI
-path too — `AddLiteDocumentStore` hands a raw options object to the factory, and options built by hand
-never pass through `DocumentStoreOptionsBuilder`. It rejects a non-power-of-2 `PageSize`, a negative
+path too — `AddLiteDocumentStore` hands the factory an options object nothing else has validated, and
+options built by hand never pass through `DocumentStoreOptionsBuilder`. It rejects a non-power-of-2 `PageSize`, a negative
 `BusyTimeoutMs`, a `MaxPoolSize` below 1, a `PoolWaitTimeoutMs` of 0 or negative other than
 `Timeout.Infinite`, and a blank `AdditionalPragmas` entry, each naming the offending option as
 `ParamName`; `Build()` calls it too, so a builder cannot produce options the factory then refuses.
@@ -409,8 +409,21 @@ reopens the window. `SqliteConnectionPool.Normalize` clones a third time, becaus
 constructed directly in tests and should defend itself.
 
 The window was real: a caller-supplied `ILoggerFactory` runs as arbitrary code between `Validate()` and
-construction, on the same mutable object both DI registrations capture, and an ordinary concurrent setter
-reaches it with no custom logger at all. → rationale#options-snapshot
+construction, on the mutable object the caller still holds, and an ordinary concurrent setter reaches it
+with no custom logger at all. → rationale#options-snapshot
+
+**The DI registration snapshots too, at registration — that is the fourth `Clone()` and it is the only
+one whose *moment* is part of the contract.** Both instance overloads
+(`AddLiteDocumentStore(options)` / `AddKeyedLiteDocumentStore(key, options)`) call `options.Clone()` in
+the method body and capture the clone, not the caller's instance. Capturing the instance deferred the
+whole configuration to the factory's clone at *first resolution*, so what a store opened depended on
+when DI happened to resolve it: registering one object under two keys with a mutation in between made
+**both** keys open the second database, and on the unkeyed path the surviving `TryAddSingleton`
+registration silently adopted the second registration's configuration. `Clone()` does not validate, so
+registration still cannot throw beyond its `ThrowIfNull`s — an invalid value is still reported by the
+first resolution. The two `Action<…>` overloads inherit it by forwarding, which also detaches an
+options reference a delegate retained; the extra clone per registration is not a hot path.
+→ rationale#options-snapshot
 
 **What the snapshot cannot detach.** `SerializerOptions` stays the caller's instance *deliberately* (the
 source-generated resolver and its metadata cache must be shared for AOT correctness).
