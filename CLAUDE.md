@@ -1046,6 +1046,10 @@ alone) serves the version read. Only `MigrateAsync` and `RollbackToVersionAsync`
 Both reads used to write twice on every call, at a measured 60x cost on a legacy table.
 → rationale#migrations
 
+**`GetAppliedMigrationsAsync` hands back a freshly built list of snapshots**, so
+`MigrationHistoryRecord`'s four properties are `init` — a write to one never persisted and never could.
+→ rationale#migrations
+
 **"Already applied" is membership in the history table**, not `Version <= MAX(applied)` — the old
 comparison silently skipped a back-filled migration and returned the same `false` as an already-applied
 one. A version absent from history but below the current maximum throws `MigrationOutOfOrderException`
