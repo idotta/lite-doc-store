@@ -362,15 +362,6 @@ public sealed class OptionsSnapshotTests
             recorded.Add(options.PageSize);
             return _inner.CreateConnectionAsync(options, cancellationToken);
         }
-
-        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options) =>
-            _inner.ConfigureConnection(connection, options);
-
-        public Task ConfigureConnectionAsync(
-            SqliteConnection connection,
-            DocumentStoreOptions options,
-            CancellationToken cancellationToken = default) =>
-            _inner.ConfigureConnectionAsync(connection, options, cancellationToken);
     }
 
     private sealed class RecordingConnectionFactory : IConnectionFactory
@@ -407,15 +398,6 @@ public sealed class OptionsSnapshotTests
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             return connection;
         }
-
-        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options)
-        {
-        }
-
-        public Task ConfigureConnectionAsync(
-            SqliteConnection connection,
-            DocumentStoreOptions options,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         private void Record(DocumentStoreOptions options)
         {

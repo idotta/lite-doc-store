@@ -423,14 +423,5 @@ public sealed class OptionsValidationTests
         public Task<SqliteConnection> CreateConnectionAsync(
             DocumentStoreOptions options,
             CancellationToken cancellationToken = default) => Task.FromResult(CreateConnection(options));
-
-        public void ConfigureConnection(SqliteConnection connection, DocumentStoreOptions options)
-        {
-        }
-
-        public Task ConfigureConnectionAsync(
-            SqliteConnection connection,
-            DocumentStoreOptions options,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

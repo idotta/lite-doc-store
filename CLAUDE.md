@@ -278,6 +278,15 @@ factory can hand the store a connection subclass that observes every statement a
 keeping correct PRAGMA behaviour — which is how `BlobSavepointCancellationIntegrationTests` and
 `IndexCreationRaceIntegrationTests` turn microsecond-wide races into deterministic tests.
 
+**The interface declares only `CreateConnection` and `CreateConnectionAsync`**, and that is the seam's
+other half. `ConfigureConnection`/`ConfigureConnectionAsync` are public on the sealed class — that is
+what a decorator calls on its inner instance — but they are **not** on `IConnectionFactory`, because the
+pool only ever calls `CreateConnection(Async)`: an implementer who read a `Configure*` declaration off
+the interface, put their PRAGMA work there and returned a bare open connection got **silently
+unconfigured connections**. Do not re-add either declaration; `DefaultConnectionFactoryTests` fails if
+one comes back, and the two members carry a scoped `CA1822` suppression saying why they stay instance
+members. → rationale#pragmas
+
 ### Dirty-session guard
 
 A connection goes back into the idle bag **only if it comes back clean**, because a connection carrying
@@ -487,7 +496,10 @@ A factory that does **not** delegate owes every option it claims to honour — `
 `SqlitePageSizeGuard`, and only the in-memory/WAL combination costs a factory nothing (the connection
 string guard rejects it during options validation). `ApplyCommandTimeout` stays `private` and
 `SqliteConnectionStringGuard`/`SqliteCommandExtensions` stay `internal`: a delegating factory never
-needs them, and a non-delegating one can re-derive both from public BCL surface. → rationale#pragmas
+needs them, and a non-delegating one can re-derive both from public BCL surface. **And it owes all of it
+*before returning the connection from* `CreateConnection(Async)`** — the two members the interface
+declares are the only ones the store calls, so configuration left anywhere else never runs.
+→ rationale#pragmas
 
 **Disposal** runs `PRAGMA wal_checkpoint(TRUNCATE)` on a rented connection, then closes the pool. That
 rent is **bounded** (`DocumentStore.WalCheckpointRentTimeout`, 5 s) and the checkpoint is skipped on

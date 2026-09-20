@@ -927,6 +927,47 @@ accessibility by **reflection** rather than by constructing the type, since `Int
 plain `new DefaultConnectionFactory()` compile either way; `DelegatingConnectionFactoryIntegrationTests`
 pins the two measured behaviours a decorator inherits.
 
+### Why `IConnectionFactory` declares only `CreateConnection(Async)`
+
+The interface used to declare four members. `ConfigureConnection` and `ConfigureConnectionAsync` were
+**never called polymorphically** — enumerated over `src/`, `tests/`, `examples/`, `benchmarks/` at
+`003431f`: the only calls on the injected factory are `SqliteConnectionPool`'s two
+`CreateConnection(Async)` sites (`SqliteConnectionPool.cs:634`, `:653`);
+`DefaultConnectionFactory.cs:55`/`:79` call its own copies on `this`.
+
+That made the declaration a trap rather than a contract. An implementer who read the interface, put their
+PRAGMA work in `ConfigureConnection` and returned a bare open connection from `CreateConnection` got
+**silently unconfigured connections**, because the pool never calls anything else. The in-repo evidence
+that nobody used it as a contract is that everybody wrote it as dead weight: **12 implementations across
+10 test files**, ten forwarding to a *concrete* `DefaultConnectionFactory _inner` and two standalone
+stubs that no-op — 12 stub pairs, all deleted with **no test method lost** (1160 unit / 727 integration
+before and after).
+
+Two measured facts bound what the cut is worth:
+
+| direction | measured |
+|---|---|
+| a decorator that configures in `CreateConnection` | still correct, and now structurally proven: with the stubs gone `DelegatingConnectionFactory` is "forward `CreateConnection(Async)`, add nothing", and `DelegatingFactory_WithForeignKeysDisabled_StatesTheOffThatANaiveFactoryOmits` + `DelegatingFactory_DerivesTheProviderCommandTimeoutFromBusyTimeoutMs` both pass through it |
+| a consumer who had the defect (configured in `ConfigureConnection`) | **explicit** implementation stops compiling — `error CS0539: '…ConfigureConnection(SqliteConnection, DocumentStoreOptions)' in explicit interface declaration is not found among members of the interface that can be implemented`. An **implicit** `public void ConfigureConnection(...)` still compiles with **0 warnings** |
+
+So the break is loud only for an explicit implementer. For the implicit one the cut is **silent** — but
+their method was already never called *before* the cut, so nothing they observe changes; what changes is
+that the interface no longer advertises it. That is a limitation of the fix, not a win.
+
+**No `[Obsolete]` cycle.** Implicitly implementing an obsolete interface member produces no diagnostic,
+so a deprecation cycle warns nobody who actually has the defect — exactly the population it would be for
+— while preserving the trap for the cycle's whole duration. Pre-1.0, this repo has taken louder breaks
+already (every table name changed, `Connection` was removed outright).
+
+`DefaultConnectionFactory` is **unchanged behaviourally**: both members stay `public` instance members on
+the sealed class, because that is what every decorator calls on its inner instance. Removing the
+interface declaration did make `CA1822` fire on them (an interface implementation had satisfied it
+before); they carry a scoped suppression saying they are the delegation seam, since marking them `static`
+would break every `_inner.ConfigureConnection(...)` call the fix depends on, and their `<inheritdoc/>`
+was replaced with real XML docs for the same reason. The re-added-trap direction is pinned inside
+`DefaultConnectionFactory_IsPubliclyConstructibleAndSealed`, which now also asserts the interface
+declares exactly the two `CreateConnection` members and nothing named `Configure*`.
+
 ### WAL checkpoint on disposal
 
 The rent is **bounded** (`DocumentStore.WalCheckpointRentTimeout`, 5 s) — an unbounded wait would let one
