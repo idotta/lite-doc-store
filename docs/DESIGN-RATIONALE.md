@@ -1725,7 +1725,7 @@ a consumer created themselves — but the six read paths used to disagree comple
 |---|---|
 | `BlobExistsAsync` | `true` |
 | `GetBlobAsync`, `BlobLengthAsync` | null — indistinguishable from absent |
-| `GetBlobInfoAsync`, `ListBlobsAsync` | leaked `InvalidOperationException` from the reader |
+| `GetBlobMetadataAsync`, `ListBlobsAsync` | leaked `InvalidOperationException` from the reader |
 | `OpenBlobReadAsync` | leaked `SqliteException` |
 
 **One corrupt row made blob listing impossible** — the C02 shape.
@@ -1733,7 +1733,7 @@ a consumer created themselves — but the six read paths used to disagree comple
 Two things make this bigger than SQL NULL:
 
 - `length()` **answers for a non-BLOB too** — 5 for `'hello'`, 2 for `42`, 3 for `1.5`, counting characters
-  and digits — so `BlobLengthAsync`, `GetBlobInfoAsync` and `ListBlobsAsync` silently reported a plausible
+  and digits — so `BlobLengthAsync`, `GetBlobMetadataAsync` and `ListBlobsAsync` silently reported a plausible
   byte count that was not one.
 - SQLite's incremental blob I/O **opens a TEXT value** and reads its UTF-8 bytes (only INTEGER and REAL make
   `SqliteBlob` refuse), so `OpenBlobReadAsync` returned a stream over the wrong thing.
@@ -1998,7 +1998,7 @@ usable.
 
 ### Why `Version` must be positive
 
-`Migration` has refused `version <= 0` since it was written; a hand-written `IMigration` skipped that.
+`SqlMigration` has refused `version <= 0` since it was written; a hand-written `IMigration` skipped that.
 Measured, version 0 **applied** (`MigrateAsync` returned 1) while `GetCurrentMigrationVersionAsync` then
 answered `0` — the documented "nothing applied" sentinel — and `RollbackToVersionAsync(0)` returned 0
 without rolling it back, with `-1` refused by the target's own `ThrowIfNegative`. So it was applied,
@@ -2027,9 +2027,9 @@ which needs no new package reference.
 Two source breaks were accepted: `MigrationRunner` is no longer public, and the five members on
 `IDocumentStore` break an external implementation of that interface.
 
-### Why `Migration.Checksum` is `virtual`
+### Why `SqlMigration.Checksum` is `virtual`
 
-`Migration` declares `UpAsync` and `DownAsync` `virtual` but declared `Checksum` non-virtual and set it
+`SqlMigration` declares `UpAsync` and `DownAsync` `virtual` but declared `Checksum` non-virtual and set it
 once, in the constructor, from `upSql`. So a subclass could change **what actually runs** while the
 recorded checksum kept describing the SQL handed to the base constructor — and had no discoverable way
 to fix that, because the runner reads the checksum through `IMigration`
@@ -2040,12 +2040,12 @@ Three dispatch outcomes, measured on .NET 10:
 | Shape on the derived type | Read through `IMigration` |
 | --- | --- |
 | `public new string Checksum => "..."` | the **base** digest — the override is compiled but never reached |
-| `class D : Migration, IMigration` with `string? IMigration.Checksum => "..."` | the derived value — it works, but nothing points at it |
+| `class D : SqlMigration, IMigration` with `string? IMigration.Checksum => "..."` | the derived value — it works, but nothing points at it |
 | `public override string Checksum => "..."` (after this change) | the derived value |
 
 The `new`-hiding row is the trap: it compiles, it reads correctly off the concrete type, and it is
 silently ignored by the only consumer that matters. Explicit interface re-implementation was already a
-working escape, but it is not a shape a consumer finds by looking at `Migration`.
+working escape, but it is not a shape a consumer finds by looking at `SqlMigration`.
 
 **One word.** `public virtual string Checksum { get; }` — a vtable slot, no reflection, AOT-clean by
 construction. The rest of the fix is documentation, because the capability alone does not tell a
@@ -2063,6 +2063,9 @@ simply stops for that migration from then on. Pinned by
 clause is load-bearing: deleting it makes that test fail with
 `Migration 1 (CreateT1) was applied with checksum CHECKSUM-A but the supplied definition has checksum .`
 
+That quote is the `MigrationChecksumMismatchException` message verbatim, which is why it still says
+`Migration` and not `SqlMigration`: the type renamed, the user-facing message did not.
+
 **The honest limit: this does not detect drift.** A subclass that overrides `UpAsync` and forgets
 `Checksum` still reports the base digest, and nothing notices —
 `Checksum_WhenSubclassOverridesUpAsyncOnly_StillReportsTheBaseDigest` pins exactly that, as the residual
@@ -2071,7 +2074,7 @@ covering it is the subclass author's responsibility rather than the library's om
 
 Two alternatives were rejected:
 
-- **Sealing `Migration` / dropping the virtuals.** That removes the problem by removing subclassing: a
+- **Sealing `SqlMigration` / dropping the virtuals.** That removes the problem by removing subclassing: a
   source *and* binary break, about 33 lines of test rewrite in this repo alone, and no `[Obsolete]` shim
   can soften it — a consumer's derived migration stops compiling with no migration path.
 - **Folding `GetType()` into the base checksum.** It detects only that *a subclass exists*, not that its
@@ -2135,7 +2138,7 @@ if it is not recompiled. Both halves are measured — the source half here, the 
 independently by the unit's verifier, which reproduced the identical exception text from an
 initializer-only consumer.
 
-Measured against a control: adding `virtual` to `Migration.Checksum` (the preceding change, and the
+Measured against a control: adding `virtual` to `SqlMigration.Checksum` (the preceding change, and the
 checksum subsection above) is **neither** a source nor a binary break — `virtual` widens what a
 subclass may do without altering the property's signature, so nothing a caller compiled against the
 non-virtual form has to be recompiled. The modreq is what makes this change different in kind.

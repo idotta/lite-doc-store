@@ -368,7 +368,7 @@ internal static class SqlGenerator
     /// payload too — characters for TEXT, digits for a number — so the reported length would
     /// otherwise be a wrong answer rather than a detectable one.
     /// </remarks>
-    public static string GenerateBlobInfoSql()
+    public static string GenerateBlobMetadataSql()
     {
         return $@"
             SELECT id, typeof(data), length(data), content_type, created_at, updated_at, version

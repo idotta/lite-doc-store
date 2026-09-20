@@ -199,7 +199,7 @@ public sealed class ArgumentValidationTests
         table.Add("DeleteBlobWithVersionAsync", (s, id, ct) => s.DeleteBlobWithVersionAsync(id, 1, ct));
         table.Add("BlobLengthAsync", (s, id, ct) => s.BlobLengthAsync(id, ct));
         table.Add("BlobExistsAsync", (s, id, ct) => s.BlobExistsAsync(id, ct));
-        table.Add("GetBlobInfoAsync", (s, id, ct) => s.GetBlobInfoAsync(id, ct));
+        table.Add("GetBlobMetadataAsync", (s, id, ct) => s.GetBlobMetadataAsync(id, ct));
         table.Add("OpenBlobReadAsync", (s, id, ct) => s.OpenBlobReadAsync(id, ct));
     }
 

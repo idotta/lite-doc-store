@@ -669,15 +669,15 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
-    public Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default)
+    public Task<BlobMetadata?> GetBlobMetadataAsync(string id, CancellationToken cancellationToken = default)
     {
         DocumentOperations.ValidateId(id);
 
-        return RunAsync(ops => ops.GetBlobInfoAsync(id, cancellationToken), cancellationToken);
+        return RunAsync(ops => ops.GetBlobMetadataAsync(id, cancellationToken), cancellationToken);
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+    public Task<IReadOnlyList<BlobMetadata>> ListBlobsAsync(
         string? idPrefix = null,
         int skip = 0,
         int? take = null,

@@ -94,7 +94,7 @@ public sealed class MigrationRunnerReadPathTests : IDisposable
         var runner = new MigrationRunner(_connection);
 
         var applied = await runner.ApplyMigrationsAsync(
-            [new Migration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")],
+            [new SqlMigration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")],
             new MigrationOptions());
 
         Assert.Equal(1, applied);
@@ -109,7 +109,7 @@ public sealed class MigrationRunnerReadPathTests : IDisposable
         var runner = new MigrationRunner(_connection);
 
         await runner.ApplyMigrationsAsync(
-            [new Migration(8, "eight", "CREATE TABLE t8 (x)", "DROP TABLE t8")],
+            [new SqlMigration(8, "eight", "CREATE TABLE t8 (x)", "DROP TABLE t8")],
             new MigrationOptions());
 
         Assert.True(ChecksumColumnExists());

@@ -114,7 +114,7 @@ public class BlobCorruptRowIntegrationTests
 
     [Theory]
     [MemberData(nameof(CorruptIds))]
-    public async Task GetBlobInfoAsync_WithAnUnreadablePayload_ThrowsAStoreException(
+    public async Task GetBlobMetadataAsync_WithAnUnreadablePayload_ThrowsAStoreException(
         string id,
         string storedTypeName)
     {
@@ -122,7 +122,7 @@ public class BlobCorruptRowIntegrationTests
 
         // A SQL NULL used to leak InvalidOperationException from the reader, and the other three
         // silently reported a character or digit count as a byte length.
-        var exception = await Assert.ThrowsAsync<CorruptDataException>(() => store.GetBlobInfoAsync(id));
+        var exception = await Assert.ThrowsAsync<CorruptDataException>(() => store.GetBlobMetadataAsync(id));
 
         AssertNamesTheRow(exception, id, storedTypeName);
     }
@@ -179,7 +179,7 @@ public class BlobCorruptRowIntegrationTests
         // An empty blob is a blob, written either way: the guard must not sweep it up.
         Assert.Equal(expectedLength, (await store.GetBlobAsync(id))!.Length);
         Assert.Equal(expectedLength, await store.BlobLengthAsync(id));
-        Assert.Equal(expectedLength, (await store.GetBlobInfoAsync(id))!.Length);
+        Assert.Equal(expectedLength, (await store.GetBlobMetadataAsync(id))!.Length);
 
         await using var stream = await store.OpenBlobReadAsync(id);
         Assert.Equal(expectedLength, stream!.Length);
@@ -194,7 +194,7 @@ public class BlobCorruptRowIntegrationTests
         // genuinely missing id into the new throw.
         Assert.Null(await store.GetBlobAsync("c/no-such-id"));
         Assert.Null(await store.BlobLengthAsync("c/no-such-id"));
-        Assert.Null(await store.GetBlobInfoAsync("c/no-such-id"));
+        Assert.Null(await store.GetBlobMetadataAsync("c/no-such-id"));
         Assert.Null(await store.OpenBlobReadAsync("c/no-such-id"));
         Assert.False(await store.BlobExistsAsync("c/no-such-id"));
     }

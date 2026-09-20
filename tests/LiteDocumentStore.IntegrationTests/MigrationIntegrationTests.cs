@@ -23,7 +23,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         _store.ExecuteRawAsync((connection, ct) =>
             new SchemaIntrospector(connection).TableExistsAsync(tableName, ct));
 
-    private static Migration CreateTable(long version, string tableName) =>
+    private static SqlMigration CreateTable(long version, string tableName) =>
         new(version,
             $"Create{tableName}",
             $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY, name TEXT NOT NULL)",
@@ -57,7 +57,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         // The second migration depends on the table the first creates, so an out-of-order run
         // would fail rather than merely reorder history.
         var first = CreateTable(1, "Product");
-        var second = new Migration(
+        var second = new SqlMigration(
             2, "AddProductPrice", "ALTER TABLE Product ADD COLUMN price REAL", "SELECT 1");
 
         var applied = await _store.MigrateAsync([second, first]);
@@ -109,10 +109,10 @@ public class MigrationIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task MigrateAsync_WithEditedMigration_ThrowsChecksumMismatch()
     {
-        var original = new Migration(1, "Seed", "CREATE TABLE Seeded (id TEXT PRIMARY KEY)", "DROP TABLE Seeded");
+        var original = new SqlMigration(1, "Seed", "CREATE TABLE Seeded (id TEXT PRIMARY KEY)", "DROP TABLE Seeded");
         await _store.MigrateAsync([original]);
 
-        var edited = new Migration(1, "Seed", "CREATE TABLE Seeded (id TEXT PRIMARY KEY, extra TEXT)", "DROP TABLE Seeded");
+        var edited = new SqlMigration(1, "Seed", "CREATE TABLE Seeded (id TEXT PRIMARY KEY, extra TEXT)", "DROP TABLE Seeded");
 
         var ex = await Assert.ThrowsAsync<MigrationChecksumMismatchException>(
             () => _store.MigrateAsync([edited]));
@@ -126,9 +126,9 @@ public class MigrationIntegrationTests : IAsyncLifetime
     public async Task MigrateAsync_WithEditedDownSql_IsAccepted()
     {
         // Only the up SQL is checksummed: the down SQL is not part of what was applied.
-        await _store.MigrateAsync([new Migration(1, "Seed", "SELECT 1", "SELECT 1")]);
+        await _store.MigrateAsync([new SqlMigration(1, "Seed", "SELECT 1", "SELECT 1")]);
 
-        var applied = await _store.MigrateAsync([new Migration(1, "Seed", "SELECT 1", "SELECT 2")]);
+        var applied = await _store.MigrateAsync([new SqlMigration(1, "Seed", "SELECT 1", "SELECT 2")]);
 
         Assert.Equal(0, applied);
     }
@@ -136,10 +136,10 @@ public class MigrationIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task MigrateAsync_WithEditedMigration_AndVerifyChecksumsDisabled_IsAccepted()
     {
-        await _store.MigrateAsync([new Migration(1, "Seed", "SELECT 1", "SELECT 1")]);
+        await _store.MigrateAsync([new SqlMigration(1, "Seed", "SELECT 1", "SELECT 1")]);
 
         var applied = await _store.MigrateAsync(
-            [new Migration(1, "Seed", "SELECT 2", "SELECT 1")],
+            [new SqlMigration(1, "Seed", "SELECT 2", "SELECT 1")],
             new MigrationOptions { VerifyChecksums = false });
 
         Assert.Equal(0, applied);
@@ -207,7 +207,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         });
 
         // The stored checksum is null, so there is nothing to compare against.
-        var applied = await _store.MigrateAsync([new Migration(1, "Legacy", "SELECT 1", "SELECT 1")]);
+        var applied = await _store.MigrateAsync([new SqlMigration(1, "Legacy", "SELECT 1", "SELECT 1")]);
 
         Assert.Equal(0, applied);
     }
@@ -245,7 +245,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
     public async Task MigrateAsync_WithFailingMigration_KeepsEarlierMigrationsApplied()
     {
         var good = CreateTable(1, "Product");
-        var bad = new Migration(2, "Broken", "CREATE TABLE Invalid (,,,)", "SELECT 1");
+        var bad = new SqlMigration(2, "Broken", "CREATE TABLE Invalid (,,,)", "SELECT 1");
 
         await Assert.ThrowsAsync<SqliteException>(() => _store.MigrateAsync([good, bad]));
 
@@ -257,7 +257,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task MigrateAsync_WithFailingMigration_RecordsNothingForIt()
     {
-        var bad = new Migration(
+        var bad = new SqlMigration(
             1,
             "Broken",
             "CREATE TABLE Product (id TEXT PRIMARY KEY); CREATE TABLE Invalid (,,,);",
@@ -341,7 +341,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         await _store.MigrateAsync([CreateTable(1, "T1")]);
 
         // Rollback never verifies checksums, so an edited definition still reverts.
-        var edited = new Migration(
+        var edited = new SqlMigration(
             1, "CreateT1", "CREATE TABLE T1 (id TEXT PRIMARY KEY, extra TEXT)", "DROP TABLE T1");
 
         Assert.Equal(1, await _store.RollbackToVersionAsync(0, [edited]));
@@ -367,7 +367,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
 
             var gated = new GatedMigration(1, "CreateProduct",
                 "CREATE TABLE Product (id TEXT PRIMARY KEY)", entered, release.Task);
-            var plain = new Migration(1, "CreateProduct",
+            var plain = new SqlMigration(1, "CreateProduct",
                 "CREATE TABLE Product (id TEXT PRIMARY KEY)", "DROP TABLE Product");
 
             // A holds the write lock inside UpAsync; B then contends for it. A one-way gate, not
@@ -431,7 +431,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         IMigration[] migrations =
         [
             CreateTable(1, "T1"),
-            new Migration(2, "CreateT2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE NoSuchTable"),
+            new SqlMigration(2, "CreateT2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE NoSuchTable"),
         ];
         await _store.MigrateAsync(migrations);
 
@@ -450,7 +450,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         IMigration[] migrations =
         [
             CreateTable(1, "T1"),
-            new Migration(2, "CreateT2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE NoSuchTable"),
+            new SqlMigration(2, "CreateT2", "CREATE TABLE T2 (id TEXT PRIMARY KEY)", "DROP TABLE NoSuchTable"),
             CreateTable(3, "T3"),
         ];
         await _store.MigrateAsync(migrations);
@@ -506,7 +506,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
     }
 
     private sealed class ThrowingDownMigration(long version, string tableName)
-        : Migration(
+        : SqlMigration(
             version,
             $"Create{tableName}",
             $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY)",
@@ -522,7 +522,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
         string upSql,
         TaskCompletionSource entered,
         Task release)
-        : Migration(version, name, upSql, "SELECT 1")
+        : SqlMigration(version, name, upSql, "SELECT 1")
     {
         public override async Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default)
         {
@@ -533,10 +533,10 @@ public class MigrationIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Covers <see cref="Migration.Checksum"/> the way a subclass that changes what runs must.
+    /// Covers <see cref="SqlMigration.Checksum"/> the way a subclass that changes what runs must.
     /// </summary>
     private sealed class ChecksummedMigration(long version, string tableName, string checksum)
-        : Migration(
+        : SqlMigration(
             version,
             $"Create{tableName}",
             $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY)",
@@ -550,7 +550,7 @@ public class MigrationIntegrationTests : IAsyncLifetime
     /// <c>null!</c>.
     /// </summary>
     private sealed class OptedOutMigration(long version, string tableName)
-        : Migration(
+        : SqlMigration(
             version,
             $"Create{tableName}",
             $"CREATE TABLE {tableName} (id TEXT PRIMARY KEY)",

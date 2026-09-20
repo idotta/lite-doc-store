@@ -44,7 +44,7 @@ internal static class BlobMetadataExample
 
             // Everything a Content-Length / Content-Type response header needs, with no payload
             // read: the length comes from the row header, not the bytes.
-            var info = await store.GetBlobInfoAsync("user/42/resume.pdf");
+            var info = await store.GetBlobMetadataAsync("user/42/resume.pdf");
             Console.WriteLine(
                 $"Metadata, no payload read  => {info!.Length} bytes, {info.ContentType}, " +
                 $"v{info.Version}, written {info.UpdatedAt:HH:mm:ss}");
@@ -77,7 +77,7 @@ internal static class BlobMetadataExample
 
             // An overwrite keeps the creation time and advances the update time, so "first seen"
             // and "last written" stay distinguishable.
-            var avatar = await store.GetBlobInfoAsync("user/42/avatar.png");
+            var avatar = await store.GetBlobMetadataAsync("user/42/avatar.png");
             Console.WriteLine(
                 $"Created vs updated         => {avatar!.CreatedAt:HH:mm:ss.fff} / {avatar.UpdatedAt:HH:mm:ss.fff}");
 

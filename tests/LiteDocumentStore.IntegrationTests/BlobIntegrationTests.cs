@@ -212,7 +212,7 @@ public class BlobIntegrationTests
         () => store.DeleteBlobAsync(id),
         () => store.BlobExistsAsync(id),
         () => store.BlobLengthAsync(id),
-        () => store.GetBlobInfoAsync(id),
+        () => store.GetBlobMetadataAsync(id),
     ];
 
     [Fact]
@@ -222,7 +222,7 @@ public class BlobIntegrationTests
 
         Assert.Null(await store.GetBlobAsync("absent"));
         Assert.Null(await store.BlobLengthAsync("absent"));
-        Assert.Null(await store.GetBlobInfoAsync("absent"));
+        Assert.Null(await store.GetBlobMetadataAsync("absent"));
         Assert.False(await store.BlobExistsAsync("absent"));
         Assert.False(await store.DeleteBlobAsync("absent"));
     }

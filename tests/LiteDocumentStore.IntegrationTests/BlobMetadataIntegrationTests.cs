@@ -118,7 +118,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
         await store.PutBlobAsync("doc", new byte[] { 1, 2, 3 },
             new BlobWriteOptions { ContentType = "application/pdf" });
 
-        var info = await store.GetBlobInfoAsync("doc");
+        var info = await store.GetBlobMetadataAsync("doc");
         Assert.NotNull(info);
         Assert.Equal("doc", info.Id);
         Assert.Equal(3, info.Length);
@@ -129,11 +129,11 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetBlobInfoAsync_ReturnsNullForAnAbsentId()
+    public async Task GetBlobMetadataAsync_ReturnsNullForAnAbsentId()
     {
         await using var store = await CreateFileStoreAsync();
 
-        Assert.Null(await store.GetBlobInfoAsync("missing"));
+        Assert.Null(await store.GetBlobMetadataAsync("missing"));
     }
 
     [Fact]
@@ -143,13 +143,13 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
 
         await store.PutBlobAsync("doc", new byte[] { 1 },
             new BlobWriteOptions { ContentType = "text/plain" });
-        var first = await store.GetBlobInfoAsync("doc");
+        var first = await store.GetBlobMetadataAsync("doc");
 
         await Task.Delay(20);
         await store.PutBlobAsync("doc", new byte[] { 1, 2, 3, 4 },
             new BlobWriteOptions { ContentType = "application/json" });
 
-        var second = await store.GetBlobInfoAsync("doc");
+        var second = await store.GetBlobMetadataAsync("doc");
         Assert.NotNull(first);
         Assert.NotNull(second);
         Assert.Equal(2, second.Version);
@@ -171,7 +171,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
         // nothing must not leave it claiming to describe the new bytes.
         await store.PutBlobAsync("doc", new byte[] { 2 });
 
-        var info = await store.GetBlobInfoAsync("doc");
+        var info = await store.GetBlobMetadataAsync("doc");
         Assert.NotNull(info);
         Assert.Null(info.ContentType);
         Assert.Equal(2, info.Version);
@@ -187,7 +187,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
         await store.PutBlobAsync("streamed", new MemoryStream(payload), payload.Length,
             new BlobWriteOptions { ContentType = "application/octet-stream" });
 
-        var info = await store.GetBlobInfoAsync("streamed");
+        var info = await store.GetBlobMetadataAsync("streamed");
         Assert.NotNull(info);
         Assert.Equal(payload.Length, info.Length);
         Assert.Equal("application/octet-stream", info.ContentType);
@@ -204,7 +204,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
         await store.PutBlobAsync("streamed", new MemoryStream(new byte[10]), 10);
         await store.PutBlobAsync("streamed", new MemoryStream(new byte[4]), 4);
 
-        var info = await store.GetBlobInfoAsync("streamed");
+        var info = await store.GetBlobMetadataAsync("streamed");
         Assert.NotNull(info);
         Assert.Equal(2, info.Version);
         Assert.Equal(4, info.Length);
@@ -236,7 +236,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
             ["id", "data", "content_type", "created_at", "updated_at", "version"],
             await ColumnNamesAsync(store));
 
-        var info = await store.GetBlobInfoAsync("legacy");
+        var info = await store.GetBlobMetadataAsync("legacy");
         Assert.NotNull(info);
         Assert.Equal(4, info.Length);
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, await store.GetBlobAsync("legacy"));
@@ -260,7 +260,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
         await store.CreateBlobTableAsync();
 
         Assert.Equal(6, (await ColumnNamesAsync(store)).Count);
-        Assert.NotNull(await store.GetBlobInfoAsync("legacy"));
+        Assert.NotNull(await store.GetBlobMetadataAsync("legacy"));
     }
 
     [Fact]
@@ -326,7 +326,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
 
         await store.PutBlobAsync("fresh", new byte[] { 9, 9 },
             new BlobWriteOptions { ContentType = "text/csv" });
-        var before = await store.GetBlobInfoAsync("fresh");
+        var before = await store.GetBlobMetadataAsync("fresh");
 
         Assert.True(await store.RebuildBlobTableAsync());
 
@@ -334,7 +334,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
             ["id", "content_type", "created_at", "updated_at", "version", "data"],
             await ColumnNamesAsync(store));
 
-        var after = await store.GetBlobInfoAsync("fresh");
+        var after = await store.GetBlobMetadataAsync("fresh");
         Assert.Equal(before, after);
         Assert.Equal(new byte[] { 9, 9 }, await store.GetBlobAsync("fresh"));
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, await store.GetBlobAsync("legacy"));
@@ -354,7 +354,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
             ["id", "content_type", "created_at", "updated_at", "version", "data"],
             await ColumnNamesAsync(store));
 
-        var info = await store.GetBlobInfoAsync("legacy");
+        var info = await store.GetBlobMetadataAsync("legacy");
         Assert.NotNull(info);
         Assert.Equal(4, info.Length);
         Assert.Equal(1, info.Version);
@@ -535,7 +535,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
         Assert.Equal(2, ex.ActualVersion);
         Assert.Equal(new byte[] { 2 }, await store.GetBlobAsync("doc"));
 
-        var info = await store.GetBlobInfoAsync("doc");
+        var info = await store.GetBlobMetadataAsync("doc");
         Assert.Equal("text/plain", info!.ContentType);
     }
 
@@ -592,7 +592,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
             new BlobWriteOptions { ContentType = "text/plain" }));
 
         Assert.Equal(new byte[] { 3 }, await store.GetBlobAsync("doc"));
-        var info = await store.GetBlobInfoAsync("doc");
+        var info = await store.GetBlobMetadataAsync("doc");
         Assert.Equal("text/plain", info!.ContentType);
         Assert.Equal(2, info.Version);
     }
@@ -706,7 +706,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
             Assert.Equal("text/plain", listed[0].ContentType);
         });
 
-        Assert.Equal("text/plain", (await store.GetBlobInfoAsync("b1"))!.ContentType);
+        Assert.Equal("text/plain", (await store.GetBlobMetadataAsync("b1"))!.ContentType);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             store.ExecuteInTransactionAsync(async tx =>
@@ -715,7 +715,7 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
                 throw new InvalidOperationException("rolled back");
             }));
 
-        Assert.Null(await store.GetBlobInfoAsync("b2"));
+        Assert.Null(await store.GetBlobMetadataAsync("b2"));
     }
 
     [Fact]
@@ -730,8 +730,8 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
             await tx.PutBlobAsync("added", new byte[] { 5 });
         });
 
-        Assert.Equal(1, (await store.GetBlobInfoAsync("added"))!.Version);
-        Assert.Equal(1, (await store.GetBlobInfoAsync("legacy"))!.Version);
+        Assert.Equal(1, (await store.GetBlobMetadataAsync("added"))!.Version);
+        Assert.Equal(1, (await store.GetBlobMetadataAsync("legacy"))!.Version);
     }
 
     private sealed class CapturingLoggerFactory : ILoggerFactory

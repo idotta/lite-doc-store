@@ -665,7 +665,7 @@ public interface IDocumentOperations
     /// The upgrade is idempotent and runs under its own <c>BEGIN IMMEDIATE</c> outside a caller's
     /// transaction, so two processes starting together cannot both issue it. It only adds
     /// columns; it never rewrites rows. A table upgraded this way keeps its payload column ahead
-    /// of the metadata, which makes <see cref="GetBlobInfoAsync"/> and <see cref="ListBlobsAsync"/>
+    /// of the metadata, which makes <see cref="GetBlobMetadataAsync"/> and <see cref="ListBlobsAsync"/>
     /// walk each payload's pages — a warning is logged, and
     /// <see cref="IDocumentStore.RebuildBlobTableAsync"/> converts the table when the cost of
     /// copying it is acceptable.
@@ -687,7 +687,7 @@ public interface IDocumentOperations
     /// </summary>
     /// <remarks>
     /// An overwrite replaces the recorded content type with the one supplied here — the stored
-    /// type described the payload being replaced — and leaves <see cref="BlobInfo.CreatedAt"/>
+    /// type described the payload being replaced — and leaves <see cref="BlobMetadata.CreatedAt"/>
     /// naming the first write.
     /// </remarks>
     /// <param name="id">The blob identifier</param>
@@ -903,7 +903,7 @@ public interface IDocumentOperations
     /// Thrown when the row exists but its <c>data</c> column holds no blob, for the reason given
     /// on <see cref="BlobLengthAsync"/>. An absent id still returns null.
     /// </exception>
-    Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default);
+    Task<BlobMetadata?> GetBlobMetadataAsync(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Lists blob metadata in id order, without reading any payload.
@@ -927,7 +927,7 @@ public interface IDocumentOperations
     /// <see cref="GetAllAsync{T}(CancellationToken)"/>: returning fewer rows than the table
     /// holds is data loss the caller cannot detect.
     /// </exception>
-    Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+    Task<IReadOnlyList<BlobMetadata>> ListBlobsAsync(
         string? idPrefix = null,
         int skip = 0,
         int? take = null,

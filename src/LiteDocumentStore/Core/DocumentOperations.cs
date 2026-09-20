@@ -1678,13 +1678,13 @@ internal readonly struct DocumentOperations
         }
     }
 
-    /// <inheritdoc cref="IDocumentOperations.GetBlobInfoAsync" />
-    public async Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken)
+    /// <inheritdoc cref="IDocumentOperations.GetBlobMetadataAsync" />
+    public async Task<BlobMetadata?> GetBlobMetadataAsync(string id, CancellationToken cancellationToken)
     {
         ValidateId(id);
 
-        var results = await ReadBlobInfosAsync(
-            SqlGenerator.GenerateBlobInfoSql(), cancellationToken, ("Id", id)).ConfigureAwait(false);
+        var results = await ReadBlobMetadataAsync(
+            SqlGenerator.GenerateBlobMetadataSql(), cancellationToken, ("Id", id)).ConfigureAwait(false);
 
         if (results.Count == 0)
         {
@@ -1696,7 +1696,7 @@ internal readonly struct DocumentOperations
     }
 
     /// <inheritdoc cref="IDocumentOperations.ListBlobsAsync" />
-    public async Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+    public async Task<IReadOnlyList<BlobMetadata>> ListBlobsAsync(
         string? idPrefix,
         int skip,
         int? take,
@@ -1729,7 +1729,7 @@ internal readonly struct DocumentOperations
         }
 
         var sql = SqlGenerator.GenerateListBlobsSql(hasPrefix, hasUpperBound, skip > 0, take is not null);
-        return await ReadBlobInfosAsync(sql, cancellationToken, [.. parameters]).ConfigureAwait(false);
+        return await ReadBlobMetadataAsync(sql, cancellationToken, [.. parameters]).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1742,7 +1742,7 @@ internal readonly struct DocumentOperations
     /// skipped, matching <c>GetAllAsync</c>: returning fewer rows than the table holds is data
     /// loss the caller cannot detect.
     /// </remarks>
-    private async Task<List<BlobInfo>> ReadBlobInfosAsync(
+    private async Task<List<BlobMetadata>> ReadBlobMetadataAsync(
         string sql,
         CancellationToken cancellationToken,
         params (string Name, object? Value)[] parameters)
@@ -1756,13 +1756,13 @@ internal readonly struct DocumentOperations
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
-        var results = new List<BlobInfo>();
+        var results = new List<BlobMetadata>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var id = reader.GetString(0);
             EnsureBlobPayload(reader.IsDBNull(1) ? null : reader.GetString(1), id);
 
-            results.Add(new BlobInfo(
+            results.Add(new BlobMetadata(
                 id,
                 reader.GetInt64(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),

@@ -24,7 +24,7 @@ namespace LiteDocumentStore;
 /// The optimistic-concurrency version, incremented on every store write. A row inserted through
 /// raw SQL starts at the column default of 1.
 /// </param>
-public sealed record BlobInfo(
+public sealed record BlobMetadata(
     string Id,
     long Length,
     string? ContentType,

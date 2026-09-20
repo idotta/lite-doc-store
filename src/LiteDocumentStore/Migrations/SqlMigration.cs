@@ -8,7 +8,7 @@ namespace LiteDocumentStore;
 /// Represents a SQL-based database schema migration with version control and up/down support.
 /// Provides a simple way to define migrations using raw SQL statements.
 /// </summary>
-public class Migration : IMigration
+public class SqlMigration : IMigration
 {
     private readonly string _upSql;
     private readonly string _downSql;
@@ -20,7 +20,7 @@ public class Migration : IMigration
     /// <param name="name">A descriptive name for this migration</param>
     /// <param name="upSql">SQL to execute when applying this migration</param>
     /// <param name="downSql">SQL to execute when reverting this migration</param>
-    public Migration(long version, string name, string upSql, string downSql)
+    public SqlMigration(long version, string name, string upSql, string downSql)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(upSql);
