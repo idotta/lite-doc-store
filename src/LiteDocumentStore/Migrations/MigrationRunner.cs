@@ -366,7 +366,7 @@ internal sealed class MigrationRunner
     /// Rejects a migration whose version is not positive. Version 0 is the sentinel
     /// <see cref="GetCurrentVersionAsync"/> returns for "nothing applied" and the floor
     /// <see cref="RollbackToVersionAsync"/> accepts, so a migration at or below it applies but can
-    /// never be reported or rolled back through the public API. <see cref="Migration"/>'s
+    /// never be reported or rolled back through the public API. <see cref="SqlMigration"/>'s
     /// constructor already refuses one; this is the same rule for a hand-written
     /// <see cref="IMigration"/>.
     /// </summary>

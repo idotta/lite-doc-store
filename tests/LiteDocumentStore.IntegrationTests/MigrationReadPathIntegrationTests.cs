@@ -72,7 +72,7 @@ public sealed class MigrationReadPathIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task MigrateAsync_StillCreatesTheHistoryTable()
     {
-        await _store.MigrateAsync([new Migration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")]);
+        await _store.MigrateAsync([new SqlMigration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")]);
 
         Assert.True(await HistoryTableExistsAsync());
         Assert.True(await ChecksumColumnExistsAsync());
@@ -84,7 +84,7 @@ public sealed class MigrationReadPathIntegrationTests : IAsyncLifetime
     {
         await CreateLegacyHistoryTableAsync();
 
-        await _store.MigrateAsync([new Migration(8, "eight", "CREATE TABLE t8 (x)", "DROP TABLE t8")]);
+        await _store.MigrateAsync([new SqlMigration(8, "eight", "CREATE TABLE t8 (x)", "DROP TABLE t8")]);
 
         Assert.True(await ChecksumColumnExistsAsync());
         Assert.Equal(8, await _store.GetCurrentMigrationVersionAsync());
@@ -105,7 +105,7 @@ public sealed class MigrationReadPathIntegrationTests : IAsyncLifetime
             .CreateAsync(DocumentStoreOptions.ForInMemory());
 
         // A table has to be present, or both reads short-circuit before any column probe.
-        await store.MigrateAsync([new Migration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")]);
+        await store.MigrateAsync([new SqlMigration(1, "one", "CREATE TABLE t1 (x)", "DROP TABLE t1")]);
 
         factory.Reset();
         await store.GetCurrentMigrationVersionAsync();

@@ -60,14 +60,14 @@ src/
                      QuietLog (logging that cannot throw, for the release paths),
                      and the three guards the options and pool run:
                      SqliteConnectionStringGuard, SqlitePageSizeGuard, SqliteVersionGuard
-    Blobs/           BlobInfo, BlobWriteOptions, BlobLimits, BlobIdPrefix (the prefix key
+    Blobs/           BlobMetadata, BlobWriteOptions, BlobLimits, BlobIdPrefix (the prefix key
                      range), BlobReadStream (incremental blob I/O), BlobStreamSlot
     Conventions/     ITableNamingConvention — maps type -> table name
-    Query/           DocumentQuery, DocumentPatch + the predicate/ordering/patch records
-    Indexing/        IndexOptions, IndexFilter (+ IndexFilterTerm) — index DDL options
+    Query/           DocumentQuery, DocumentPatch + the predicate/ordering/patch records (internal)
+    Indexing/        IndexOptions, IndexFilter (+ IndexFilterTerm, internal) — index DDL options
     Factories/       IDocumentStoreFactory, IConnectionFactory (+ Default impls)
     Extensions/      ServiceCollectionExtensions (AddLiteDocumentStore, keyed variant)
-    Migrations/      MigrationRunner (internal), IMigration/Migration, MigrationOptions,
+    Migrations/      MigrationRunner (internal), IMigration/SqlMigration, MigrationOptions,
                      MigrationHistoryRecord, SchemaIntrospector
     Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>), JsonPathResolver (expression -> serialized path)
     Exceptions/      LiteDocumentStoreException + Concurrency/CorruptData/DocumentSerialization/
@@ -94,15 +94,34 @@ are `internal sealed`; the test/benchmark projects see them via `InternalsVisibl
 Pack job fails if a friend name leaks into the shipped DLL).
 
 The public surface consumers touch is `IDocumentStore` / `IDocumentOperations` / `IDocumentTransaction`,
-`DocumentStoreOptions(+Builder)`, the factories and the DI extension, plus the value types those
-signatures take and return: `DocumentQuery<T>`, `DocumentPatch<T>`, `IndexOptions`/`IndexFilter`,
-`TransactionMode`, `VersionedDocument<T>`, `BlobInfo`/`BlobWriteOptions`,
-`IMigration`/`Migration`/`MigrationOptions`/`MigrationHistoryRecord`, `SchemaIntrospector`,
+`DocumentStoreOptions(+Builder)` and `SynchronousMode`, the factories and the DI extension, plus the
+value types those signatures take and return: `DocumentQuery<T>` and `QueryOperator`,
+`DocumentPatch<T>`, `IndexOptions`/`IndexFilter`,
+`TransactionMode`, `VersionedDocument<T>`, `BlobMetadata`/`BlobWriteOptions`/`BlobLimits`,
+`IMigration`/`SqlMigration`/`MigrationOptions`/`MigrationHistoryRecord`, `SchemaIntrospector` and the
+four result types it returns (`TableInfo`, `ColumnInfo`, `IndexInfo`, `DatabaseStatistics`),
 `ITableNamingConvention` and `DefaultTableNamingConvention` (public so a custom convention can delegate
 to it), `DefaultConnectionFactory` (public for the same reason, and `sealed` for the same reason: a
 custom `IConnectionFactory` decorates it by holding one and forwarding, not by deriving from it), and
 the exceptions. `TableNameCollisionGuard`, the wrapper every store puts around the configured
 convention, stays `internal`.
+
+**Two bare-name collisions with other document stores are known and deliberately not renamed.**
+`IDocumentStore` collides with `Marten.IDocumentStore` and
+`Raven.Client.Documents.IDocumentStore`, and `DatabaseStatistics` with
+`Raven.Client.Documents.Operations.DatabaseStatistics`. This is the **highest audience overlap of any
+pair considered** — a document store over a relational engine is exactly the shelf Marten and RavenDB
+sit on — and it is still the right call: `IDocumentStore` is the product's identity, and a consumer who
+imports both namespaces has `using Lite = LiteDocumentStore;` as the remedy. Unlike the two renames that
+*were* made (`BlobInfo` → `BlobMetadata`, `Migration` → `SqlMigration`, each confirmed by a real
+`CS0104`), this pair was **reasoned about rather than compile-verified**. It is recorded here so the
+rename principle stays consistent instead of applying only to the names someone happened to list.
+
+**"Generically named" is not by itself risk, and four candidates were refuted on that basis.**
+`TableInfo`, `ColumnInfo`, `IndexInfo` and `SynchronousMode` have no public same-name type anywhere in
+the scanned set (the .NET 10 reference assemblies plus Azure.Storage.Blobs, EF Core, FluentMigrator,
+Lucene.NET and Dapper). `CS0104` arises only between two *using-imported* namespaces, so a consumer's
+own `MyApp.TableInfo` wins over an import and never ambiguates.
 
 > Note: the `tests/` projects were updated for the Dapper removal (tests that only covered the dropped
 > `QueryAsync(predicate)` / `SelectAsync` APIs were removed; the rest use the raw-ADO helpers in
@@ -844,7 +863,7 @@ load-bearing.** SQLite reads a row front to back, so metadata behind a multi-meg
 be reached by walking overflow pages: **232 ms vs under 1 ms** per listing pass over twenty 20 MB rows.
 There is deliberately **no length column** — `length(data)` is answered from the record header.
 
-`GetBlobInfoAsync(id)` returns `BlobInfo(Id, Length, ContentType, CreatedAt, UpdatedAt, Version)`
+`GetBlobMetadataAsync(id)` returns `BlobMetadata(Id, Length, ContentType, CreatedAt, UpdatedAt, Version)`
 without reading the payload, and `ListBlobsAsync(idPrefix, skip, take)` returns them in id order. **The
 prefix is a half-open key range** (`id >= @Prefix AND id < @PrefixEnd`, upper bound from
 `Blobs/BlobIdPrefix.cs`), not a pattern: only the range *searches* the primary-key index, and `LIKE` is
@@ -910,7 +929,7 @@ is structural: only the savepoint leaves work that the caller's *already-intende
 **A blob row is corrupt when its `data` column is not a BLOB**, and the same sentence governs it as
 documents: row presence decides not-found; the payload decides corrupt. All five reads that depend on
 the payload throw `CorruptDataException` carrying the id, the table and the offending storage class —
-`GetBlobAsync` and `OpenBlobReadAsync`, which read it, plus `BlobLengthAsync`, `GetBlobInfoAsync` and
+`GetBlobAsync` and `OpenBlobReadAsync`, which read it, plus `BlobLengthAsync`, `GetBlobMetadataAsync` and
 `ListBlobsAsync`, which only *measure* it and are exactly why the check cannot live at the point of
 reading. `BlobExistsAsync` still reports `true`, which is the point of the contract.
 
@@ -1108,7 +1127,7 @@ decouple the work from the history-row `INSERT`, and "half-applied" there is pre
 `MigrationConnectionContractIntegrationTests` pins the whole contract. → rationale#migrations
 
 **Checksums.** `IMigration.Checksum` is a default interface member returning null (so existing
-implementations still compile); `Migration.Checksum` is **`virtual`** and returns the uppercase
+implementations still compile); `SqlMigration.Checksum` is **`virtual`** and returns the uppercase
 SHA-256 hex of its **up** SQL only — the down SQL is not part of what was applied, and rollback
 never verifies checksums at all. The checksum is stored with the history row and compared on later
 runs, throwing `MigrationChecksumMismatchException` (`ExpectedChecksum` = stored, `ActualChecksum` =
@@ -1123,7 +1142,7 @@ both issue the ALTER.
 it has no definition.
 
 **`IMigration.Version` must be positive**, enforced at every entry point rather than only in
-`Migration`'s constructor — one `RequirePositiveVersion` helper called from three sites (`Validate`'s
+`SqlMigration`'s constructor — one `RequirePositiveVersion` helper called from three sites (`Validate`'s
 per-element loop, plus `ApplyMigrationAsync`/`RollbackMigrationAsync`, which do not go through
 `Validate`). A hand-written `IMigration` at version 0 used to **apply** while
 `GetCurrentMigrationVersionAsync` answered `0` (the "nothing applied" sentinel) and

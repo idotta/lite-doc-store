@@ -4,7 +4,7 @@ using Xunit;
 namespace LiteDocumentStore.UnitTests;
 
 /// <summary>
-/// A hand-written <see cref="IMigration"/> skips <see cref="Migration"/>'s constructor guard, so
+/// A hand-written <see cref="IMigration"/> skips <see cref="SqlMigration"/>'s constructor guard, so
 /// the runner applies the same floor at every entry point: the collection ones through
 /// <c>Validate</c>, and the two single-migration ones directly.
 /// </summary>

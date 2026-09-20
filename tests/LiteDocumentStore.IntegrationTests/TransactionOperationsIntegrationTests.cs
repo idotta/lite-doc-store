@@ -307,7 +307,7 @@ public class TransactionOperationsIntegrationTests
             Assert.Equal(payload, await transaction.GetBlobAsync("b/1"));
             Assert.Equal((long)payload.Length, (await transaction.BlobLengthAsync("b/1"))!.Value);
 
-            var info = await transaction.GetBlobInfoAsync("b/1");
+            var info = await transaction.GetBlobMetadataAsync("b/1");
             Assert.NotNull(info);
             Assert.Equal("application/octet-stream", info.ContentType);
             Assert.Equal((long)payload.Length, info.Length);
@@ -315,7 +315,7 @@ public class TransactionOperationsIntegrationTests
 
             Assert.False(await transaction.BlobExistsAsync("missing"));
             Assert.Null(await transaction.GetBlobAsync("missing"));
-            Assert.Null(await transaction.GetBlobInfoAsync("missing"));
+            Assert.Null(await transaction.GetBlobMetadataAsync("missing"));
 
             await transaction.CommitAsync();
         }
@@ -337,7 +337,7 @@ public class TransactionOperationsIntegrationTests
             await transaction.CommitAsync();
         }
 
-        var info = await store.GetBlobInfoAsync("b/1");
+        var info = await store.GetBlobMetadataAsync("b/1");
         Assert.Equal("image/png", info!.ContentType);
         Assert.Equal(payload, await store.GetBlobAsync("b/1"));
     }
@@ -373,7 +373,7 @@ public class TransactionOperationsIntegrationTests
             await transaction.CommitAsync();
         }
 
-        var info = await store.GetBlobInfoAsync("b/1");
+        var info = await store.GetBlobMetadataAsync("b/1");
         Assert.Equal(4L, info!.Version);
         Assert.Equal("text/csv", info.ContentType);
     }

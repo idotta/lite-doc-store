@@ -19,7 +19,7 @@ public sealed class DisposalGuardTests
 {
     private sealed record Doc(string Name, int Value);
 
-    private static readonly Migration SampleMigration =
+    private static readonly SqlMigration SampleMigration =
         new(1, "sample", "CREATE TABLE IF NOT EXISTS sample (id TEXT)", "DROP TABLE IF EXISTS sample");
 
     private static readonly DocumentQuery<Doc> Query =
@@ -112,7 +112,7 @@ public sealed class DisposalGuardTests
         table.Add("GetBlobAsync", s => s.GetBlobAsync("a"));
         table.Add("DeleteBlobAsync", s => s.DeleteBlobAsync("a"));
         table.Add("DeleteBlobWithVersionAsync", s => s.DeleteBlobWithVersionAsync("a", 1));
-        table.Add("GetBlobInfoAsync", s => s.GetBlobInfoAsync("a"));
+        table.Add("GetBlobMetadataAsync", s => s.GetBlobMetadataAsync("a"));
         table.Add("ListBlobsAsync", s => s.ListBlobsAsync());
         table.Add("BlobExistsAsync", s => s.BlobExistsAsync("a"));
         table.Add("OpenBlobReadAsync", s => s.OpenBlobReadAsync("a"));

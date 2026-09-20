@@ -25,7 +25,7 @@ internal static class MigrationsExample
         var customerTable = store.GetTableName<Customer>();
         var orderTable = store.GetTableName<Order>();
 
-        var createTables = new Migration(
+        var createTables = new SqlMigration(
             version: 20260822001,
             name: "CreateInitialTables",
             // A hand-written document table must match the schema the store expects, `version`
@@ -39,19 +39,19 @@ internal static class MigrationsExample
                 DROP TABLE IF EXISTS [{customerTable}];
                 """);
 
-        var emailIndex = new Migration(
+        var emailIndex = new SqlMigration(
             version: 20260822002,
             name: "AddCustomerEmailIndex",
             upSql: $"CREATE INDEX IF NOT EXISTS idx_customer_email ON [{customerTable}](json_extract(data, '$.Email'));",
             downSql: "DROP INDEX IF EXISTS idx_customer_email;");
 
-        var orderIndexes = new Migration(
+        var orderIndexes = new SqlMigration(
             version: 20260822003,
             name: "AddOrderCustomerIndex",
             upSql: $"CREATE INDEX IF NOT EXISTS idx_order_customer ON [{orderTable}](json_extract(data, '$.CustomerId'));",
             downSql: "DROP INDEX IF EXISTS idx_order_customer;");
 
-        var cityVirtualColumn = new Migration(
+        var cityVirtualColumn = new SqlMigration(
             version: 20260822004,
             name: "AddCityVirtualColumn",
             upSql: $"""

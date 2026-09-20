@@ -165,9 +165,9 @@ public class BlobMetadataSqlTests
     }
 
     [Fact]
-    public void GenerateBlobInfoSql_ComputesTheLengthInsteadOfStoringIt()
+    public void GenerateBlobMetadataSql_ComputesTheLengthInsteadOfStoringIt()
     {
-        var sql = SqlGenerator.GenerateBlobInfoSql();
+        var sql = SqlGenerator.GenerateBlobMetadataSql();
 
         // length(data) is answered from the record header, so it costs nothing and cannot drift
         // from a payload a consumer writes with raw SQL.
@@ -176,11 +176,11 @@ public class BlobMetadataSqlTests
     }
 
     [Fact]
-    public void GenerateBlobInfoSql_CarriesTheStorageClassBesideTheLength()
+    public void GenerateBlobMetadataSql_CarriesTheStorageClassBesideTheLength()
     {
         // Without it a TEXT or numeric payload reports its character or digit count as a byte
         // length — a wrong answer rather than a detectable one.
-        Assert.Contains("typeof(data)", SqlGenerator.GenerateBlobInfoSql());
+        Assert.Contains("typeof(data)", SqlGenerator.GenerateBlobMetadataSql());
     }
 
     [Fact]

@@ -11,7 +11,7 @@ public class MigrationTests
     public void Migration_Constructor_WithValidParameters_CreatesInstance()
     {
         // Arrange & Act
-        var migration = new Migration(
+        var migration = new SqlMigration(
             version: 20260109001,
             name: "CreateCustomerTable",
             upSql: "CREATE TABLE Customer (id TEXT PRIMARY KEY)",
@@ -28,7 +28,7 @@ public class MigrationTests
     public void Migration_Constructor_WithInvalidVersion_ThrowsArgumentException(long version)
     {
         // Act & Assert
-        var ex = Assert.Throws<ArgumentException>(() => new Migration(
+        var ex = Assert.Throws<ArgumentException>(() => new SqlMigration(
             version,
             "TestMigration",
             "SELECT 1",
@@ -42,7 +42,7 @@ public class MigrationTests
     {
         // Act & Assert
         var ex = Assert.Throws<ArgumentNullException>(() =>
-            new Migration(1, null!, "SELECT 1", "SELECT 2"));
+            new SqlMigration(1, null!, "SELECT 1", "SELECT 2"));
 
         Assert.Equal("name", ex.ParamName);
     }
@@ -52,7 +52,7 @@ public class MigrationTests
     {
         // Act & Assert
         var ex = Assert.Throws<ArgumentNullException>(() =>
-            new Migration(1, "Test", null!, "SELECT 2"));
+            new SqlMigration(1, "Test", null!, "SELECT 2"));
 
         Assert.Equal("upSql", ex.ParamName);
     }
@@ -62,7 +62,7 @@ public class MigrationTests
     {
         // Act & Assert
         var ex = Assert.Throws<ArgumentNullException>(() =>
-            new Migration(1, "Test", "SELECT 1", null!));
+            new SqlMigration(1, "Test", "SELECT 1", null!));
 
         Assert.Equal("downSql", ex.ParamName);
     }
@@ -70,8 +70,8 @@ public class MigrationTests
     [Fact]
     public void Migration_Checksum_IsAStableUppercaseSha256OfTheUpSql()
     {
-        var first = new Migration(1, "Test", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
-        var second = new Migration(9, "Other", "CREATE TABLE T (id TEXT)", "SELECT 1");
+        var first = new SqlMigration(1, "Test", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+        var second = new SqlMigration(9, "Other", "CREATE TABLE T (id TEXT)", "SELECT 1");
 
         // 64 uppercase hex characters, and independent of version, name and down SQL.
         Assert.Equal(64, first.Checksum.Length);
@@ -82,8 +82,8 @@ public class MigrationTests
     [Fact]
     public void Migration_Checksum_ChangesWithTheUpSql()
     {
-        var original = new Migration(1, "Test", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
-        var edited = new Migration(1, "Test", "CREATE TABLE T (id TEXT, extra TEXT)", "DROP TABLE T");
+        var original = new SqlMigration(1, "Test", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+        var edited = new SqlMigration(1, "Test", "CREATE TABLE T (id TEXT, extra TEXT)", "DROP TABLE T");
 
         Assert.NotEqual(original.Checksum, edited.Checksum);
     }
@@ -137,7 +137,7 @@ public class MigrationTests
         // The documented limit: nothing detects the omission, so the interface read keeps
         // describing the constructor's SQL while a different migration body runs.
         IMigration migration = new UncoveredMigration();
-        var baseline = new Migration(1, "Uncovered", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+        var baseline = new SqlMigration(1, "Uncovered", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
 
         Assert.Equal(baseline.Checksum, migration.Checksum);
     }
@@ -150,7 +150,7 @@ public class MigrationTests
         // IMigration, and interface dispatch lands on the base. Without this test the doc claim
         // could rot silently — the compiler never complains, and nothing else exercises the shape.
         var hiding = new HidingMigration();
-        var baseline = new Migration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
+        var baseline = new SqlMigration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
 
         // Not vacuous: the hiding member really is reachable, just not through the interface.
         Assert.Equal("HIDDEN", hiding.Checksum);
@@ -191,22 +191,22 @@ public class MigrationTests
     }
 
     /// <summary>
-    /// Overrides <see cref="Migration.UpAsync"/> and changes what runs, without covering
-    /// <see cref="Migration.Checksum"/> — the shape the checksum docs warn about.
+    /// Overrides <see cref="SqlMigration.UpAsync"/> and changes what runs, without covering
+    /// <see cref="SqlMigration.Checksum"/> — the shape the checksum docs warn about.
     /// </summary>
     private sealed class UncoveredMigration()
-        : Migration(1, "Uncovered", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+        : SqlMigration(1, "Uncovered", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
     {
         public override Task UpAsync(SqliteConnection connection, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 
     /// <summary>
-    /// Hides <see cref="Migration.Checksum"/> with <c>new</c> instead of overriding it — the shape
+    /// Hides <see cref="SqlMigration.Checksum"/> with <c>new</c> instead of overriding it — the shape
     /// the docs call out as silently ignored, kept here so that claim stays tested.
     /// </summary>
     private sealed class HidingMigration()
-        : Migration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+        : SqlMigration(1, "Hiding", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
     {
         public new string Checksum => "HIDDEN";
     }
@@ -215,7 +215,7 @@ public class MigrationTests
     /// Overrides both, which is what the docs require of a subclass that changes what runs.
     /// </summary>
     private sealed class CoveredMigration(string checksum)
-        : Migration(1, "Covered", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+        : SqlMigration(1, "Covered", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
     {
         public override string Checksum => checksum;
 
@@ -228,7 +228,7 @@ public class MigrationTests
     /// <c>null!</c>.
     /// </summary>
     private sealed class OptedOutMigration()
-        : Migration(1, "OptedOut", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
+        : SqlMigration(1, "OptedOut", "CREATE TABLE T (id TEXT)", "DROP TABLE T")
     {
         public override string Checksum => null!;
     }

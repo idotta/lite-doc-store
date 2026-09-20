@@ -96,7 +96,7 @@ public sealed class CancellationIntegrationTests : IDisposable
     public async Task MigrateAsync_WithAnAlreadyCancelledToken_AppliesNothing()
     {
         await using var store = await CreateFileStoreAsync();
-        var migration = new Migration(
+        var migration = new SqlMigration(
             1,
             "create_widget",
             "CREATE TABLE Widget (id TEXT PRIMARY KEY)",

@@ -525,14 +525,14 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
-    public Task<BlobInfo?> GetBlobInfoAsync(string id, CancellationToken cancellationToken = default)
+    public Task<BlobMetadata?> GetBlobMetadataAsync(string id, CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
-        return _operations.GetBlobInfoAsync(id, cancellationToken);
+        return _operations.GetBlobMetadataAsync(id, cancellationToken);
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<BlobInfo>> ListBlobsAsync(
+    public Task<IReadOnlyList<BlobMetadata>> ListBlobsAsync(
         string? idPrefix = null,
         int skip = 0,
         int? take = null,
