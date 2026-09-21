@@ -128,11 +128,14 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
-    /// Sets the cache size in number of pages or kilobytes.
+    /// Sets the cache size in pages or in kibibytes.
     /// </summary>
     /// <param name="cacheSize">
-    /// Positive values specify number of pages.
-    /// Negative values specify kilobytes (e.g., -2000 = 2MB).
+    /// A positive value is a number of <em>pages</em>, so what it costs in memory depends on
+    /// <see cref="DocumentStoreOptions.PageSize"/>. A negative value is a number of
+    /// <em>kibibytes</em> — <c>PRAGMA cache_size</c>'s own unit, 1024 bytes, not 1000 — so
+    /// -2000 is about 2 MiB. This is the only builder route to the page-count half:
+    /// <see cref="WithCacheSizeMb(int)"/> always stores a negative value.
     /// </param>
     /// <returns>This builder for method chaining</returns>
     public DocumentStoreOptionsBuilder WithCacheSize(int cacheSize)

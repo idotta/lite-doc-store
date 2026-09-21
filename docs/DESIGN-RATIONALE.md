@@ -1627,10 +1627,15 @@ store may hold up to twice that many connections.
 ### Why the read transaction exists
 
 Incremental blob I/O addresses rows by rowid and SQLite reuses a deleted row's, so a bare `SELECT rowid` →
-`new SqliteBlob(...)` could open a different row. It is deferred, so it takes no lock.
+`new SqliteBlob(...)` could open a different row. The `BEGIN` is deferred and takes no lock of its own,
+but the rowid lookup that follows it does, and that lock belongs to the transaction the stream owns, so
+it is held until the stream is disposed.
 
-Its cost is inherent, not a consequence of the unpooled connection: while a stream lives it pins the WAL
-against truncation, and outside WAL its read lock blocks writers.
+Its cost is inherent, not a consequence of the unpooled connection: in WAL mode, while a stream lives it
+pins the log against truncation and leaves writers running. On a shared-cache in-memory database that
+lock is table-level, so a write to the blob table fails `SQLITE_LOCKED` (`SQLITE_LOCKED_SHAREDCACHE`)
+while the stream is open, and `busy_timeout` does not apply — SQLite does not invoke the busy handler for
+a shared-cache table conflict. Document tables, and reads of the blob table, are unaffected.
 
 `OpenBlobReadAsync` is deliberately **absent from `IDocumentTransaction`**: a stream outliving its
 transaction would read through a connection already back in the pool, and adding it would have meant
