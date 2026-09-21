@@ -6,6 +6,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// Integration tests for WAL mode and concurrent operations with multiple connections.
 /// These tests use file-based databases to properly test WAL mode and reader-writer concurrency.
 /// </summary>
+[Trait("Category", "Integration")]
 public class WalConcurrencyIntegrationTests : IDisposable
 {
     private readonly string _testDbPath;

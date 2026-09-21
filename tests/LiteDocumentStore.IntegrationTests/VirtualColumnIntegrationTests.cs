@@ -7,6 +7,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// Integration tests for virtual column functionality.
 /// Tests cover virtual column creation and query optimization via the generated columns.
 /// </summary>
+[Trait("Category", "Integration")]
 public class VirtualColumnIntegrationTests : IDisposable
 {
     // CreateIndexAsync derives idx_{table}_{path}, so a folded table name lands in the index name too.

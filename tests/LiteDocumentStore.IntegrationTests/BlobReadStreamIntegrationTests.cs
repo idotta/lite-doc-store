@@ -11,6 +11,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// <see cref="BlobStreamingIntegrationTests"/>; this file covers the <c>Stream</c> contract it
 /// implements on top of SQLite's incremental blob I/O.
 /// </remarks>
+[Trait("Category", "Integration")]
 public class BlobReadStreamIntegrationTests : IAsyncLifetime
 {
     private readonly List<string> _databasePaths = [];

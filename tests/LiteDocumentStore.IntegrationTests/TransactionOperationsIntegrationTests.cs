@@ -16,6 +16,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// <c>SQLITE_LOCKED</c> rather than testing anything. Cross-checks happen after the transaction
 /// ends.
 /// </remarks>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class TransactionOperationsIntegrationTests
 {

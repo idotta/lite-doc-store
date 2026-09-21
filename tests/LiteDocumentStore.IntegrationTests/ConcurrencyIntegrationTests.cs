@@ -6,6 +6,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// <summary>
 /// Integration tests for optimistic concurrency (versioned upsert / get) against real SQLite.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class ConcurrencyIntegrationTests
 {

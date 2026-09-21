@@ -5,6 +5,7 @@ using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
 
+[Trait("Category", "Integration")]
 public class ExceptionIntegrationTests : IDisposable
 {
     private readonly IDocumentStore _store;

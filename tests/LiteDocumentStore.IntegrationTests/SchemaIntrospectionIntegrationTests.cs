@@ -2,6 +2,7 @@ using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
 
+[Trait("Category", "Integration")]
 public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
 {
     private static readonly string CustomerTable = DefaultTableNamingConvention.Instance.GetTableName<Customer>();
