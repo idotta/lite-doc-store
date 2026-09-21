@@ -304,7 +304,10 @@ internal static class SqliteCommandExtensions
     }
 
     /// <summary>
-    /// Synchronous variant of <see cref="QueryFirstStringAsync"/>, used on the disposal path.
+    /// Synchronous variant of <see cref="QueryFirstStringAsync"/>, for the three paths that have no
+    /// caller token to pass: the disposal-time WAL checkpoint, and the two connection-open guards
+    /// (<see cref="SqlitePageSizeGuard.EnsureApplied"/> and
+    /// <see cref="SqliteVersionGuard.EnsureSupported"/>) on their synchronous overloads.
     /// </summary>
     public static string? QueryFirstString(this SqliteConnection connection, string commandText)
     {

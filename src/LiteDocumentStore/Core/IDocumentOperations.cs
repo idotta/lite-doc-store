@@ -709,9 +709,10 @@ public interface IDocumentOperations
     /// disposes it.
     /// </param>
     /// <param name="length">
-    /// Exactly how many bytes to consume from <paramref name="source"/>. SQLite's incremental
-    /// blob I/O cannot resize a blob, so the row is reserved at this size before the first byte is
-    /// written.
+    /// Exactly how many bytes to consume from <paramref name="source"/> — a statement about what
+    /// this call reads, not a claim about what <paramref name="source"/> holds; see the remarks
+    /// for how the two differ on a non-seekable source. SQLite's incremental blob I/O cannot
+    /// resize a blob, so the row is reserved at this size before the first byte is written.
     /// </param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <remarks>
@@ -723,11 +724,20 @@ public interface IDocumentOperations
     /// if the caller catches the exception and commits.
     /// </para>
     /// <para>
-    /// A seekable <paramref name="source"/> is measured before anything is written, so a
-    /// <paramref name="length"/> that disagrees with it in either direction fails the call. A
-    /// non-seekable one cannot be measured, so exactly <paramref name="length"/> bytes are
-    /// consumed and no more: a source with further bytes is not an error and they are left
-    /// unread, which is what keeps a live network stream or a framed protocol usable here.
+    /// <paramref name="length"/> always means "consume exactly this many bytes". A seekable
+    /// <paramref name="source"/> can additionally be held to "holds exactly this many": it is
+    /// measured from its current position before anything is written, so a
+    /// <paramref name="length"/> that disagrees with it in either direction fails the call with
+    /// no I/O done.
+    /// </para>
+    /// <para>
+    /// A non-seekable one cannot be measured, and the copy deliberately does not read past
+    /// <paramref name="length"/> to find out: on a live network stream that read would block
+    /// until the peer sent something, and in a framed protocol it would swallow a byte belonging
+    /// to whatever follows. So exactly <paramref name="length"/> bytes are consumed, further
+    /// bytes are left unread rather than reported as an error, and only a source that ends early
+    /// fails. The two cases differ because only one of them can be checked without breaking the
+    /// case this overload exists for.
     /// </para>
     /// </remarks>
     /// <exception cref="EndOfStreamException">
@@ -1003,8 +1013,15 @@ public interface IDocumentOperations
     /// Gets the table name this store uses for <typeparamref name="T"/>, for interpolating into
     /// raw SQL.
     /// </summary>
+    /// <remarks>
+    /// This and the two members below need no connection, so on an <see cref="IDocumentTransaction"/>
+    /// they are the only operations that do not first check the transaction is still active: they keep
+    /// answering after a commit, a rollback or disposal. On an <see cref="IDocumentStore"/> they are
+    /// guarded like everything else and throw once the store is disposed.
+    /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <returns>The table name produced by the configured <see cref="ITableNamingConvention"/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
     string GetTableName<T>();
 
     /// <summary>
@@ -1016,14 +1033,33 @@ public interface IDocumentOperations
     /// <returns>The UTF-8 JSON bytes</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is null</exception>
     /// <exception cref="Exceptions.DocumentSerializationException">Thrown when serialization fails</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
     byte[] SerializeDocument<T>(T value);
 
     /// <summary>
     /// Deserializes the JSON text a raw <c>SELECT json(data)</c> column yields.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A null or empty <paramref name="json"/> answers <c>default</c> without consulting the
+    /// serializer. The JSON literal <c>null</c> is <em>not</em> that case and its answer depends on
+    /// <typeparamref name="T"/>: System.Text.Json yields <c>default</c> for a reference type or a
+    /// <see cref="Nullable{T}"/>, and refuses the conversion for any other value type, which surfaces
+    /// as <see cref="Exceptions.DocumentSerializationException"/>. The document read paths normalize
+    /// that away with their own corrupt-row guard; this helper deliberately does not, so a raw-SQL
+    /// caller sees the serializer's own contract.
+    /// </para>
+    /// <para>
+    /// Only <see cref="System.Text.Json.JsonException"/> and <see cref="NotSupportedException"/> are
+    /// translated. An exception of any other type thrown by a custom
+    /// <see cref="System.Text.Json.Serialization.JsonConverter"/> propagates unchanged, because
+    /// relabelling it would turn a converter's own failure into a confident claim about type metadata.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="json">The JSON text, as returned by <c>json(data)</c></param>
     /// <returns>The document, or default when <paramref name="json"/> is null or empty</returns>
     /// <exception cref="Exceptions.DocumentSerializationException">Thrown when deserialization fails</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
     T? DeserializeDocument<T>(string? json);
 }

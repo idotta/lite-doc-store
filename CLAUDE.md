@@ -23,7 +23,7 @@ The library is Native-AOT / trim compatible (`<IsAotCompatible>true</IsAotCompat
 
 ## Build, run, test
 
-Everything runs from the repository root — the solution is there, so no command needs a path.
+Everything runs from the repository root — the solution is there, so no command needs a `cd`.
 
 ```powershell
 # Build (Release is what CI uses)
@@ -35,7 +35,7 @@ dotnet test tests/LiteDocumentStore.IntegrationTests/LiteDocumentStore.Integrati
 
 # Single test / filter (tests are tagged with [Trait("Category", ...)] and named Method_Scenario_Expected)
 dotnet test --filter "Category=Unit"
-dotnet test --filter "FullyQualifiedName~UpsertAndGet_RoundTrip"
+dotnet test --filter "FullyQualifiedName~UpsertAsync_InsertsNewRecord"
 
 # Examples (every sample, or one by name)
 dotnet run --project examples/Examples -- all
@@ -90,8 +90,20 @@ JSON type-metadata failure, nothing else. `UnsupportedSqliteVersionException` an
 `MigrationOutOfOrder`/`MigrationChecksumMismatch` come from `MigrateAsync`.
 
 **Accessibility.** `DocumentStore`, `DocumentOperations`, `SqlGenerator`, `MigrationRunner` and the pool
-are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj (CI's
-Pack job fails if a friend name leaks into the shipped DLL).
+are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj,
+declared in an `ItemGroup` conditioned on `ExposeInternalsToTests`. **Three backstops keep that
+attribute out of the shipped DLL, and only the first prevents it being compiled in at all:** the csproj
+flips `ExposeInternalsToTests` to false whenever `_IsPacking` or `GeneratePackageOnBuild` is set, which
+covers `dotnet pack` and pack-on-build; the `RefuseToPackWithInternalsExposed` target
+(`BeforeTargets="Pack;GenerateNuspec"`) fails the build with `LDS0001` on every other path — `msbuild
+-t:Pack`, Visual Studio's Pack command, an explicit `-p:ExposeInternalsToTests=true` — because the
+assembly is already compiled by then and refusing is the only honest answer; and CI's Pack job extracts
+`lib/net10.0/LiteDocumentStore.dll` from the `.nupkg` it just produced and greps that assembly for
+each of the three friend names. `GenerateNuspec` is named alongside `Pack`
+deliberately: `Pack` runs *after* the targets that write the `.nupkg`, so hooking it alone would fail the
+build and still leave a leaky package on disk. **The gap:** the first two key on
+`ExposeInternalsToTests`, so an `InternalsVisibleTo` added *outside* that conditioned `ItemGroup` is
+invisible to both, and CI's grep only knows the three names it lists.
 
 The public surface consumers touch is `IDocumentStore` / `IDocumentOperations` / `IDocumentTransaction`,
 `DocumentStoreOptions(+Builder)` and `SynchronousMode`, the factories and the DI extension, plus the
@@ -102,9 +114,10 @@ value types those signatures take and return: `DocumentQuery<T>` and `QueryOpera
 four result types it returns (`TableInfo`, `ColumnInfo`, `IndexInfo`, `DatabaseStatistics`),
 `ITableNamingConvention` and `DefaultTableNamingConvention` (public so a custom convention can delegate
 to it), `DefaultConnectionFactory` (public for the same reason, and `sealed` for the same reason: a
-custom `IConnectionFactory` decorates it by holding one and forwarding, not by deriving from it), and
-the exceptions. `TableNameCollisionGuard`, the wrapper every store puts around the configured
-convention, stays `internal`.
+custom `IConnectionFactory` decorates it by holding one and forwarding, not by deriving from it), the
+exceptions, and `ConcurrencyConflictKind` — an enum rather than an exception, but the type a consumer
+has to name to read `ConcurrencyException.Kind`. `TableNameCollisionGuard`, the wrapper every store puts
+around the configured convention, stays `internal`.
 
 **Two bare-name collisions with other document stores are known and deliberately not renamed.**
 `IDocumentStore` collides with `Marten.IDocumentStore` and
@@ -156,11 +169,22 @@ The JSONB contract, enforced there, is load-bearing:
 - **Read:** `SELECT json(data)` — converts JSONB binary back to JSON text for deserialization. JSONB is
   binary; a raw `SELECT data` is not deserializable.
 - All *values* are parameterized. Identifiers and JSON paths **cannot** be, so they are interpolated —
-  and every one is validated inside `SqlGenerator`, the single boundary where that happens:
-  `ValidateIdentifier` restricts table/index/column names to `[A-Za-z_][A-Za-z0-9_]*` (bracket quoting
-  alone is not enough — a `]` closes it early), `ValidateJsonPath` enforces `$(.member|[index])*`, and
-  `ValidateColumnType` whitelists the five SQLite storage classes. Table names come from
-  `ITableNamingConvention`, which is pluggable, so they are validated like anything else.
+  and **`SqlGenerator` owns the rule that screens every one of them, which is not the same as being the
+  only place a check runs**: `ValidateIdentifier` restricts table/index/column names to
+  `[A-Za-z_][A-Za-z0-9_]*` (bracket quoting alone is not enough — a `]` closes it early),
+  `ValidateJsonPath` enforces `$(.member|[index])*`, and `ValidateColumnType` whitelists the five SQLite
+  storage classes. Table names come from `ITableNamingConvention`, which is pluggable, so they are
+  validated like anything else. Callers outside the generator run those same predicates rather than
+  reimplementing them — `TableNameCollisionGuard` and `RequireDerivableName` both go through
+  `SqlGenerator.IsValidIdentifier`, and `DocumentOperations` hoists `ValidateIdentifier` /
+  `ValidateColumnType` ahead of a short-circuit that would otherwise skip the generator. **Two sites do
+  not route through it, and both are deliberate:** `JsonPathResolver.ValidPathMember`
+  (`Serialization/JsonPathResolver.cs:160`) re-states the path-member rule in its own loop so the
+  rejection can be reported against the member that produced the name, which is why the `U+0000` ban has
+  to be maintained in two places; and `SchemaIntrospector.GetColumnsAsync`
+  (`Migrations/SchemaIntrospector.cs:95`) interpolates the table name into `PRAGMA table_xinfo(...)` with
+  its own double-quoting, since a `PRAGMA` argument is not a statement `SqlGenerator` emits. A new
+  interpolation site is a regression unless it calls one of the four predicates or is listed here.
 - **The JSON path is interpolated on purpose, not bound.** SQLite only matches a query against an
   expression index when the indexed expression appears literally, so binding the path would silently
   disable every index `CreateIndexAsync` creates. `SqlInjectionIntegrationTests` pins both halves.
@@ -441,14 +465,15 @@ come from the snapshot. `DocumentStore`'s constructor clones and validates once 
 holds for the internal constructor the test projects use and for any path that skips the factory. **Every
 read in that constructor must come from the snapshot**; re-reading `options` one line further down
 reopens the window. `SqliteConnectionPool.Normalize` clones a third time, because the pool is
-constructed directly in tests and should defend itself.
+constructed directly in tests and should defend itself. `DocumentStoreOptionsBuilder.Build()` clones as
+well, so what it hands back is already detached from the builder that goes on mutating its own instance.
 
 The window was real: a caller-supplied `ILoggerFactory` runs as arbitrary code between `Validate()` and
 construction, on the mutable object the caller still holds, and an ordinary concurrent setter reaches it
 with no custom logger at all. → rationale#options-snapshot
 
-**The DI registration snapshots too, and it is the only one of the four `Clone()`s whose *moment* is
-part of the contract** — it runs at registration, before the three above. Both instance overloads
+**The DI registration snapshots too, and it is the only one of the five `Clone()`s whose *moment* is
+part of the contract** — it runs at registration, before the three *construction* clones above. Both instance overloads
 (`AddLiteDocumentStore(options)` / `AddKeyedLiteDocumentStore(key, options)`) call `options.Clone()` in
 the method body and capture the clone, not the caller's instance. Capturing the instance deferred the
 whole configuration to the factory's clone at *first resolution*, so what a store opened depended on
@@ -682,6 +707,14 @@ delete-a-legacy-row-at-0 case.
 stored-version read is a separate statement, so outside a transaction the row can change in between.
 Deliberately not fixed by wrapping every guarded write in a transaction. → rationale#concurrency
 
+**A caller who needs only a stored version reads it off `ActualVersion`, and needs no member of its
+own.** `BuildConflictAsync` fetches it with `SELECT version FROM [t] WHERE id = @Id`, a projection that
+touches no payload, so a `DeleteWithVersionAsync` whose guess does not match reports the real version and
+leaves the row alone. **On a corrupt row that is the only route**: `GetWithVersionAsync<T>` runs the same
+`EnsureDocumentPayload` guard as every other read before it returns, so it raises `CorruptDataException`
+instead of handing the version back — while the unguarded `DeleteAsync`, which reads no payload, removes
+such a row either way.
+
 ### Patching
 
 `PatchAsync<T>(id, DocumentPatch<T>)` and `PatchWithVersionAsync<T>(id, patch, expectedVersion)` change
@@ -749,16 +782,21 @@ NULL" to null, which is why `GetAsync` reads through `QueryFirstStringRowAsync` 
 and that ordering is what makes the contract independent of `T` — without it, a value-type `T` got a
 fabricated zero row from the collection readers, and the literal `null` surfaced as two different
 exceptions depending on whether `T` was a class or a struct. Neither shape is reachable through a store
-write. `DeserializeDocument`, the raw-SQL helper, deliberately keeps its own contract (`default` for
-null/empty/`null` JSON, `DocumentSerializationException` on malformed). → rationale#corrupt-rows
+write. `DeserializeDocument`, the raw-SQL helper, deliberately keeps its own contract (`default` for a
+null or empty string, `DocumentSerializationException` on malformed) — and deliberately keeps STJ's
+own answer to the literal `null`, which is `default` for a reference type or `Nullable<T>` and
+`DocumentSerializationException` for any other value type. It is the guard's absence that is the
+contract here, so the `T`-dependence the read paths were fixed to remove survives on this one member by
+design. → rationale#corrupt-rows
 
 **`CorruptDataException` does not derive from `DocumentSerializationException`** — catching one must not
 catch the other. A corrupt row carries `Id`, `TableName`, `TargetType` and `StoredTypeName`; well-formed
 JSON merely incompatible with `T` is still a `DocumentSerializationException`. Neither covers a `data`
 column holding bytes that are not JSONB at all: SQLite fails inside `json(data)` and the
 `SqliteException` surfaces untranslated, since classifying provider error text is something this library
-does not do. `ExceptionNameCollisionTests` uses both bare names in one file, so the CS0104 collision the
-rename fixed fails the build if it comes back.
+does not do. **The pair `ExceptionNameCollisionTests` pins is not this one** —
+it names `DocumentSerializationException` beside `System.Runtime.Serialization.SerializationException`,
+both bare in one file, so the `CS0104` that rename fixed fails the build if it comes back.
 
 ### Index DDL
 
@@ -888,14 +926,22 @@ materializing it. **The asymmetry is the whole design: a read has to hand a `Str
 has to take one.** So the write consumes its source inside the call and owns nothing afterwards, and
 `OpenBlobReadAsync` is the one member in the feature with a "dispose this" contract.
 
-That stream owns a connection opened **outside the pool**, a deferred read transaction, and the
-`SqliteBlob`, disposed in that order. Not a pooled lease — a forgotten one would starve the pool; on its
-own connection the same mistake costs one handle. Open streams are still **bounded** by a second
-`SemaphoreSlim` of `MaxPoolSize` slots (`BlobStreamSlot`, released idempotently on dispose, on the
-not-found path and from the finalizer), a separate budget from the operation slots precisely so the two
-cannot starve each other. The read transaction is what makes the rowid safe (SQLite reuses a deleted
-row's rowid); it is deferred, so it takes no lock, but while a stream lives it pins the WAL against
-truncation.
+That stream owns a connection opened **outside the pool**, a deferred read transaction and the
+`SqliteBlob`, and **disposes them in the opposite order — blob, transaction, connection**, each in its
+own `finally`, so a failure part-way still releases the rest. Not a pooled lease — a forgotten one would
+starve the pool; on its own connection the same mistake costs one handle. Open streams are still
+**bounded** by a second `SemaphoreSlim` of `MaxPoolSize` slots (`BlobStreamSlot`, released idempotently
+on dispose, on the not-found path and from the finalizer), a separate budget from the operation slots
+precisely so the two cannot starve each other.
+
+The read transaction is what makes the rowid safe (SQLite reuses a deleted row's rowid). **The `BEGIN`
+is deferred and takes no lock of its own — but the rowid lookup that follows it does**, and that lock
+belongs to the transaction the stream owns, so it is held until the stream is disposed. In WAL mode it
+pins the log against truncation and leaves writers running. On a shared-cache in-memory database it is
+table-level, so while a stream is open a write to the blob table fails `SQLITE_LOCKED`
+(`SQLITE_LOCKED_SHAREDCACHE`) and `BusyTimeoutMs` does not apply — SQLite does not invoke the busy
+handler for a shared-cache table conflict. Document tables, and reads of the blob table, are
+unaffected.
 
 **`OpenBlobReadAsync` is deliberately absent from `IDocumentTransaction`** — a stream outliving its
 transaction would read through a connection already back in the pool. Inside a transaction, blobs are
@@ -957,8 +1003,9 @@ What `ALTER TABLE` cannot do is reorder, so an upgraded table keeps `data` secon
 which is why `IDocumentStore.RebuildBlobTableAsync()` exists: `CREATE`/`INSERT SELECT`/`DROP`/`RENAME`
 in one transaction (200 MB in 823 ms), returns false when there is nothing to do, never run implicitly.
 It adds the metadata columns first, because a table that predates them ends in `data` like a current one
-and the layout check alone reported it current. A warning naming it is logged whenever the legacy order
-is detected.
+and the layout check alone reported it current. The warning naming it is logged by
+`CreateBlobTableAsync` alone, when its own upgrade leaves the legacy order behind; detecting the order
+anywhere else is silent, and `RebuildBlobTableAsync` logs its own work at Information.
 
 Deliberately out of scope: `RebuildBlobTableAsync` is the only conversion offered (no online/chunked
 variant), and blob ids carry no secondary indexes, so listing is ordered by id and nothing else.
@@ -968,9 +1015,15 @@ variant), and blob ids carry no secondary indexes, so listing is ordered by id a
 `BeginTransactionAsync()` returns an `IDocumentTransaction` (`Core/DocumentStoreTransaction.cs`) that
 holds **one rented connection** for its lifetime; `CommitAsync`/`RollbackAsync` finish it, and disposing
 without committing rolls back. `ExecuteInTransactionAsync(Func<IDocumentTransaction, Task>)` is the
-ergonomic wrapper. Every operation goes through `ActiveTransaction()` first, so a call made after
-commit/rollback/disposal throws `InvalidOperationException` — or `ObjectDisposedException` once
-disposed — instead of running on a connection the pool has already re-leased.
+ergonomic wrapper. Every operation **that touches the connection** goes through `ActiveTransaction()`
+first, so a call made after commit/rollback/disposal throws `InvalidOperationException` — or
+`ObjectDisposedException` once disposed — instead of running on a connection the pool has already
+re-leased. **The three connectionless members are the stated exception**: `GetTableName<T>()`,
+`SerializeDocument<T>` and `DeserializeDocument<T>`
+(`Core/DocumentStoreTransaction.cs:573`, `:576`, `:579`) delegate straight to `DocumentOperations` without
+the check, so they keep working after the transaction has ended — there is no connection for them to run
+on the wrong one of. That is a described behaviour, not a guarantee: whether the check should be added is
+filed as its own item, because adding it is a behaviour change.
 
 **The transaction object is the unit of work**: operations must be invoked **on it**, because operations
 invoked on the store rent their own connection and commit independently. That is the point of the design
@@ -1045,9 +1098,12 @@ the store already knows: `GetTableName<T>()` resolves the table through the stor
 convention, `SerializeDocument<T>(value)` returns the same UTF-8 JSON bytes the store writes (for
 binding to a raw `jsonb(@Data)`), and `DeserializeDocument<T>(json)` turns a raw `SELECT json(data)`
 column back into `T`. They need no connection, take no token, and are present on both the store and a
-transaction. `DeserializeDocument` returns `default` for null/empty JSON and throws
+transaction. `DeserializeDocument` returns `default` when the string itself is null or empty, and throws
 `DocumentSerializationException` on malformed input; `SerializeDocument` throws `ArgumentNullException`
-on a null value.
+on a null value. **The JSON literal `null` is a different case and depends on `T`** — measured, STJ
+returns `default` for a reference type or `Nullable<T>` and raises `JsonException` for any other value
+type, which `JsonHelper` wraps as `DocumentSerializationException`. On the store all three also throw
+`ObjectDisposedException` after disposal; on a transaction they do not (see Transactions).
 
 The same reasoning keeps teardown on `IDocumentOperations` rather than behind the hatch:
 `DeleteAllAsync<T>` (`DELETE FROM [t]`, returns rows deleted, table survives), `DropTableAsync<T>` and
@@ -1124,7 +1180,9 @@ canonical reason to want it — is not running under the assumption it was writt
 outside the runner, in `ExecuteRawAsync`, with the PRAGMA restored before that callback returns. An
 opt-out flag that ran `UpAsync` outside the transaction was considered and **rejected**: it would
 decouple the work from the history-row `INSERT`, and "half-applied" there is precise and unrecoverable.
-`MigrationConnectionContractIntegrationTests` pins the whole contract. → rationale#migrations
+`MigrationConnectionContractIntegrationTests` pins five of the rules above: the nested
+`BeginTransaction`, the silently-ignored `foreign_keys = OFF`, one lease for the whole run, one
+connection instance across every migration, and the bare `COMMIT`. → rationale#migrations
 
 **Checksums.** `IMigration.Checksum` is a default interface member returning null (so existing
 implementations still compile); `SqlMigration.Checksum` is **`virtual`** and returns the uppercase
@@ -1136,8 +1194,8 @@ which keeps pre-checksum history usable: a legacy three-column table is `ALTER T
 use, re-checking `pragma_table_info` under an immediate transaction so two starting processes cannot
 both issue the ALTER.
 
-**Input is validated before anything runs**: a null element or a duplicate version throws
-`ArgumentException` naming the version and both indices, a negative rollback target throws
+**Input is validated before anything runs**: a null element throws `ArgumentException` naming its
+index, a duplicate version one naming the version and **both** indices, a negative rollback target throws
 `ArgumentOutOfRangeException`, and `RollbackToVersionAsync` refuses the whole range when any migration in
 it has no definition.
 
@@ -1193,8 +1251,12 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - Library code uses `.ConfigureAwait(false)` on awaits and `Async` suffix on async methods.
 - Validate arguments up front and fail fast (`ArgumentException`/`ArgumentNullException.ThrowIfNull`).
   Rethrow inside `catch` on transaction rollback rather than wrapping.
-- All public API needs XML doc comments (`GenerateDocumentationFile` is on; missing docs surface as
-  warnings).
+- All public API needs XML doc comments, and **a missing one fails the build rather than warning**:
+  `GenerateDocumentationFile` is on for every project and `TreatWarningsAsErrors` makes `CS1591` an
+  error, since `WarningsNotAsErrors` lists only the four `NU19xx` audit codes. The split is
+  `IsPackable` — `Directory.Build.targets` adds `CS1591` to `NoWarn` for every non-packable project,
+  so the five test, example and benchmark projects owe no docs and are **silent**, while the shipping
+  library owes all of them and cannot build without them.
 - Package versions are centralized in `Directory.Packages.props` (Central Package Management); csproj
   files carry a bare `<PackageReference Include="..." />` with no version.
 - New features need both a unit and an integration test.

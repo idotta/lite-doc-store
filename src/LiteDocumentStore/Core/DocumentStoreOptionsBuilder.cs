@@ -128,11 +128,15 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
-    /// Sets the cache size in number of pages or kilobytes.
+    /// Sets the cache size in pages or in kibibytes.
     /// </summary>
     /// <param name="cacheSize">
-    /// Positive values specify number of pages.
-    /// Negative values specify kilobytes (e.g., -2000 = 2MB).
+    /// A positive value is a number of <em>pages</em>, so what it costs in memory depends on
+    /// <see cref="DocumentStoreOptions.PageSize"/>. A negative value is a number of
+    /// <em>kibibytes</em> — <c>PRAGMA cache_size</c>'s own unit, 1024 bytes, not 1000 — so
+    /// -2000 is about 2 MiB. This is the builder's intended route to the page-count half;
+    /// <see cref="WithCacheSizeMb(int)"/> is meant for the kibibyte half, though it reaches a
+    /// page count too for the inputs its own documentation lists.
     /// </param>
     /// <returns>This builder for method chaining</returns>
     public DocumentStoreOptionsBuilder WithCacheSize(int cacheSize)
@@ -142,9 +146,22 @@ public sealed class DocumentStoreOptionsBuilder
     }
 
     /// <summary>
-    /// Sets the cache size in megabytes.
+    /// Sets the cache size in mebibytes, by storing <c>-cacheSizeMb * 1024</c>.
     /// </summary>
-    /// <param name="cacheSizeMb">Cache size in megabytes</param>
+    /// <remarks>
+    /// The conversion is unchecked and unvalidated, so three inputs do not mean what the name
+    /// says. A <strong>negative</strong> <paramref name="cacheSizeMb"/> stores a positive value,
+    /// which <c>PRAGMA cache_size</c> reads as a number of <em>pages</em> — <c>-1</c> stores
+    /// <c>1024</c>. <strong>Zero</strong> stores <c>0</c>. And the product overflows above
+    /// <c>2_097_152</c>, so <c>2_097_153</c> stores <c>2147482624</c>, pages again, while
+    /// <c>4_194_304</c> stores <c>0</c>. Pass a positive value no greater than
+    /// <c>2_097_152</c>; for a page count use
+    /// <see cref="WithCacheSize(int)"/>, which stores what it is given.
+    /// </remarks>
+    /// <param name="cacheSizeMb">
+    /// Cache size in mebibytes. Meaningful only when positive and no greater than
+    /// <c>2_097_152</c>; outside that range see the remarks.
+    /// </param>
     /// <returns>This builder for method chaining</returns>
     public DocumentStoreOptionsBuilder WithCacheSizeMb(int cacheSizeMb)
     {

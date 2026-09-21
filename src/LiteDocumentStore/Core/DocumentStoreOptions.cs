@@ -48,9 +48,10 @@ public sealed class DocumentStoreOptions
     public int PageSize { get; set; } = 4096;
 
     /// <summary>
-    /// Gets or sets the cache size in number of pages.
-    /// Negative values interpret as kilobytes (e.g., -2000 = 2MB).
-    /// Default is -2000 (2MB).
+    /// Gets or sets the cache size, in pages when positive and in kibibytes when negative.
+    /// A positive value is a number of pages, so what it costs in memory depends on
+    /// <see cref="PageSize"/>; a negative value is a number of kibibytes — <c>PRAGMA
+    /// cache_size</c>'s own unit, 1024 bytes, not 1000. Default is -2000, about 2 MiB.
     /// </summary>
     public int CacheSize { get; set; } = -2000;
 
@@ -398,14 +399,15 @@ public sealed class DocumentStoreOptions
     /// let a resolver-less replacement through after the first fix.
     /// </para>
     /// <para>
-    /// Shared by <see cref="Validate"/> and the store's own constructor, which is the boundary that
-    /// cannot be bypassed: validation happens before the store is built, and arbitrary caller code
-    /// runs in between (an <c>ILoggerFactory</c>'s <c>CreateLogger</c>, or simply another thread
-    /// setting the property), so a check that only ran in <see cref="Validate"/> could be passed and
-    /// then undone. <see cref="ArgumentException.ParamName"/> is <c>SerializerOptions</c> at both
-    /// sites — at the constructor the offending parameter is really <c>options</c>, but naming the
-    /// option the caller has to fix beats naming the bag it arrived in, and one condition should
-    /// report one ParamName wherever it fires.
+    /// Called from <see cref="Validate"/> and from nowhere else, which is how it reaches both
+    /// boundaries: the factory validates the snapshot it is about to build a store from, and the
+    /// store's own constructor validates its own snapshot again. That second run is the one that
+    /// cannot be bypassed — arbitrary caller code runs in between (an <c>ILoggerFactory</c>'s
+    /// <c>CreateLogger</c>, or simply another thread setting the property), so a check that ran only
+    /// before construction could be passed and then undone.
+    /// <see cref="ArgumentException.ParamName"/> is <c>SerializerOptions</c> rather than this
+    /// helper's own parameter, because naming the option the caller has to fix beats naming the bag
+    /// it arrived in, and one condition should report one ParamName wherever it fires.
     /// </para>
     /// </remarks>
     [SuppressMessage("Usage", "CA2208",

@@ -254,7 +254,7 @@ See [.github/WORKFLOWS.md](.github/WORKFLOWS.md) for detailed CI/CD documentatio
 
 ## Contributing
 
-Contributions are welcome. The solution is at the repository root, so nothing needs a path:
+Contributions are welcome. The solution is at the repository root, so nothing needs a `cd`:
 
 ```bash
 dotnet build --configuration Release
