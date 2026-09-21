@@ -177,11 +177,15 @@ The JSONB contract, enforced there, is load-bearing:
   validated like anything else. Callers outside the generator run those same predicates rather than
   reimplementing them — `TableNameCollisionGuard` and `RequireDerivableName` both go through
   `SqlGenerator.IsValidIdentifier`, and `DocumentOperations` hoists `ValidateIdentifier` /
-  `ValidateColumnType` ahead of a short-circuit that would otherwise skip the generator. **Two sites do
-  not route through it, and both are deliberate:** `JsonPathResolver.ValidPathMember`
-  (`Serialization/JsonPathResolver.cs:160`) re-states the path-member rule in its own loop so the
-  rejection can be reported against the member that produced the name, which is why the `U+0000` ban has
-  to be maintained in two places; and `SchemaIntrospector.GetColumnsAsync`
+  `ValidateColumnType` ahead of a short-circuit that would otherwise skip the generator. **The path
+  *member* rule has its own owner inside the generator, `SqlGenerator.MemberFault`
+  (`Core/SqlGenerator.cs:1608`), and two callers that word the refusal differently on purpose:**
+  `ValidateJsonPath` slices each member out of a whole path and blames the path parameter, while
+  `JsonPathResolver.ValidPathMember` (`Serialization/JsonPathResolver.cs:167`) is handed one
+  already-resolved serialized name and blames the member that produced it. Only the *reporting* split
+  is duplicated — the rule itself is stated once, which is why the predicate returns a
+  `PathMemberFault` rather than a bool. **One site does not route through the generator, and that is
+  deliberate:** `SchemaIntrospector.GetColumnsAsync`
   (`Migrations/SchemaIntrospector.cs:95`) interpolates the table name into `PRAGMA table_xinfo(...)` with
   its own double-quoting, since a `PRAGMA` argument is not a statement `SqlGenerator` emits. A new
   interpolation site is a regression unless it calls one of the four predicates or is listed here.
@@ -200,6 +204,17 @@ mirrors SQLite's own **unquoted** path label, which terminates only at `.` or `[
 are **accepted** — measured, each reads back its own key — and a positive control pins that.
 → rationale#sql-paths
 
+**The rule has one owner, `SqlGenerator.MemberFault`**, which judges a single isolated member (taken
+as a `ReadOnlySpan<char>`, so slicing a path allocates nothing) and returns *which* rule was broken as
+a `PathMemberFault`. Its two callers keep their own messages: `ValidateJsonPath` quotes the whole path
+and blames the path parameter, `JsonPathResolver.ValidPathMember` names the member that produced the
+serialized name and varies its recovery sentence by reason (`U+0000` → no path can address it at all;
+apostrophe, `.`, `[`, empty → `ExecuteRawAsync`). That reporting split is deliberate; consolidating the
+messages is a regression, and `JsonPathMemberRuleTests` pins both wordings byte for byte alongside a
+shared member table driven through both entry points. Because `ValidateJsonPath` slices at `.` and `[`,
+it can never observe `PathMemberFault.Dot` or `PathMemberFault.Bracket` — only the resolver, which is
+handed a name nothing tokenized, can; that arm is an unreachable guard with no mutation behind it.
+
 Four exclusions, each for a different reason:
 
 - **The apostrophe is the injection boundary.** The path is interpolated into a single-quoted SQL
@@ -207,10 +222,11 @@ Four exclusions, each for a different reason:
   doubling: rewriting the emitted text would stop it matching the expression index.
 - **`.` and `[` are structural** — `$.a.b` is unambiguously the nested path `a` → `b`, never the single
   key `a.b`. The empty member is rejected because SQLite errors on it.
-- **`U+0000` is rejected permanently**, by both `SqlGenerator.ValidateJsonPath` and
-  `JsonPathResolver.ValidPathMember`. `sqlite3_prepare` reads a NUL-terminated string, so a NUL
-  truncates the statement; bound as a parameter (which this library never does) it silently reads the
-  wrong key. It is **not** a Tier 2 shape — quoting does not rescue it.
+- **`U+0000` is rejected permanently**, in one place — `SqlGenerator.MemberFault`, the member rule's
+  owner, which both `ValidateJsonPath` and `JsonPathResolver.ValidPathMember` call.
+  `sqlite3_prepare` reads a NUL-terminated string, so a NUL truncates the statement; bound as a
+  parameter (which this library never does) it silently reads the wrong key. It is **not** a Tier 2
+  shape — quoting does not rescue it.
 
 **Tier 2 (quoted segments) is open and deliberately deferred.** Three shapes remain unreachable *and*
 reachable by quoting: a key containing `.`, a key containing `[`, and the empty key. The dotted one is

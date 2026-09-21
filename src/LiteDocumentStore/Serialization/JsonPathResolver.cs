@@ -153,29 +153,22 @@ internal static class JsonPathResolver
     }
 
     /// <summary>
-    /// Re-checks the resolved name against the path grammar <see cref="SqlGenerator.ValidateJsonPath"/>
-    /// enforces, so a serialized name the grammar cannot express is reported against the member that
-    /// produced it rather than as an opaque bad path.
+    /// Checks the resolved name against the member rule <see cref="SqlGenerator.MemberFault"/>
+    /// owns, so a serialized name the path grammar cannot express is reported against the member
+    /// that produced it rather than as an opaque bad path.
     /// </summary>
+    /// <remarks>
+    /// The rule itself is stated once, beside <see cref="SqlGenerator.MemberFault"/>; this is the
+    /// second of its two callers and differs from <see cref="SqlGenerator.ValidateJsonPath"/> only
+    /// in how it words the refusal. It receives a single, already-isolated name, so a '.' and a '['
+    /// reach it as illegal <em>characters</em> — where the path walk treats them as member
+    /// delimiters and can never observe those two faults.
+    /// </remarks>
     private static string ValidPathMember(string name, Type container, string memberName, string paramName)
     {
-        // The rule the grammar states: one or more characters, none of which is U+0000 (it
-        // terminates the SQL string sqlite3_prepare reads, truncating the whole statement; no
-        // quoting form can address such a key, so it is rejected permanently rather than deferred
-        // to C18 Tier 2), an apostrophe (the injection boundary - it would close the single-quoted
-        // SQL literal the path is written into), a '.' or a '[' (both structural in the path
-        // grammar). A serialized name carrying one of the latter two needs the $."quoted" form,
-        // which is not implemented.
-        var valid = name.Length > 0;
-        var nul = false;
+        var fault = SqlGenerator.MemberFault(name);
 
-        for (var i = 0; valid && i < name.Length; i++)
-        {
-            nul = name[i] == '\0';
-            valid = !nul && name[i] != '\'' && name[i] != '.' && name[i] != '[';
-        }
-
-        if (!valid)
+        if (fault != SqlGenerator.PathMemberFault.None)
         {
             // The recovery differs by reason, because only one of these is a limitation of this
             // library. An apostrophe, a '.', a '[' and the empty name are all addressable by a
@@ -183,8 +176,9 @@ internal static class JsonPathResolver
             // their own key - so ExecuteRawAsync genuinely reaches them. A U+0000 member is
             // addressable by nothing: it terminates the string sqlite3_prepare reads, and quoting
             // does not rescue it either, so pointing the caller at raw SQL would send them
-            // somewhere that cannot work.
-            var recovery = nul
+            // somewhere that cannot work. The fault names the *offending* character, not the last
+            // one scanned, so a name like "a.b'c" faults on the '.' and keeps the raw-SQL pointer.
+            var recovery = fault == SqlGenerator.PathMemberFault.Nul
                 ? "No JSON path can address it, in this library or through raw SQL."
                 : "Index it through ExecuteRawAsync.";
 
