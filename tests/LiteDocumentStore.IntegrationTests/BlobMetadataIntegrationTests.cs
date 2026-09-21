@@ -598,6 +598,38 @@ public class BlobMetadataIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PutBlobWithVersionAsync_FromAStreamLiftsARowLeftAtVersionZeroByRawSql()
+    {
+        await using var store = await CreateFileStoreAsync();
+        await ExecuteRawAsync(store,
+            "INSERT INTO __store_blobs (id, version, data) VALUES ('raw', 0, x'ff')");
+
+        // The streamed mirror of the byte-array lift: expected 0 means "insert", the id is taken,
+        // so it retries as a 0-guarded update rather than leaving the row un-CAS-able forever.
+        var version = await store.PutBlobWithVersionAsync("raw", new MemoryStream([1, 2]), 2, 0);
+
+        Assert.Equal(1, version);
+        Assert.Equal(new byte[] { 1, 2 }, await store.GetBlobAsync("raw"));
+    }
+
+    [Fact]
+    public async Task PutBlobWithVersionAsync_FromAStreamAtVersionZeroRefusesATakenId()
+    {
+        await using var store = await CreateFileStoreAsync();
+        await store.PutBlobAsync("doc", new byte[] { 1, 2, 3, 4 });
+
+        var ex = await Assert.ThrowsAsync<ConcurrencyException>(
+            () => store.PutBlobWithVersionAsync("doc", new MemoryStream(new byte[9]), 9, 0));
+
+        Assert.Equal(ConcurrencyConflictKind.AlreadyExists, ex.Kind);
+        Assert.Equal(1, ex.ActualVersion);
+
+        // The insert-if-absent does nothing on conflict, so the rejected write never replaced the
+        // payload with a zeroblob.
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, await store.GetBlobAsync("doc"));
+    }
+
+    [Fact]
     public async Task DeleteBlobWithVersionAsync_DeletesOnAMatchAndRefusesOtherwise()
     {
         await using var store = await CreateFileStoreAsync();
