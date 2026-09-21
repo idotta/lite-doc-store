@@ -412,9 +412,9 @@ public sealed class DocumentStoreOptions
     /// </remarks>
     [SuppressMessage("Usage", "CA2208",
         Justification = "ParamName deliberately names the option the caller must fix, not this " +
-                        "helper's parameter: the two call sites take it from different parameters " +
-                        "(Validate's own property, the constructor's options bag) and one condition " +
-                        "should report one ParamName wherever it fires.")]
+                        "helper's parameter: its one call site (Validate) passes Validate's own " +
+                        "SerializerOptions property, and naming the option beats naming the " +
+                        "parameter it arrived in wherever the condition fires.")]
     internal static void ThrowIfSerializerOptionsUnusable(JsonSerializerOptions? serializerOptions)
     {
         // GetTypeInfo, unlike JsonSerializer's own entry points, does not populate a missing

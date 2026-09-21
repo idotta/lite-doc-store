@@ -196,6 +196,35 @@ public sealed class OptionsPresetTests
         Assert.Equal(["PRAGMA temp_store = MEMORY"], options.AdditionalPragmas);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(2_097_153)]
+    [InlineData(4_194_304)]
+    public void WithCacheSizeMb_WithAnInputTheConversionCannotHonour_Throws(int cacheSizeMb)
+    {
+        // Unguarded, -cacheSizeMb * 1024 stored 0 for zero, a positive page count for a negative
+        // input, and a wrapped positive value above 2_097_152 — three silently wrong cache
+        // configurations. ParamName is the caller's own parameter, unlike the MaxPoolSize and
+        // PoolWaitTimeoutMs setters, which name the option because `value` names nothing.
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => DocumentStoreOptions.Builder().WithCacheSizeMb(cacheSizeMb));
+
+        Assert.Equal("cacheSizeMb", exception.ParamName);
+    }
+
+    [Fact]
+    public void WithCacheSizeMb_AtTheOverflowBoundary_AcceptsTheLargestCorrectInput()
+    {
+        // 2_097_152 stores exactly int.MinValue: still negative, so PRAGMA cache_size still reads
+        // it as kibibytes. 2_097_153 is the first input that wraps.
+        var options = DocumentStoreOptions.Builder("Data Source=app.db").WithCacheSizeMb(2_097_152).Build();
+
+        Assert.Equal(int.MinValue, options.CacheSize);
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => DocumentStoreOptions.Builder().WithCacheSizeMb(2_097_153));
+    }
+
     [Fact]
     public void Builder_WithConnectionString_OverridesTheConstructorArgument()
     {

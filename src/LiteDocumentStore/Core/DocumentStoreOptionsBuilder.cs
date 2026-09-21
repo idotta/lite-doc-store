@@ -7,6 +7,11 @@ namespace LiteDocumentStore;
 /// </summary>
 public sealed class DocumentStoreOptionsBuilder
 {
+    // The largest mebibyte count whose conversion to kibibytes stays a correct negative value:
+    // -2_097_152 * 1024 is exactly int.MinValue. One above it wraps to a positive number, which
+    // PRAGMA cache_size reads as pages.
+    private const int MaxCacheSizeMb = 2_097_152;
+
     private readonly DocumentStoreOptions _options;
 
     /// <summary>
@@ -135,8 +140,8 @@ public sealed class DocumentStoreOptionsBuilder
     /// <see cref="DocumentStoreOptions.PageSize"/>. A negative value is a number of
     /// <em>kibibytes</em> — <c>PRAGMA cache_size</c>'s own unit, 1024 bytes, not 1000 — so
     /// -2000 is about 2 MiB. This is the builder's intended route to the page-count half;
-    /// <see cref="WithCacheSizeMb(int)"/> is meant for the kibibyte half, though it reaches a
-    /// page count too for the inputs its own documentation lists.
+    /// <see cref="WithCacheSizeMb(int)"/> is the kibibyte half, and accepts only the range its
+    /// conversion can honour.
     /// </param>
     /// <returns>This builder for method chaining</returns>
     public DocumentStoreOptionsBuilder WithCacheSize(int cacheSize)
@@ -149,22 +154,33 @@ public sealed class DocumentStoreOptionsBuilder
     /// Sets the cache size in mebibytes, by storing <c>-cacheSizeMb * 1024</c>.
     /// </summary>
     /// <remarks>
-    /// The conversion is unchecked and unvalidated, so three inputs do not mean what the name
-    /// says. A <strong>negative</strong> <paramref name="cacheSizeMb"/> stores a positive value,
-    /// which <c>PRAGMA cache_size</c> reads as a number of <em>pages</em> — <c>-1</c> stores
-    /// <c>1024</c>. <strong>Zero</strong> stores <c>0</c>. And the product overflows above
-    /// <c>2_097_152</c>, so <c>2_097_153</c> stores <c>2147482624</c>, pages again, while
-    /// <c>4_194_304</c> stores <c>0</c>. Pass a positive value no greater than
-    /// <c>2_097_152</c>; for a page count use
-    /// <see cref="WithCacheSize(int)"/>, which stores what it is given.
+    /// The accepted range is <c>1</c> to <c>2_097_152</c>, and on it the conversion is exact: the
+    /// stored value is always negative, the sign <c>PRAGMA cache_size</c> reads as kibibytes.
+    /// <c>2_097_152</c> is the largest input that is accepted and stores
+    /// <see cref="int.MinValue"/> — still negative, still the kibibyte count asked for. Outside
+    /// that range the unchecked product does not mean what the name says, which is why it is
+    /// rejected rather than converted: <strong>zero</strong> would store <c>0</c>; a
+    /// <strong>negative</strong> <paramref name="cacheSizeMb"/> would store a positive value,
+    /// which <c>PRAGMA cache_size</c> reads as a number of <em>pages</em> (<c>-1</c> would store
+    /// <c>1024</c>); and above <c>2_097_152</c> the product overflows, so <c>2_097_153</c> would
+    /// store <c>2147482624</c>, pages again, and <c>4_194_304</c> would store <c>0</c>. Wrapping
+    /// can land back on a negative value — <c>4_194_305</c> would store <c>-1024</c>, a plausible
+    /// 1 MiB — so the sign of the result is not a usable test and the bound is checked instead.
+    /// For a page count use <see cref="WithCacheSize(int)"/>, which stores what it is given.
     /// </remarks>
     /// <param name="cacheSizeMb">
-    /// Cache size in mebibytes. Meaningful only when positive and no greater than
-    /// <c>2_097_152</c>; outside that range see the remarks.
+    /// Cache size in mebibytes. Must be positive and no greater than <c>2_097_152</c>.
     /// </param>
     /// <returns>This builder for method chaining</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="cacheSizeMb"/> is zero or negative, or is greater than
+    /// <c>2_097_152</c> — the largest value whose conversion does not overflow.
+    /// </exception>
     public DocumentStoreOptionsBuilder WithCacheSizeMb(int cacheSizeMb)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cacheSizeMb);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(cacheSizeMb, MaxCacheSizeMb);
+
         _options.CacheSize = -cacheSizeMb * 1024;
         return this;
     }
