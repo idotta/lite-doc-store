@@ -546,7 +546,10 @@ silence: a store that cannot honour an option now refuses to open rather than pr
   rounded up, **floored at 1** — 0 means *retry forever* to the provider), unless the connection string
   states `Default Timeout`/`Command Timeout`, which wins. It is applied **before** the PRAGMA block,
   since those statements run under the command timeout too. This sits in the factory rather than the
-  pool: it applies an option, it is not a correctness guard.
+  pool: it applies an option, it is not a correctness guard. **The derived `DefaultTimeout` is not a
+  bound on the total either** — it decides only whether a *further* attempt may begin, so an attempt
+  that starts just under it runs a full `BusyTimeoutMs` past it, and a contended call can overshoot by
+  almost that much: measured at 3161 ms against a 2 s `DefaultTimeout`. → rationale#blobs
 
 **Deliberately not given typed options:** `mmap_size`, `temp_store`, `journal_size_limit`,
 `wal_autocheckpoint`, `auto_vacuum` — `AdditionalPragmas` already applies any of them to every physical
@@ -956,18 +959,20 @@ starve the pool; on its own connection the same mistake costs one handle. Open s
 on dispose, on the not-found path and from the finalizer), a separate budget from the operation slots
 precisely so the two cannot starve each other.
 
-The read transaction is what makes the rowid safe (SQLite reuses a deleted row's rowid). **The `BEGIN`
-is deferred and takes no lock of its own — but the rowid lookup that follows it does**, and that lock
-belongs to the transaction the stream owns, so it is held until the stream is disposed. In WAL mode it
-pins the log against truncation and leaves writers running. On a shared-cache in-memory database it is
-table-level, so while a stream is open a write to the blob table fails `SQLITE_LOCKED`
-(`SQLITE_LOCKED_SHAREDCACHE`) and `BusyTimeoutMs` does not apply — SQLite does not invoke the busy
-handler for a shared-cache table conflict. Document tables, and reads of the blob table, are
-unaffected. **On a file database in rollback-journal mode (`EnableWalMode = false`) the lock is
-database-wide and the busy handler *is* invoked**, so a concurrent writer on another connection — to the
-blob table *or* to a document table — waits and then fails with plain `SQLITE_BUSY` (5/5, `database is
-locked`), while reads of either table are unaffected; `BusyTimeoutMs` bounds each attempt but the derived
-`DefaultTimeout` decides how many attempts run, so the elapsed time is a multiple of it.
+The read transaction is what makes the rowid safe (SQLite reuses a deleted row's rowid). **The
+`BEGIN` is deferred and takes no lock of its own — but the rowid lookup that follows it does**, and
+that lock is held by the **open `SqliteBlob` handle on the stream's connection** — measured, it
+outlives the transaction's removal — so it is held until the stream is disposed whatever the
+transaction does. In WAL mode it pins the log against truncation and leaves writers running. On a
+shared-cache in-memory database it is table-level, so while a stream is open a write to the blob
+table fails `SQLITE_LOCKED` (`SQLITE_LOCKED_SHAREDCACHE`) and `BusyTimeoutMs` does not apply —
+SQLite does not invoke the busy handler for a shared-cache table conflict. Document tables, and
+reads of the blob table, are unaffected. **On a file database in rollback-journal mode
+(`EnableWalMode = false`) the lock is database-wide and the busy handler *is* invoked**, so a
+concurrent writer on another connection — to the blob table *or* to a document table — waits and
+then fails with plain `SQLITE_BUSY` (5/5, `database is locked`), while reads of either table are
+unaffected; `BusyTimeoutMs` bounds each attempt but the derived `DefaultTimeout` decides how many
+attempts run, so the elapsed time is a multiple of it.
 → rationale#blobs
 
 **`OpenBlobReadAsync` is deliberately absent from `IDocumentTransaction`** — a stream outliving its

@@ -1627,9 +1627,10 @@ store may hold up to twice that many connections.
 ### Why the read transaction exists
 
 Incremental blob I/O addresses rows by rowid and SQLite reuses a deleted row's, so a bare `SELECT rowid` →
-`new SqliteBlob(...)` could open a different row. The `BEGIN` is deferred and takes no lock of its own,
-but the rowid lookup that follows it does, and that lock belongs to the transaction the stream owns, so
-it is held until the stream is disposed.
+`new SqliteBlob(...)` could open a different row. The `BEGIN` is deferred and takes no lock of its
+own, but the rowid lookup that follows it does, and that lock is held by the open `SqliteBlob`
+handle on the stream's connection — measured below — so it is held until the stream is disposed
+whatever the transaction does.
 
 Its cost is inherent, not a consequence of the unpooled connection: in WAL mode, while a stream lives it
 pins the log against truncation and leaves writers running. On a shared-cache in-memory database that
