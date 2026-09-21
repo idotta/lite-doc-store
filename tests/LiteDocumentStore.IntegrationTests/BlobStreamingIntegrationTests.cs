@@ -6,6 +6,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// Integration tests for streamed blob I/O against real SQLite: exact-length enforcement, the
 /// self-owning read stream and its lifetime, and what survives a failed overwrite.
 /// </summary>
+[Trait("Category", "Integration")]
 public class BlobStreamingIntegrationTests : IAsyncLifetime
 {
     private readonly List<string> _databasePaths = [];

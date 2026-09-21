@@ -2,6 +2,7 @@ using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
 
+[Trait("Category", "Integration")]
 public class DocumentStoreIntegrationTests : IDisposable
 {
     private readonly string _testDbPath;

@@ -34,6 +34,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// opened, so a regression that renders a guard late cannot deadlock the test.
 /// </para>
 /// </remarks>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class TransactionArgumentValidationIntegrationTests
 {

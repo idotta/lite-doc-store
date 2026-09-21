@@ -148,6 +148,7 @@ public class LiteDocumentStoreCollection : ICollectionFixture<LiteDocumentStoreT
 /// <summary>
 /// Example test class demonstrating fixture usage.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class ExampleTestsUsingFixture
 {

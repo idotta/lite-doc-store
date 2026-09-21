@@ -6,6 +6,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// Integration tests for raw binary blob storage against real SQLite,
 /// including transactional atomicity with document writes.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class BlobIntegrationTests
 {

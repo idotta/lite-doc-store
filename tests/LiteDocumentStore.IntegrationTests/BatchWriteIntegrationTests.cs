@@ -7,6 +7,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// Integration tests for chunked batch writes: sizes around the chunk boundary, sizes past
 /// what a single statement can bind, duplicate-id rejection, and atomicity.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class BatchWriteIntegrationTests
 {

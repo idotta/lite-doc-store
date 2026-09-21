@@ -5,6 +5,7 @@ namespace LiteDocumentStore.IntegrationTests;
 /// <summary>
 /// Example tests demonstrating the use of DatabaseSeeder utilities.
 /// </summary>
+[Trait("Category", "Integration")]
 [Collection(nameof(LiteDocumentStoreCollection))]
 public class DatabaseSeederExamples
 {

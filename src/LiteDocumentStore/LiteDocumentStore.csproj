@@ -9,10 +9,17 @@
          reach internals. CI passes -p:ExposeInternalsToTests=false when packing. -->
     <ExposeInternalsToTests Condition="'$(ExposeInternalsToTests)' == ''">true</ExposeInternalsToTests>
 
-    <!-- Belt and braces: `dotnet pack` sets _IsPacking, so a pack that forgets the flag
-         above still cannot ship the attribute. CI passes -p:ExposeInternalsToTests=false
-         explicitly as well. -->
-    <ExposeInternalsToTests Condition="'$(_IsPacking)' == 'true'">false</ExposeInternalsToTests>
+    <!-- Belt and braces for the two pack paths a property can still fix. _IsPacking is set by
+         `dotnet pack` and by nothing else (the SDK says so itself at
+         Microsoft.NET.Sdk.DefaultItems.targets:173); GeneratePackageOnBuild packs as part of the
+         build. Both run before the compile, so flipping the property there means the assembly is
+         built without the attribute in the first place. `msbuild -t:Pack`, Visual Studio's Pack
+         command and an explicit -p:ExposeInternalsToTests=true global property reach neither
+         condition, and by the time Pack runs the assembly is already compiled — flipping the
+         property then would ship a DLL that still carries the attributes. The
+         RefuseToPackWithInternalsExposed target below is what stops those. CI and the publish
+         workflow pass -p:ExposeInternalsToTests=false explicitly as well. -->
+    <ExposeInternalsToTests Condition="'$(_IsPacking)' == 'true' Or '$(GeneratePackageOnBuild)' == 'true'">false</ExposeInternalsToTests>
 
     <!-- NuGet Package Metadata -->
     <PackageId>LiteDocumentStore</PackageId>
@@ -52,5 +59,18 @@
     <InternalsVisibleTo Include="LiteDocumentStore.IntegrationTests" />
     <InternalsVisibleTo Include="LiteDocumentStore.UnitTests" />
   </ItemGroup>
+
+  <!-- The backstop for every pack path the property conditions above cannot reach. The assembly
+       is unsigned, so a shipped InternalsVisibleTo lets any assembly claiming a test project's
+       name reach internals; refusing the pack is the only honest answer once the compile is
+       already done. GenerateNuspec is named alongside Pack deliberately: Pack runs *after* the
+       targets that write the .nupkg, so hooking it alone fails the build but still leaves a
+       leaky package sitting on disk for someone to push. -->
+  <Target Name="RefuseToPackWithInternalsExposed"
+          BeforeTargets="Pack;GenerateNuspec"
+          Condition="'$(ExposeInternalsToTests)' == 'true'">
+    <Error Code="LDS0001"
+           Text="Refusing to pack: ExposeInternalsToTests is 'true', so the package would ship InternalsVisibleTo attributes for the test and benchmark projects into an unsigned assembly. Pass -p:ExposeInternalsToTests=false to pack." />
+  </Target>
 
 </Project>
