@@ -963,7 +963,12 @@ pins the log against truncation and leaves writers running. On a shared-cache in
 table-level, so while a stream is open a write to the blob table fails `SQLITE_LOCKED`
 (`SQLITE_LOCKED_SHAREDCACHE`) and `BusyTimeoutMs` does not apply — SQLite does not invoke the busy
 handler for a shared-cache table conflict. Document tables, and reads of the blob table, are
-unaffected.
+unaffected. **On a file database in rollback-journal mode (`EnableWalMode = false`) the lock is
+database-wide and the busy handler *is* invoked**, so a concurrent writer on another connection — to the
+blob table *or* to a document table — waits and then fails with plain `SQLITE_BUSY` (5/5, `database is
+locked`), while reads of either table are unaffected; `BusyTimeoutMs` bounds each attempt but the derived
+`DefaultTimeout` decides how many attempts run, so the elapsed time is a multiple of it.
+→ rationale#blobs
 
 **`OpenBlobReadAsync` is deliberately absent from `IDocumentTransaction`** — a stream outliving its
 transaction would read through a connection already back in the pool. Inside a transaction, blobs are
