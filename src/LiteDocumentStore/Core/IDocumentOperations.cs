@@ -709,9 +709,10 @@ public interface IDocumentOperations
     /// disposes it.
     /// </param>
     /// <param name="length">
-    /// Exactly how many bytes to consume from <paramref name="source"/>. SQLite's incremental
-    /// blob I/O cannot resize a blob, so the row is reserved at this size before the first byte is
-    /// written.
+    /// Exactly how many bytes to consume from <paramref name="source"/> — a statement about what
+    /// this call reads, not a claim about what <paramref name="source"/> holds; see the remarks
+    /// for how the two differ on a non-seekable source. SQLite's incremental blob I/O cannot
+    /// resize a blob, so the row is reserved at this size before the first byte is written.
     /// </param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <remarks>
@@ -723,11 +724,20 @@ public interface IDocumentOperations
     /// if the caller catches the exception and commits.
     /// </para>
     /// <para>
-    /// A seekable <paramref name="source"/> is measured before anything is written, so a
-    /// <paramref name="length"/> that disagrees with it in either direction fails the call. A
-    /// non-seekable one cannot be measured, so exactly <paramref name="length"/> bytes are
-    /// consumed and no more: a source with further bytes is not an error and they are left
-    /// unread, which is what keeps a live network stream or a framed protocol usable here.
+    /// <paramref name="length"/> always means "consume exactly this many bytes". A seekable
+    /// <paramref name="source"/> can additionally be held to "holds exactly this many": it is
+    /// measured from its current position before anything is written, so a
+    /// <paramref name="length"/> that disagrees with it in either direction fails the call with
+    /// no I/O done.
+    /// </para>
+    /// <para>
+    /// A non-seekable one cannot be measured, and the copy deliberately does not read past
+    /// <paramref name="length"/> to find out: on a live network stream that read would block
+    /// until the peer sent something, and in a framed protocol it would swallow a byte belonging
+    /// to whatever follows. So exactly <paramref name="length"/> bytes are consumed, further
+    /// bytes are left unread rather than reported as an error, and only a source that ends early
+    /// fails. The two cases differ because only one of them can be checked without breaking the
+    /// case this overload exists for.
     /// </para>
     /// </remarks>
     /// <exception cref="EndOfStreamException">

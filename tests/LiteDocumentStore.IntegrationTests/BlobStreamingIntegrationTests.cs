@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -52,6 +54,53 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
         await store.CreateTableAsync<Doc>();
         return store;
     }
+
+    /// <summary>
+    /// <c>PRAGMA busy_timeout</c> for the two lock tests, deliberately far longer than either of
+    /// them may take: if SQLite's busy handler were invoked for the conflict below, one
+    /// <c>sqlite3_step</c> would block inside SQLite for this long, and nothing above it could cut
+    /// that short.
+    /// </summary>
+    private const int BusyHandlerBudgetMs = 30_000;
+
+    /// <summary>
+    /// The writer's command timeout, in seconds — the window Microsoft.Data.Sqlite re-runs a
+    /// locked statement in. One second is the provider's smallest usable value (0 means retry
+    /// forever, measured).
+    /// </summary>
+    private const int WriterCommandTimeoutSeconds = 1;
+
+    private const int SqliteLocked = 6;              // SQLITE_LOCKED
+    private const int SqliteLockedSharedCache = 262; // SQLITE_LOCKED_SHAREDCACHE
+
+    private static async Task<IDocumentStore> CreateInMemoryStoreAsync()
+    {
+        var options = DocumentStoreOptions.ForInMemory();
+        options.BusyTimeoutMs = BusyHandlerBudgetMs;
+
+        var store = await new DocumentStoreFactory().CreateAsync(options);
+        await store.CreateBlobTableAsync();
+        await store.CreateTableAsync<Doc>();
+        return store;
+    }
+
+    /// <summary>
+    /// Inserts a blob row over a pooled connection — a different connection from the read
+    /// stream's, which is what makes it a writer contending with the stream's read lock. The
+    /// command timeout is set explicitly so the provider's retry window is decoupled from
+    /// <c>busy_timeout</c>, which the store otherwise derives it from.
+    /// </summary>
+    private static Task<int> InsertBlobRowAsync(IDocumentStore store, string id) =>
+        store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandTimeout = WriterCommandTimeoutSeconds;
+            command.CommandText =
+                "INSERT INTO [__store_blobs] (id, content_type, created_at, updated_at, version, data) " +
+                "VALUES (@Id, NULL, 0, 0, 1, x'00')";
+            command.Parameters.AddWithValue("@Id", id);
+            return await command.ExecuteNonQueryAsync(ct);
+        });
 
     private static byte[] Payload(int length)
     {
@@ -531,6 +580,77 @@ public class BlobStreamingIntegrationTests : IAsyncLifetime
         }
 
         Assert.False(await store.BlobExistsAsync("b"));
+    }
+
+    /// <summary>
+    /// Pins what an open read stream costs on a shared-cache in-memory database: the deferred
+    /// BEGIN takes no lock, but the rowid lookup behind the stream does, and under shared cache
+    /// that lock is table-level, so a blob-table write fails with SQLITE_LOCKED /
+    /// SQLITE_LOCKED_SHAREDCACHE. It is not a wait: SQLite does not invoke the busy handler for a
+    /// shared-cache table conflict, so the 30 s <c>busy_timeout</c> configured here never runs and
+    /// the call is bounded by the provider's 1 s retry window instead. Document writes and blob
+    /// reads are unaffected, and disposing the stream releases the lock. The file + WAL control
+    /// below is what makes this discriminating.
+    /// </summary>
+    [Fact]
+    public async Task OpenBlobReadAsync_OnASharedCacheInMemoryStore_LocksTheBlobTableAgainstWriters()
+    {
+        await using var store = await CreateInMemoryStoreAsync();
+        await store.PutBlobAsync("b", Payload(64));
+
+        var stream = await store.OpenBlobReadAsync("b");
+        Assert.NotNull(stream);
+
+        var stopwatch = Stopwatch.StartNew();
+        var blocked = await Assert.ThrowsAsync<SqliteException>(() => InsertBlobRowAsync(store, "other"));
+        stopwatch.Stop();
+
+        Assert.Equal(SqliteLocked, blocked.SqliteErrorCode);
+        Assert.Equal(SqliteLockedSharedCache, blocked.SqliteExtendedErrorCode);
+
+        // SQLite returned the conflict rather than waiting on it. busy_timeout is 30 s and the
+        // provider cannot interrupt a step that is blocked inside SQLite, so a busy-handler wait
+        // would show up here as ~30 s. What bounds the call instead is the provider re-running the
+        // statement for its 1 s command timeout, which is why the bound below is well above 1 s
+        // and far below 30 s rather than near zero.
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"expected the busy handler never to run; took {stopwatch.ElapsedMilliseconds} ms");
+
+        // A document table is a different table, so its lock is not the one held.
+        await store.UpsertAsync("d", new Doc("written while a blob stream was open"));
+        Assert.NotNull(await store.GetAsync<Doc>("d"));
+
+        // Reads of the blob table share the lock rather than conflicting with it.
+        Assert.Equal(64, (await store.GetBlobAsync("b"))!.Length);
+
+        // The lock belongs to the stream's read transaction, and the stream owns that transaction,
+        // so the same write succeeds once the stream is disposed and nothing else has changed. A
+        // test cannot dispose the inner SqliteBlob on its own — it is private to BlobReadStream —
+        // so what is pinned here is the consumer-visible half: held while the stream lives,
+        // released when the stream is disposed.
+        await stream.DisposeAsync();
+
+        Assert.Equal(1, await InsertBlobRowAsync(store, "after-disposal"));
+    }
+
+    /// <summary>
+    /// The positive control for the test above: the same shape on a file database in WAL mode,
+    /// where the writer's INSERT succeeds. Without it that test could be asserting something that
+    /// fails everywhere and would still look like a pass.
+    /// </summary>
+    [Fact]
+    public async Task OpenBlobReadAsync_OnAFileDatabaseInWalMode_LeavesBlobTableWritersRunning()
+    {
+        await using var store = await CreateFileStoreAsync();
+        await store.PutBlobAsync("b", Payload(64));
+
+        await using var stream = await store.OpenBlobReadAsync("b");
+        Assert.NotNull(stream);
+
+        Assert.Equal(1, await InsertBlobRowAsync(store, "other"));
+        await store.UpsertAsync("d", new Doc("written while a blob stream was open"));
+        Assert.Equal(64, (await store.GetBlobAsync("b"))!.Length);
     }
 
     /// <summary>

@@ -18,7 +18,17 @@ namespace LiteDocumentStore;
 /// <para>
 /// The read transaction is what makes the row's rowid stable: without it, another connection
 /// could delete the row between the rowid lookup and the blob open, and SQLite may reuse that
-/// rowid for a different row. It is deferred, so it takes no lock and blocks no writer.
+/// rowid for a different row. The <c>BEGIN</c> is deferred, so it takes no lock by itself, but
+/// the rowid lookup immediately after it does, and that lock lives as long as the transaction
+/// does — that is, until this stream is disposed.
+/// </para>
+/// <para>
+/// On a shared-cache in-memory database that lock is table-level, so while a stream is open a
+/// write to the blob table fails with <c>SQLITE_LOCKED</c> / <c>SQLITE_LOCKED_SHAREDCACHE</c>.
+/// SQLite does not run the busy handler for a shared-cache table conflict, so
+/// <c>busy_timeout</c> never turns it into a wait; the provider merely re-runs the statement
+/// until its command timeout and then reports the conflict. Document tables and reads of the
+/// blob table are unaffected, and so is a file database in WAL mode.
 /// </para>
 /// <para>
 /// Disposal order is blob, then transaction, then connection — each in a <c>finally</c>, so a
@@ -67,9 +77,12 @@ internal sealed class BlobReadStream : Stream
 
         try
         {
-            // Deferred, so it takes no lock: its job is to pin a read snapshot, which is what
-            // keeps the rowid resolved below from being reused by another connection before the
-            // blob handle opens.
+            // Deferred, so the BEGIN itself takes no lock; the rowid lookup below takes one and
+            // holds it until this transaction ends. Its job is to pin a read snapshot, which is
+            // what keeps the rowid resolved below from being reused by another connection before
+            // the blob handle opens. On a shared-cache in-memory database that lock is
+            // table-level, so blob-table writes fail with SQLITE_LOCKED while the stream lives —
+            // busy_timeout does not apply, the busy handler is never invoked for that conflict.
             transaction = connection.BeginTransaction(System.Data.IsolationLevel.Serializable, deferred: true);
 
             var row = await connection.QueryFirstInt64StringAsync(

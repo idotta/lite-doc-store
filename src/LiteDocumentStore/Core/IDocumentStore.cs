@@ -47,10 +47,24 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// throws <see cref="TimeoutException"/> rather than opening connections without limit.
     /// </para>
     /// <para>
-    /// The open read snapshot has a cost while the stream lives: in WAL mode it pins the log
-    /// against truncation, and outside WAL its read lock blocks writers. Streaming a large blob
-    /// to a slow consumer therefore holds one for that whole time, which is inherent to reading
-    /// a row incrementally rather than a property of where the connection came from.
+    /// The open read snapshot has a cost while the stream lives. The <c>BEGIN</c> behind it is
+    /// deferred and takes no lock of its own, but the rowid lookup that follows it does, and that
+    /// lock belongs to the transaction the stream owns, so it is held until the stream itself is
+    /// disposed. In WAL mode it pins the log against truncation and leaves writers running.
+    /// </para>
+    /// <para>
+    /// On a shared-cache in-memory database — what <see cref="DocumentStoreOptions.ForInMemory"/>
+    /// returns — that lock is table-level, so while a stream is open a write to the blob table
+    /// fails with <c>SQLITE_LOCKED</c> (<c>SQLITE_LOCKED_SHAREDCACHE</c>). Waiting does not help
+    /// and <see cref="DocumentStoreOptions.BusyTimeoutMs"/> does not apply: SQLite does not invoke
+    /// the busy handler for a shared-cache table conflict, so what the caller sees is the provider
+    /// re-running the statement until its command timeout and then surfacing the conflict.
+    /// Document tables are unaffected, and so are reads of the blob table.
+    /// </para>
+    /// <para>
+    /// Streaming a large blob to a slow consumer therefore holds that snapshot for the whole
+    /// time, which is inherent to reading a row incrementally rather than a property of where
+    /// the connection came from.
     /// </para>
     /// <para>
     /// This is deliberately absent from <see cref="IDocumentTransaction"/>: a stream that
