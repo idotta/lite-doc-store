@@ -177,11 +177,15 @@ The JSONB contract, enforced there, is load-bearing:
   validated like anything else. Callers outside the generator run those same predicates rather than
   reimplementing them — `TableNameCollisionGuard` and `RequireDerivableName` both go through
   `SqlGenerator.IsValidIdentifier`, and `DocumentOperations` hoists `ValidateIdentifier` /
-  `ValidateColumnType` ahead of a short-circuit that would otherwise skip the generator. **Two sites do
-  not route through it, and both are deliberate:** `JsonPathResolver.ValidPathMember`
-  (`Serialization/JsonPathResolver.cs:160`) re-states the path-member rule in its own loop so the
-  rejection can be reported against the member that produced the name, which is why the `U+0000` ban has
-  to be maintained in two places; and `SchemaIntrospector.GetColumnsAsync`
+  `ValidateColumnType` ahead of a short-circuit that would otherwise skip the generator. **The path
+  *member* rule has its own owner inside the generator, `SqlGenerator.MemberFault`
+  (`Core/SqlGenerator.cs:1608`), and two callers that word the refusal differently on purpose:**
+  `ValidateJsonPath` slices each member out of a whole path and blames the path parameter, while
+  `JsonPathResolver.ValidPathMember` (`Serialization/JsonPathResolver.cs:167`) is handed one
+  already-resolved serialized name and blames the member that produced it. Only the *reporting* split
+  is duplicated — the rule itself is stated once, which is why the predicate returns a
+  `PathMemberFault` rather than a bool. **One site does not route through the generator, and that is
+  deliberate:** `SchemaIntrospector.GetColumnsAsync`
   (`Migrations/SchemaIntrospector.cs:95`) interpolates the table name into `PRAGMA table_xinfo(...)` with
   its own double-quoting, since a `PRAGMA` argument is not a statement `SqlGenerator` emits. A new
   interpolation site is a regression unless it calls one of the four predicates or is listed here.
@@ -200,6 +204,17 @@ mirrors SQLite's own **unquoted** path label, which terminates only at `.` or `[
 are **accepted** — measured, each reads back its own key — and a positive control pins that.
 → rationale#sql-paths
 
+**The rule has one owner, `SqlGenerator.MemberFault`**, which judges a single isolated member (taken
+as a `ReadOnlySpan<char>`, so slicing a path allocates nothing) and returns *which* rule was broken as
+a `PathMemberFault`. Its two callers keep their own messages: `ValidateJsonPath` quotes the whole path
+and blames the path parameter, `JsonPathResolver.ValidPathMember` names the member that produced the
+serialized name and varies its recovery sentence by reason (`U+0000` → no path can address it at all;
+apostrophe, `.`, `[`, empty → `ExecuteRawAsync`). That reporting split is deliberate; consolidating the
+messages is a regression, and `JsonPathMemberRuleTests` pins both wordings byte for byte alongside a
+shared member table driven through both entry points. Because `ValidateJsonPath` slices at `.` and `[`,
+it can never observe `PathMemberFault.Dot` or `PathMemberFault.Bracket` — only the resolver, which is
+handed a name nothing tokenized, can; that arm is an unreachable guard with no mutation behind it.
+
 Four exclusions, each for a different reason:
 
 - **The apostrophe is the injection boundary.** The path is interpolated into a single-quoted SQL
@@ -207,10 +222,11 @@ Four exclusions, each for a different reason:
   doubling: rewriting the emitted text would stop it matching the expression index.
 - **`.` and `[` are structural** — `$.a.b` is unambiguously the nested path `a` → `b`, never the single
   key `a.b`. The empty member is rejected because SQLite errors on it.
-- **`U+0000` is rejected permanently**, by both `SqlGenerator.ValidateJsonPath` and
-  `JsonPathResolver.ValidPathMember`. `sqlite3_prepare` reads a NUL-terminated string, so a NUL
-  truncates the statement; bound as a parameter (which this library never does) it silently reads the
-  wrong key. It is **not** a Tier 2 shape — quoting does not rescue it.
+- **`U+0000` is rejected permanently**, in one place — `SqlGenerator.MemberFault`, the member rule's
+  owner, which both `ValidateJsonPath` and `JsonPathResolver.ValidPathMember` call.
+  `sqlite3_prepare` reads a NUL-terminated string, so a NUL truncates the statement; bound as a
+  parameter (which this library never does) it silently reads the wrong key. It is **not** a Tier 2
+  shape — quoting does not rescue it.
 
 **Tier 2 (quoted segments) is open and deliberately deferred.** Three shapes remain unreachable *and*
 reachable by quoting: a key containing `.`, a key containing `[`, and the empty key. The dotted one is
@@ -530,7 +546,10 @@ silence: a store that cannot honour an option now refuses to open rather than pr
   rounded up, **floored at 1** — 0 means *retry forever* to the provider), unless the connection string
   states `Default Timeout`/`Command Timeout`, which wins. It is applied **before** the PRAGMA block,
   since those statements run under the command timeout too. This sits in the factory rather than the
-  pool: it applies an option, it is not a correctness guard.
+  pool: it applies an option, it is not a correctness guard. **The derived `DefaultTimeout` is not a
+  bound on the total either** — it decides only whether a *further* attempt may begin, so an attempt
+  that starts just under it runs a full `BusyTimeoutMs` past it, and a contended call can overshoot by
+  almost that much: measured at 3161 ms against a 2 s `DefaultTimeout`. → rationale#blobs
 
 **Deliberately not given typed options:** `mmap_size`, `temp_store`, `journal_size_limit`,
 `wal_autocheckpoint`, `auto_vacuum` — `AdditionalPragmas` already applies any of them to every physical
@@ -940,14 +959,21 @@ starve the pool; on its own connection the same mistake costs one handle. Open s
 on dispose, on the not-found path and from the finalizer), a separate budget from the operation slots
 precisely so the two cannot starve each other.
 
-The read transaction is what makes the rowid safe (SQLite reuses a deleted row's rowid). **The `BEGIN`
-is deferred and takes no lock of its own — but the rowid lookup that follows it does**, and that lock
-belongs to the transaction the stream owns, so it is held until the stream is disposed. In WAL mode it
-pins the log against truncation and leaves writers running. On a shared-cache in-memory database it is
-table-level, so while a stream is open a write to the blob table fails `SQLITE_LOCKED`
-(`SQLITE_LOCKED_SHAREDCACHE`) and `BusyTimeoutMs` does not apply — SQLite does not invoke the busy
-handler for a shared-cache table conflict. Document tables, and reads of the blob table, are
-unaffected.
+The read transaction is what makes the rowid safe (SQLite reuses a deleted row's rowid). **The
+`BEGIN` is deferred and takes no lock of its own — but the rowid lookup that follows it does**, and
+that lock is held by the **open `SqliteBlob` handle on the stream's connection** — measured, it
+outlives the transaction's removal — so it is held until the stream is disposed whatever the
+transaction does. In WAL mode it pins the log against truncation and leaves writers running. On a
+shared-cache in-memory database it is table-level, so while a stream is open a write to the blob
+table fails `SQLITE_LOCKED` (`SQLITE_LOCKED_SHAREDCACHE`) and `BusyTimeoutMs` does not apply —
+SQLite does not invoke the busy handler for a shared-cache table conflict. Document tables, and
+reads of the blob table, are unaffected. **On a file database in rollback-journal mode
+(`EnableWalMode = false`) the lock is database-wide and the busy handler *is* invoked**, so a
+concurrent writer on another connection — to the blob table *or* to a document table — waits and
+then fails with plain `SQLITE_BUSY` (5/5, `database is locked`), while reads of either table are
+unaffected; `BusyTimeoutMs` bounds each attempt but the derived `DefaultTimeout` decides how many
+attempts run, so the elapsed time is a multiple of it.
+→ rationale#blobs
 
 **`OpenBlobReadAsync` is deliberately absent from `IDocumentTransaction`** — a stream outliving its
 transaction would read through a connection already back in the pool. Inside a transaction, blobs are
@@ -1025,12 +1051,22 @@ without committing rolls back. `ExecuteInTransactionAsync(Func<IDocumentTransact
 ergonomic wrapper. Every operation **that touches the connection** goes through `ActiveTransaction()`
 first, so a call made after commit/rollback/disposal throws `InvalidOperationException` — or
 `ObjectDisposedException` once disposed — instead of running on a connection the pool has already
-re-leased. **The three connectionless members are the stated exception**: `GetTableName<T>()`,
+re-leased. **That now includes the three connectionless members**: `GetTableName<T>()`,
 `SerializeDocument<T>` and `DeserializeDocument<T>`
-(`Core/DocumentStoreTransaction.cs:573`, `:576`, `:579`) delegate straight to `DocumentOperations` without
-the check, so they keep working after the transaction has ended — there is no connection for them to run
-on the wrong one of. That is a described behaviour, not a guarantee: whether the check should be added is
-filed as its own item, because adding it is a behaviour change.
+(`Core/DocumentStoreTransaction.cs:573`, `:581`, `:592`) run `ActiveTransaction()` before delegating to
+`DocumentOperations`, discarding its `SqliteTransaction` — it is the throw that is wanted, not the
+transaction. The contract is uniform across the surface: one object, one lifetime, one answer.
+
+**Breaking**, pre-1.0 and deliberate: those three used to keep answering after the transaction had ended,
+because there was no connection for them to run on the wrong one of. A `GetTableName<T>()` or
+`DeserializeDocument<T>()` call made after commit, after rollback, or outside the `await using` block now
+throws — `InvalidOperationException` after commit/rollback, `ObjectDisposedException` after disposal.
+A consumer who did that resolves the name or deserializes on the **store**, which is unaffected, or moves
+the call inside the block. **The ordering carve-out stands**: `SerializeDocument<T>(null)` still reports
+`ArgumentNullException`, because `ArgumentNullException.ThrowIfNull(value)` is hoisted ahead of
+`ActiveTransaction()` — argument validation precedes the state guard here as everywhere else, and a null
+document is a caller bug whatever state the transaction is in. `GetTableName<T>()` takes no argument and
+`DeserializeDocument<T>(string?)` legitimately answers `default` for null, so neither needs a hoist.
 
 **The transaction object is the unit of work**: operations must be invoked **on it**, because operations
 invoked on the store rent their own connection and commit independently. That is the point of the design
@@ -1109,8 +1145,10 @@ transaction. `DeserializeDocument` returns `default` when the string itself is n
 `DocumentSerializationException` on malformed input; `SerializeDocument` throws `ArgumentNullException`
 on a null value. **The JSON literal `null` is a different case and depends on `T`** — measured, STJ
 returns `default` for a reference type or `Nullable<T>` and raises `JsonException` for any other value
-type, which `JsonHelper` wraps as `DocumentSerializationException`. On the store all three also throw
-`ObjectDisposedException` after disposal; on a transaction they do not (see Transactions).
+type, which `JsonHelper` wraps as `DocumentSerializationException`. All three are state-guarded on both
+objects: on the store they throw `ObjectDisposedException` after disposal, and on a transaction
+`InvalidOperationException` after commit or rollback and `ObjectDisposedException` after disposal (see
+Transactions). `SerializeDocument`'s null check runs ahead of that guard on both.
 
 The same reasoning keeps teardown on `IDocumentOperations` rather than behind the hatch:
 `DeleteAllAsync<T>` (`DELETE FROM [t]`, returns rows deleted, table survives), `DropTableAsync<T>` and

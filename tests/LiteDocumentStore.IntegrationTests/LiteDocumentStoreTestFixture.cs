@@ -145,53 +145,6 @@ public class LiteDocumentStoreCollection : ICollectionFixture<LiteDocumentStoreT
     // ICollectionFixture<> interfaces.
 }
 
-/// <summary>
-/// Example test class demonstrating fixture usage.
-/// </summary>
-[Trait("Category", "Integration")]
-[Collection(nameof(LiteDocumentStoreCollection))]
-public class ExampleTestsUsingFixture
-{
-    private readonly LiteDocumentStoreTestFixture _fixture;
-
-    public ExampleTestsUsingFixture(LiteDocumentStoreTestFixture fixture)
-    {
-        _fixture = fixture;
-    }
-
-    [Fact]
-    public async Task ExampleTest_UsingDefaultStore()
-    {
-        // Arrange
-        var store = _fixture.Store;
-        await store.CreateTableAsync<TestDocument>();
-
-        // Act
-        await store.UpsertAsync("doc-1", new TestDocument { Title = "Test", Content = "Example" });
-        var retrieved = await store.GetAsync<TestDocument>("doc-1");
-
-        // Assert
-        Assert.NotNull(retrieved);
-        Assert.Equal("Test", retrieved.Title);
-    }
-
-    [Fact]
-    public async Task ExampleTest_UsingCustomStore()
-    {
-        // Arrange - Create a file-based store with WAL enabled
-        var store = await _fixture.CreateFileStoreAsync(enableWal: true);
-        await store.CreateTableAsync<TestDocument>();
-
-        // Act
-        await store.UpsertAsync("doc-1", new TestDocument { Title = "Test", Content = "Example" });
-        var retrieved = await store.GetAsync<TestDocument>("doc-1");
-
-        // Assert
-        Assert.NotNull(retrieved);
-        Assert.Equal("Test", retrieved.Title);
-    }
-}
-
 public class TestDocument
 {
     public string Title { get; set; } = string.Empty;

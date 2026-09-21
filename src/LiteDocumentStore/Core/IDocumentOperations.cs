@@ -1014,14 +1014,20 @@ public interface IDocumentOperations
     /// raw SQL.
     /// </summary>
     /// <remarks>
-    /// This and the two members below need no connection, so on an <see cref="IDocumentTransaction"/>
-    /// they are the only operations that do not first check the transaction is still active: they keep
-    /// answering after a commit, a rollback or disposal. On an <see cref="IDocumentStore"/> they are
-    /// guarded like everything else and throw once the store is disposed.
+    /// This and the two members below need no connection, but they are guarded like every other
+    /// operation on the surface. On an <see cref="IDocumentStore"/> they throw once the store is
+    /// disposed; on an <see cref="IDocumentTransaction"/> they throw
+    /// <see cref="InvalidOperationException"/> once the transaction has been committed or rolled
+    /// back, and <see cref="ObjectDisposedException"/> once it has been disposed. An argument check
+    /// still runs first, so <see cref="SerializeDocument{T}"/> reports a null value as
+    /// <see cref="ArgumentNullException"/> whatever state the object is in.
     /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <returns>The table name produced by the configured <see cref="ITableNamingConvention"/></returns>
-    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store, or the transaction this
+    /// was called on, has been disposed</exception>
+    /// <exception cref="InvalidOperationException">Thrown when this was called on a transaction
+    /// that has already been committed or rolled back</exception>
     string GetTableName<T>();
 
     /// <summary>
@@ -1033,7 +1039,10 @@ public interface IDocumentOperations
     /// <returns>The UTF-8 JSON bytes</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is null</exception>
     /// <exception cref="Exceptions.DocumentSerializationException">Thrown when serialization fails</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store, or the transaction this
+    /// was called on, has been disposed</exception>
+    /// <exception cref="InvalidOperationException">Thrown when this was called on a transaction
+    /// that has already been committed or rolled back</exception>
     byte[] SerializeDocument<T>(T value);
 
     /// <summary>
@@ -1060,6 +1069,9 @@ public interface IDocumentOperations
     /// <param name="json">The JSON text, as returned by <c>json(data)</c></param>
     /// <returns>The document, or default when <paramref name="json"/> is null or empty</returns>
     /// <exception cref="Exceptions.DocumentSerializationException">Thrown when deserialization fails</exception>
-    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store, or the transaction this
+    /// was called on, has been disposed</exception>
+    /// <exception cref="InvalidOperationException">Thrown when this was called on a transaction
+    /// that has already been committed or rolled back</exception>
     T? DeserializeDocument<T>(string? json);
 }

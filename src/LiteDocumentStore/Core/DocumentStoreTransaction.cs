@@ -570,13 +570,31 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
-    public string GetTableName<T>() => _operations.GetTableName<T>();
+    public string GetTableName<T>()
+    {
+        ActiveTransaction();
+
+        return _operations.GetTableName<T>();
+    }
 
     /// <inheritdoc />
-    public byte[] SerializeDocument<T>(T value) => _operations.SerializeDocument(value);
+    public byte[] SerializeDocument<T>(T value)
+    {
+        // Ahead of the state guard, like every other argument check on this surface: a null
+        // document is a caller bug whether or not the transaction is still open.
+        ArgumentNullException.ThrowIfNull(value);
+        ActiveTransaction();
+
+        return _operations.SerializeDocument(value);
+    }
 
     /// <inheritdoc />
-    public T? DeserializeDocument<T>(string? json) => _operations.DeserializeDocument<T>(json);
+    public T? DeserializeDocument<T>(string? json)
+    {
+        ActiveTransaction();
+
+        return _operations.DeserializeDocument<T>(json);
+    }
 
     /// <summary>
     /// Rolls back an uncommitted transaction, then releases the connection.

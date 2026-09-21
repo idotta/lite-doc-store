@@ -1627,15 +1627,46 @@ store may hold up to twice that many connections.
 ### Why the read transaction exists
 
 Incremental blob I/O addresses rows by rowid and SQLite reuses a deleted row's, so a bare `SELECT rowid` →
-`new SqliteBlob(...)` could open a different row. The `BEGIN` is deferred and takes no lock of its own,
-but the rowid lookup that follows it does, and that lock belongs to the transaction the stream owns, so
-it is held until the stream is disposed.
+`new SqliteBlob(...)` could open a different row. The `BEGIN` is deferred and takes no lock of its
+own, but the rowid lookup that follows it does, and that lock is held by the open `SqliteBlob`
+handle on the stream's connection — measured below — so it is held until the stream is disposed
+whatever the transaction does.
 
 Its cost is inherent, not a consequence of the unpooled connection: in WAL mode, while a stream lives it
 pins the log against truncation and leaves writers running. On a shared-cache in-memory database that
 lock is table-level, so a write to the blob table fails `SQLITE_LOCKED` (`SQLITE_LOCKED_SHAREDCACHE`)
 while the stream is open, and `busy_timeout` does not apply — SQLite does not invoke the busy handler for
 a shared-cache table conflict. Document tables, and reads of the blob table, are unaffected.
+
+On a **file** database with `EnableWalMode = false` — the rollback journal, the third mode — the lock is
+**database-wide** and the busy handler *is* invoked, so a writer on a second connection waits and then
+fails with plain `SQLITE_BUSY` (`SqliteErrorCode` 5, `SqliteExtendedErrorCode` 5, `database is locked`).
+Measured against SQLite **3.53.3** with `journal_mode` confirmed `delete` on both stores: a
+`PutBlobAsync` of a *different* id and an `UpsertAsync` into a **document** table both failed that way
+while a stream was held, and both succeeded within ~40 ms once it was disposed. The document-table
+failure is the difference that matters — under a shared cache only the blob table locks. Reads are
+unaffected there too: `GetBlobMetadataAsync` and `BlobExistsAsync` answered in under 20 ms with the
+stream open. Whether the stream had merely been opened or had had bytes read out of it made no
+difference, as expected — the rowid lookup happens at open.
+
+**`BusyTimeoutMs` governs the wait, but it is not the whole elapsed time**, because the derived
+`connection.DefaultTimeout` decides how many times that wait is repeated. Measured elapsed for the
+contended write: 1500 ms → **3161 ms**, 4000 ms → **4007 ms**, and to separate the two clocks,
+700 ms → 1555 ms, 1200 ms → 2569 ms, 2600 ms → 5362 ms. Each is `n × BusyTimeoutMs`, where `n` is the
+number of attempts the provider starts while `DefaultTimeout` has not elapsed — seconds, rounded up,
+floored at 1, derived as described above under "`BusyTimeoutMs` was a floor, not a bound". At 4000 ms the
+command timeout is 4 s, so one attempt exhausts it; at 1500 ms it is 2 s, so a second attempt starts at
+t=1500 and runs its full 1500 ms. **The elapsed time can therefore exceed the derived
+command timeout by almost a full `BusyTimeoutMs`** — it bounds when a *new* attempt may start, not when
+the call returns.
+
+`BlobStreamRollbackJournalLockIntegrationTests` pins the codes and the positive controls, and of the
+timings only a generous lower bound (`elapsed >= BusyTimeoutMs / 2`, enough to say the busy handler
+waited rather than refusing immediately) — never the swept elapsed values above, which depend on the
+provider's attempt count. The lock is **not** the read transaction's alone: with
+`BlobReadStream.OpenAsync`'s `BeginTransaction` removed, the contended write still failed identically
+— the open `SqliteBlob` handle holds the read by itself. The transaction is there for rowid
+stability, which is a separate job.
 
 `OpenBlobReadAsync` is deliberately **absent from `IDocumentTransaction`**: a stream outliving its
 transaction would read through a connection already back in the pool, and adding it would have meant
