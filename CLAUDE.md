@@ -437,8 +437,10 @@ connections. Same reason for `SqlitePageSizeGuard`. The result is deliberately *
 path too — `AddLiteDocumentStore` hands the factory an options object nothing else has validated, and
 options built by hand never pass through `DocumentStoreOptionsBuilder`. It rejects a non-power-of-2
 `PageSize`, a negative `BusyTimeoutMs`, a `MaxPoolSize` below 1, a `PoolWaitTimeoutMs` of 0 or negative
-other than `Timeout.Infinite`, and a blank `AdditionalPragmas` entry, each naming the offending option
-as `ParamName`; `Build()` calls it too, so a builder cannot produce options the factory then refuses.
+other than `Timeout.Infinite`, a **null** `AdditionalPragmas` list and a blank entry in one, each naming
+the offending option as `ParamName`; it opens with `SqliteConnectionStringGuard.EnsureUsable` and ends
+in `ThrowIfSerializerOptionsUnusable`, both described below. `Build()` calls it too, so a builder cannot
+produce options the factory then refuses.
 
 **`MaxPoolSize` and `PoolWaitTimeoutMs` validate in their setter as well, and name the option there
 too.** Both are `field` auto-properties, so an out-of-range value is refused before `Validate()` can
@@ -710,7 +712,8 @@ Deliberately not fixed by wrapping every guarded write in a transaction. → rat
 **A caller who needs only a stored version reads it off `ActualVersion`, and needs no member of its
 own.** `BuildConflictAsync` fetches it with `SELECT version FROM [t] WHERE id = @Id`, a projection that
 touches no payload, so a `DeleteWithVersionAsync` whose guess does not match reports the real version and
-leaves the row alone. **On a corrupt row that is the only route**: `GetWithVersionAsync<T>` runs the same
+leaves the row alone. **On a corrupt row that is the only route on the typed surface** (`ExecuteRawAsync`
+is the other, and reads the column directly): `GetWithVersionAsync<T>` runs the same
 `EnsureDocumentPayload` guard as every other read before it returns, so it raises `CorruptDataException`
 instead of handing the version back — while the unguarded `DeleteAsync`, which reads no payload, removes
 such a row either way.
@@ -905,7 +908,10 @@ There is deliberately **no length column** — `length(data)` is answered from t
 without reading the payload, and `ListBlobsAsync(idPrefix, skip, take)` returns them in id order. **The
 prefix is a half-open key range** (`id >= @Prefix AND id < @PrefixEnd`, upper bound from
 `Blobs/BlobIdPrefix.cs`), not a pattern: only the range *searches* the primary-key index, and `LIKE` is
-ASCII-case-insensitive so it matched the wrong ids. → rationale#blobs
+ASCII-case-insensitive so it matched the wrong ids. **The upper half is emitted only when a bound
+exists** — `TryGetUpperBound` returns false for an empty prefix and for one made only of the maximum
+code point, where every id at or after the prefix is in range and `id >= @Prefix` alone is exact.
+→ rationale#blobs
 
 Content type arrives through a `BlobWriteOptions` **overload** of both write paths, same
 source-compatibility rule as `IndexOptions` — and with the same consequence, `PutBlobAsync(id, data,
@@ -1000,8 +1006,9 @@ constant default, so the timestamps are **nullable** and `version` defaults to 1
 declares the same nullability so the two do not diverge.
 
 What `ALTER TABLE` cannot do is reorder, so an upgraded table keeps `data` second — the slow layout —
-which is why `IDocumentStore.RebuildBlobTableAsync()` exists: `CREATE`/`INSERT SELECT`/`DROP`/`RENAME`
-in one transaction (200 MB in 823 ms), returns false when there is nothing to do, never run implicitly.
+which is why `IDocumentStore.RebuildBlobTableAsync()` exists: five steps — `DROP IF EXISTS` of the
+scratch table, `CREATE`, `INSERT SELECT`, `DROP`, `RENAME` — in one transaction (200 MB in 823 ms),
+returns false when there is nothing to do, never run implicitly.
 It adds the metadata columns first, because a table that predates them ends in `data` like a current one
 and the layout check alone reported it current. The warning naming it is logged by
 `CreateBlobTableAsync` alone, when its own upgrade leaves the legacy order behind; detecting the order

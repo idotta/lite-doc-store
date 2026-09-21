@@ -284,6 +284,25 @@ public class ExceptionIntegrationTests : IDisposable
     }
 
     [Fact]
+    public void DeserializeDocument_WithAJsonNullPayload_DependsOnWhetherTIsANullableType()
+    {
+        // The value-type half of the same contract, and the reason the helper's answer to the
+        // literal null is T-dependent where the read paths' is not: this is System.Text.Json's
+        // answer, not the store's. A Nullable<T> takes it as default exactly like a reference type
+        // does; any other value type makes STJ raise JsonException, which JsonHelper wraps as
+        // DocumentSerializationException. Every read path funnels through EnsureDocumentPayload
+        // and reports both shapes as CorruptDataException instead; this helper deliberately does
+        // not, so the T-dependence survives here by design.
+        Assert.Null(_store.DeserializeDocument<StrictValue?>("null"));
+
+        var exception = Assert.Throws<DocumentSerializationException>(
+            () => _store.DeserializeDocument<StrictValue>("null"));
+
+        Assert.Equal(typeof(StrictValue), exception.TargetType);
+        Assert.IsType<JsonException>(exception.InnerException);
+    }
+
+    [Fact]
     public async Task GetAsync_WithACorruptJsonbPayload_SurfacesTheSqliteError()
     {
         await _store.CreateTableAsync<StrictModel>();

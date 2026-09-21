@@ -24,12 +24,13 @@ internal static class JsonHelper
     /// their own <see cref="JsonSerializerOptions"/>. This is the single quarantined spot for
     /// reflection-based serialization: it is not AOT/trim safe and is only reached on the
     /// fallback path, which <see cref="DocumentStoreOptions.ThrowIfSerializerOptionsUnusable"/>
-    /// refuses under Native AOT — at validation and again in the constructor that calls this.
+    /// refuses under Native AOT — reached from <see cref="DocumentStoreOptions.Validate"/>, which
+    /// the factory runs and the constructor that calls this helper runs again.
     /// </summary>
     [UnconditionalSuppressMessage("Trimming", "IL2026",
-        Justification = "DocumentStoreOptions.ThrowIfSerializerOptionsUnusable refuses a null SerializerOptions when RuntimeFeature.IsDynamicCodeSupported is false, and runs both in Validate() and in the DocumentStore constructor that calls this helper, so it is unreachable under Native AOT; AOT consumers supply a source-generated JsonSerializerContext instead.")]
+        Justification = "DocumentStoreOptions.ThrowIfSerializerOptionsUnusable refuses a null SerializerOptions when RuntimeFeature.IsDynamicCodeSupported is false, and is reached from Validate(), which both DocumentStoreFactory.CreateStore and the DocumentStore constructor that calls this helper run over their own snapshot, so it is unreachable under Native AOT; AOT consumers supply a source-generated JsonSerializerContext instead.")]
     [UnconditionalSuppressMessage("AOT", "IL3050",
-        Justification = "DocumentStoreOptions.ThrowIfSerializerOptionsUnusable refuses a null SerializerOptions when RuntimeFeature.IsDynamicCodeSupported is false, and runs both in Validate() and in the DocumentStore constructor that calls this helper, so it is unreachable under Native AOT; AOT consumers supply a source-generated JsonSerializerContext instead.")]
+        Justification = "DocumentStoreOptions.ThrowIfSerializerOptionsUnusable refuses a null SerializerOptions when RuntimeFeature.IsDynamicCodeSupported is false, and is reached from Validate(), which both DocumentStoreFactory.CreateStore and the DocumentStore constructor that calls this helper run over their own snapshot, so it is unreachable under Native AOT; AOT consumers supply a source-generated JsonSerializerContext instead.")]
     public static JsonSerializerOptions CreateDefaultReflectionOptions()
     {
         return new JsonSerializerOptions
