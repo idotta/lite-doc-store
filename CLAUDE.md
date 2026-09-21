@@ -1041,12 +1041,22 @@ without committing rolls back. `ExecuteInTransactionAsync(Func<IDocumentTransact
 ergonomic wrapper. Every operation **that touches the connection** goes through `ActiveTransaction()`
 first, so a call made after commit/rollback/disposal throws `InvalidOperationException` — or
 `ObjectDisposedException` once disposed — instead of running on a connection the pool has already
-re-leased. **The three connectionless members are the stated exception**: `GetTableName<T>()`,
+re-leased. **That now includes the three connectionless members**: `GetTableName<T>()`,
 `SerializeDocument<T>` and `DeserializeDocument<T>`
-(`Core/DocumentStoreTransaction.cs:573`, `:576`, `:579`) delegate straight to `DocumentOperations` without
-the check, so they keep working after the transaction has ended — there is no connection for them to run
-on the wrong one of. That is a described behaviour, not a guarantee: whether the check should be added is
-filed as its own item, because adding it is a behaviour change.
+(`Core/DocumentStoreTransaction.cs:573`, `:581`, `:592`) run `ActiveTransaction()` before delegating to
+`DocumentOperations`, discarding its `SqliteTransaction` — it is the throw that is wanted, not the
+transaction. The contract is uniform across the surface: one object, one lifetime, one answer.
+
+**Breaking**, pre-1.0 and deliberate: those three used to keep answering after the transaction had ended,
+because there was no connection for them to run on the wrong one of. A `GetTableName<T>()` or
+`DeserializeDocument<T>()` call made after commit, after rollback, or outside the `await using` block now
+throws — `InvalidOperationException` after commit/rollback, `ObjectDisposedException` after disposal.
+A consumer who did that resolves the name or deserializes on the **store**, which is unaffected, or moves
+the call inside the block. **The ordering carve-out stands**: `SerializeDocument<T>(null)` still reports
+`ArgumentNullException`, because `ArgumentNullException.ThrowIfNull(value)` is hoisted ahead of
+`ActiveTransaction()` — argument validation precedes the state guard here as everywhere else, and a null
+document is a caller bug whatever state the transaction is in. `GetTableName<T>()` takes no argument and
+`DeserializeDocument<T>(string?)` legitimately answers `default` for null, so neither needs a hoist.
 
 **The transaction object is the unit of work**: operations must be invoked **on it**, because operations
 invoked on the store rent their own connection and commit independently. That is the point of the design
@@ -1125,8 +1135,10 @@ transaction. `DeserializeDocument` returns `default` when the string itself is n
 `DocumentSerializationException` on malformed input; `SerializeDocument` throws `ArgumentNullException`
 on a null value. **The JSON literal `null` is a different case and depends on `T`** — measured, STJ
 returns `default` for a reference type or `Nullable<T>` and raises `JsonException` for any other value
-type, which `JsonHelper` wraps as `DocumentSerializationException`. On the store all three also throw
-`ObjectDisposedException` after disposal; on a transaction they do not (see Transactions).
+type, which `JsonHelper` wraps as `DocumentSerializationException`. All three are state-guarded on both
+objects: on the store they throw `ObjectDisposedException` after disposal, and on a transaction
+`InvalidOperationException` after commit or rollback and `ObjectDisposedException` after disposal (see
+Transactions). `SerializeDocument`'s null check runs ahead of that guard on both.
 
 The same reasoning keeps teardown on `IDocumentOperations` rather than behind the hatch:
 `DeleteAllAsync<T>` (`DELETE FROM [t]`, returns rows deleted, table survives), `DropTableAsync<T>` and
