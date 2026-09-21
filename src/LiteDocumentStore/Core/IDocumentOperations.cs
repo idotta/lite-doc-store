@@ -1013,8 +1013,15 @@ public interface IDocumentOperations
     /// Gets the table name this store uses for <typeparamref name="T"/>, for interpolating into
     /// raw SQL.
     /// </summary>
+    /// <remarks>
+    /// This and the two members below need no connection, so on an <see cref="IDocumentTransaction"/>
+    /// they are the only operations that do not first check the transaction is still active: they keep
+    /// answering after a commit, a rollback or disposal. On an <see cref="IDocumentStore"/> they are
+    /// guarded like everything else and throw once the store is disposed.
+    /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <returns>The table name produced by the configured <see cref="ITableNamingConvention"/></returns>
+    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
     string GetTableName<T>();
 
     /// <summary>
@@ -1026,14 +1033,33 @@ public interface IDocumentOperations
     /// <returns>The UTF-8 JSON bytes</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="value"/> is null</exception>
     /// <exception cref="Exceptions.DocumentSerializationException">Thrown when serialization fails</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
     byte[] SerializeDocument<T>(T value);
 
     /// <summary>
     /// Deserializes the JSON text a raw <c>SELECT json(data)</c> column yields.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A null or empty <paramref name="json"/> answers <c>default</c> without consulting the
+    /// serializer. The JSON literal <c>null</c> is <em>not</em> that case and its answer depends on
+    /// <typeparamref name="T"/>: System.Text.Json yields <c>default</c> for a reference type or a
+    /// <see cref="Nullable{T}"/>, and refuses the conversion for any other value type, which surfaces
+    /// as <see cref="Exceptions.DocumentSerializationException"/>. The document read paths normalize
+    /// that away with their own corrupt-row guard; this helper deliberately does not, so a raw-SQL
+    /// caller sees the serializer's own contract.
+    /// </para>
+    /// <para>
+    /// Only <see cref="System.Text.Json.JsonException"/> and <see cref="NotSupportedException"/> are
+    /// translated. An exception of any other type thrown by a custom
+    /// <see cref="System.Text.Json.Serialization.JsonConverter"/> propagates unchanged, because
+    /// relabelling it would turn a converter's own failure into a confident claim about type metadata.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="T">The document type</typeparam>
     /// <param name="json">The JSON text, as returned by <c>json(data)</c></param>
     /// <returns>The document, or default when <paramref name="json"/> is null or empty</returns>
     /// <exception cref="Exceptions.DocumentSerializationException">Thrown when deserialization fails</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the store has been disposed</exception>
     T? DeserializeDocument<T>(string? json);
 }

@@ -1368,8 +1368,11 @@ Two shapes were type-dependent without it:
 
 Neither shape is reachable through a store write — `SerializeDocument` rejects a null document — so only
 raw SQL produces one. `DeserializeDocument`, the raw-SQL helper, deliberately keeps its own contract
-(`default` for null/empty/`null` JSON, `DocumentSerializationException` on malformed): the guard belongs to
-the read paths, not to `JsonHelper`.
+(`default` for a null or empty string, `DocumentSerializationException` on malformed): the guard belongs to
+the read paths, not to `JsonHelper`. That leaves the literal `null` answered by STJ rather than by this
+library — `default` for a reference type or `Nullable<T>`, `JsonException` wrapped as
+`DocumentSerializationException` for any other value type — so the `T`-dependence described two bullets
+above is exactly what survives on this member, and survives on purpose.
 
 ### Why the exception hierarchy is split
 

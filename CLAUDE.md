@@ -90,8 +90,20 @@ JSON type-metadata failure, nothing else. `UnsupportedSqliteVersionException` an
 `MigrationOutOfOrder`/`MigrationChecksumMismatch` come from `MigrateAsync`.
 
 **Accessibility.** `DocumentStore`, `DocumentOperations`, `SqlGenerator`, `MigrationRunner` and the pool
-are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj (CI's
-Pack job fails if a friend name leaks into the shipped DLL).
+are `internal sealed`; the test/benchmark projects see them via `InternalsVisibleTo` in the csproj,
+declared in an `ItemGroup` conditioned on `ExposeInternalsToTests`. **Three backstops keep that
+attribute out of the shipped DLL, and only the first prevents it being compiled in at all:** the csproj
+flips `ExposeInternalsToTests` to false whenever `_IsPacking` or `GeneratePackageOnBuild` is set, which
+covers `dotnet pack` and pack-on-build; the `RefuseToPackWithInternalsExposed` target
+(`BeforeTargets="Pack;GenerateNuspec"`) fails the build with `LDS0001` on every other path — `msbuild
+-t:Pack`, Visual Studio's Pack command, an explicit `-p:ExposeInternalsToTests=true` — because the
+assembly is already compiled by then and refusing is the only honest answer; and CI's Pack job extracts
+`lib/net10.0/LiteDocumentStore.dll` from the `.nupkg` it just produced and greps that assembly for
+each of the three friend names. `GenerateNuspec` is named alongside `Pack`
+deliberately: `Pack` runs *after* the targets that write the `.nupkg`, so hooking it alone would fail the
+build and still leave a leaky package on disk. **The gap:** the first two key on
+`ExposeInternalsToTests`, so an `InternalsVisibleTo` added *outside* that conditioned `ItemGroup` is
+invisible to both, and CI's grep only knows the three names it lists.
 
 The public surface consumers touch is `IDocumentStore` / `IDocumentOperations` / `IDocumentTransaction`,
 `DocumentStoreOptions(+Builder)` and `SynchronousMode`, the factories and the DI extension, plus the
@@ -102,9 +114,10 @@ value types those signatures take and return: `DocumentQuery<T>` and `QueryOpera
 four result types it returns (`TableInfo`, `ColumnInfo`, `IndexInfo`, `DatabaseStatistics`),
 `ITableNamingConvention` and `DefaultTableNamingConvention` (public so a custom convention can delegate
 to it), `DefaultConnectionFactory` (public for the same reason, and `sealed` for the same reason: a
-custom `IConnectionFactory` decorates it by holding one and forwarding, not by deriving from it), and
-the exceptions. `TableNameCollisionGuard`, the wrapper every store puts around the configured
-convention, stays `internal`.
+custom `IConnectionFactory` decorates it by holding one and forwarding, not by deriving from it), the
+exceptions, and `ConcurrencyConflictKind` — an enum rather than an exception, but the type a consumer
+has to name to read `ConcurrencyException.Kind`. `TableNameCollisionGuard`, the wrapper every store puts
+around the configured convention, stays `internal`.
 
 **Two bare-name collisions with other document stores are known and deliberately not renamed.**
 `IDocumentStore` collides with `Marten.IDocumentStore` and
@@ -156,11 +169,22 @@ The JSONB contract, enforced there, is load-bearing:
 - **Read:** `SELECT json(data)` — converts JSONB binary back to JSON text for deserialization. JSONB is
   binary; a raw `SELECT data` is not deserializable.
 - All *values* are parameterized. Identifiers and JSON paths **cannot** be, so they are interpolated —
-  and every one is validated inside `SqlGenerator`, the single boundary where that happens:
-  `ValidateIdentifier` restricts table/index/column names to `[A-Za-z_][A-Za-z0-9_]*` (bracket quoting
-  alone is not enough — a `]` closes it early), `ValidateJsonPath` enforces `$(.member|[index])*`, and
-  `ValidateColumnType` whitelists the five SQLite storage classes. Table names come from
-  `ITableNamingConvention`, which is pluggable, so they are validated like anything else.
+  and **`SqlGenerator` owns the rule that screens every one of them, which is not the same as being the
+  only place a check runs**: `ValidateIdentifier` restricts table/index/column names to
+  `[A-Za-z_][A-Za-z0-9_]*` (bracket quoting alone is not enough — a `]` closes it early),
+  `ValidateJsonPath` enforces `$(.member|[index])*`, and `ValidateColumnType` whitelists the five SQLite
+  storage classes. Table names come from `ITableNamingConvention`, which is pluggable, so they are
+  validated like anything else. Callers outside the generator run those same predicates rather than
+  reimplementing them — `TableNameCollisionGuard` and `RequireDerivableName` both go through
+  `SqlGenerator.IsValidIdentifier`, and `DocumentOperations` hoists `ValidateIdentifier` /
+  `ValidateColumnType` ahead of a short-circuit that would otherwise skip the generator. **Two sites do
+  not route through it, and both are deliberate:** `JsonPathResolver.ValidPathMember`
+  (`Serialization/JsonPathResolver.cs:160`) re-states the path-member rule in its own loop so the
+  rejection can be reported against the member that produced the name, which is why the `U+0000` ban has
+  to be maintained in two places; and `SchemaIntrospector.GetColumnsAsync`
+  (`Migrations/SchemaIntrospector.cs:95`) interpolates the table name into `PRAGMA table_xinfo(...)` with
+  its own double-quoting, since a `PRAGMA` argument is not a statement `SqlGenerator` emits. A new
+  interpolation site is a regression unless it calls one of the four predicates or is listed here.
 - **The JSON path is interpolated on purpose, not bound.** SQLite only matches a query against an
   expression index when the indexed expression appears literally, so binding the path would silently
   disable every index `CreateIndexAsync` creates. `SqlInjectionIntegrationTests` pins both halves.
@@ -749,8 +773,12 @@ NULL" to null, which is why `GetAsync` reads through `QueryFirstStringRowAsync` 
 and that ordering is what makes the contract independent of `T` — without it, a value-type `T` got a
 fabricated zero row from the collection readers, and the literal `null` surfaced as two different
 exceptions depending on whether `T` was a class or a struct. Neither shape is reachable through a store
-write. `DeserializeDocument`, the raw-SQL helper, deliberately keeps its own contract (`default` for
-null/empty/`null` JSON, `DocumentSerializationException` on malformed). → rationale#corrupt-rows
+write. `DeserializeDocument`, the raw-SQL helper, deliberately keeps its own contract (`default` for a
+null or empty string, `DocumentSerializationException` on malformed) — and deliberately keeps STJ's
+own answer to the literal `null`, which is `default` for a reference type or `Nullable<T>` and
+`DocumentSerializationException` for any other value type. It is the guard's absence that is the
+contract here, so the `T`-dependence the read paths were fixed to remove survives on this one member by
+design. → rationale#corrupt-rows
 
 **`CorruptDataException` does not derive from `DocumentSerializationException`** — catching one must not
 catch the other. A corrupt row carries `Id`, `TableName`, `TargetType` and `StoredTypeName`; well-formed
@@ -968,9 +996,15 @@ variant), and blob ids carry no secondary indexes, so listing is ordered by id a
 `BeginTransactionAsync()` returns an `IDocumentTransaction` (`Core/DocumentStoreTransaction.cs`) that
 holds **one rented connection** for its lifetime; `CommitAsync`/`RollbackAsync` finish it, and disposing
 without committing rolls back. `ExecuteInTransactionAsync(Func<IDocumentTransaction, Task>)` is the
-ergonomic wrapper. Every operation goes through `ActiveTransaction()` first, so a call made after
-commit/rollback/disposal throws `InvalidOperationException` — or `ObjectDisposedException` once
-disposed — instead of running on a connection the pool has already re-leased.
+ergonomic wrapper. Every operation **that touches the connection** goes through `ActiveTransaction()`
+first, so a call made after commit/rollback/disposal throws `InvalidOperationException` — or
+`ObjectDisposedException` once disposed — instead of running on a connection the pool has already
+re-leased. **The three connectionless members are the stated exception**: `GetTableName<T>()`,
+`SerializeDocument<T>` and `DeserializeDocument<T>`
+(`Core/DocumentStoreTransaction.cs:573`, `:576`, `:579`) delegate straight to `DocumentOperations` without
+the check, so they keep working after the transaction has ended — there is no connection for them to run
+on the wrong one of. That is a described behaviour, not a guarantee: whether the check should be added is
+filed as its own item, because adding it is a behaviour change.
 
 **The transaction object is the unit of work**: operations must be invoked **on it**, because operations
 invoked on the store rent their own connection and commit independently. That is the point of the design
@@ -1045,9 +1079,12 @@ the store already knows: `GetTableName<T>()` resolves the table through the stor
 convention, `SerializeDocument<T>(value)` returns the same UTF-8 JSON bytes the store writes (for
 binding to a raw `jsonb(@Data)`), and `DeserializeDocument<T>(json)` turns a raw `SELECT json(data)`
 column back into `T`. They need no connection, take no token, and are present on both the store and a
-transaction. `DeserializeDocument` returns `default` for null/empty JSON and throws
+transaction. `DeserializeDocument` returns `default` when the string itself is null or empty, and throws
 `DocumentSerializationException` on malformed input; `SerializeDocument` throws `ArgumentNullException`
-on a null value.
+on a null value. **The JSON literal `null` is a different case and depends on `T`** — measured, STJ
+returns `default` for a reference type or `Nullable<T>` and raises `JsonException` for any other value
+type, which `JsonHelper` wraps as `DocumentSerializationException`. On the store all three also throw
+`ObjectDisposedException` after disposal; on a transaction they do not (see Transactions).
 
 The same reasoning keeps teardown on `IDocumentOperations` rather than behind the hatch:
 `DeleteAllAsync<T>` (`DELETE FROM [t]`, returns rows deleted, table survives), `DropTableAsync<T>` and
