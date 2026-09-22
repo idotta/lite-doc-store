@@ -26,9 +26,13 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
         public Dictionary<string, object>? Extra { get; set; }
     }
 
-    // CreateIndexAsync derives idx_{table}_{path}, and the default convention folds the namespace
-    // into the table name, so the derived index names carry it too.
+    // The default convention folds the namespace into the table name, so the derived index
+    // names carry it too. They are resolved through the production derivation rather than
+    // re-spelled here, which would mean re-spelling the digest each one ends in.
     private static readonly string TableName = DefaultTableNamingConvention.Instance.GetTableName<Member>();
+
+    private static string DerivedName(string jsonPath) =>
+        DocumentOperations.GenerateIndexName(TableName, jsonPath);
 
     private IDocumentStore _store = null!;
 
@@ -63,7 +67,7 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
     {
         await _store.CreateIndexAsync<Member>(x => x.Email!);
 
-        var ddl = await IndexDdlAsync($"idx_{TableName}_email_address");
+        var ddl = await IndexDdlAsync(DerivedName("$.email_address"));
 
         Assert.NotNull(ddl);
         Assert.Contains("json_extract(data, '$.email_address')", ddl, StringComparison.Ordinal);
@@ -74,7 +78,7 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
     {
         await _store.CreateIndexAsync<Member>(x => x.City!);
 
-        var ddl = await IndexDdlAsync($"idx_{TableName}_city");
+        var ddl = await IndexDdlAsync(DerivedName("$.city"));
 
         Assert.NotNull(ddl);
         Assert.Contains("json_extract(data, '$.city')", ddl, StringComparison.Ordinal);
@@ -132,7 +136,7 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
             return string.Join(" | ", rows);
         });
 
-        Assert.Contains($"idx_{TableName}_email_address", plan, StringComparison.Ordinal);
+        Assert.Contains(DerivedName("$.email_address"), plan, StringComparison.Ordinal);
         Assert.Single(await _store.QueryAsync(query));
     }
 
@@ -141,7 +145,8 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
     {
         await _store.CreateCompositeIndexAsync<Member>([x => x.City!, x => x.Age]);
 
-        var ddl = await IndexDdlAsync($"idx_{TableName}_composite_city_age");
+        var ddl = await IndexDdlAsync(
+            DocumentOperations.GenerateCompositeIndexName(TableName, ["$.city", "$.age"]));
 
         Assert.NotNull(ddl);
         Assert.Contains("json_extract(data, '$.city')", ddl, StringComparison.Ordinal);
@@ -166,11 +171,11 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
     public async Task DropIndexAsync_DropsTheIndexCreateIndexAsyncCreated()
     {
         await _store.CreateIndexAsync<Member>(x => x.Email!);
-        Assert.NotNull(await IndexDdlAsync($"idx_{TableName}_email_address"));
+        Assert.NotNull(await IndexDdlAsync(DerivedName("$.email_address")));
 
         await _store.DropIndexAsync<Member>(x => x.Email!);
 
-        Assert.Null(await IndexDdlAsync($"idx_{TableName}_email_address"));
+        Assert.Null(await IndexDdlAsync(DerivedName("$.email_address")));
     }
 
     /// <summary>
@@ -251,7 +256,7 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
     {
         await _store.CreateIndexAsync<Member>("$.email_address", null, new IndexOptions { Unique = true });
 
-        var ddl = await IndexDdlAsync($"idx_{TableName}_email_address");
+        var ddl = await IndexDdlAsync(DerivedName("$.email_address"));
         Assert.NotNull(ddl);
         Assert.Contains("CREATE UNIQUE INDEX", ddl, StringComparison.Ordinal);
 
@@ -295,7 +300,8 @@ public sealed class SerializedNameDdlIntegrationTests : IAsyncLifetime
             ("Id", "m1")));
 
         Assert.Equal("Boston", projected);
-        Assert.NotNull(await IndexDdlAsync($"idx_{TableName}_city_col"));
+        Assert.NotNull(await IndexDdlAsync(
+            DocumentOperations.GenerateColumnIndexName(TableName, "city_col")));
     }
 
     [Fact]

@@ -198,10 +198,12 @@ without moving it.
 
 ### Derived index names and the widened grammar
 
-`GenerateIndexName` is `idx_{table}_{path}` with separators flattened and everything else kept, so
-`$.full-name` derives `idx_T_full-name` — which `ValidateIdentifier` rejects against an `indexName`
-no caller passed, the exact mis-attribution `RequireDerivableName` exists to prevent (it screened
-only `[`).
+`GenerateIndexName` is `idx_{table}_{fold}_{digest}`: the path's separators flattened and everything
+else kept, then the six-hex-character digest described under "Why a derived index name carries a
+digest". So `$.full-name` derives `idx_T_full-name_…` — which `ValidateIdentifier` rejects against an
+`indexName` no caller passed, the exact mis-attribution `RequireDerivableName` exists to prevent (it
+screened only `[`). The digest is no help here and cannot be: it separates names, it does not make the
+readable half an identifier.
 
 It now screens the derived name through `SqlGenerator.IsValidIdentifier`, the non-throwing form of
 the identifier rule, so that rule keeps one owner instead of being re-implemented in
@@ -223,8 +225,10 @@ which is no identifier. It is refused ahead of the indexer check, by testing the
 two-character sequence `."` — exact, because an unquoted member holds no `.` and a member starting
 with a `"` is always quoted — so `$."a[b"` is blamed on its quoted member rather than mis-blamed on
 an array indexer. An explicit index name works in every case, and that is the shipped answer, stated
-in the XML docs on the four string-path DDL overloads. Making the derivation injective remains its
-own job.
+in the XML docs on the four string-path DDL overloads and pinned by
+`JsonPathMemberRuleIntegrationTests.ATier2Path_HasNoDerivableIndexName`. Keeping both shapes refused
+once derived names gained a digest was the owner's decision rather than a leftover: the digest that
+separates colliding names leaves the readable half exactly as unspellable as it was.
 
 ---
 
@@ -324,8 +328,8 @@ type it was asked about.
 
 Putting it there rather than at the five sites makes the downstream blames *correct* instead of merely
 different: `RequireDerivableName` can honestly report the caller's path, because with a valid table name
-`idx_` joined to two identifiers by underscores is an identifier, so only the path can break a derived
-index name. Every operation passes the guard (`DocumentStore` wraps the configured convention in it and
+`idx_` joined to two identifiers and a hex digest by underscores is an identifier, so only the path can
+break a derived index name. Every operation passes the guard (`DocumentStore` wraps the configured convention in it and
 both `DocumentOperations` and `DocumentStoreTransaction` resolve names through the wrapper), so the
 refusal is not DDL-specific — the store never opens a table under a name it cannot write into a
 statement.
@@ -1336,7 +1340,8 @@ resolves.
 ### Divergence consequence
 
 On a store whose names diverge, the *derived index name* changes with the path
-(`idx_Customer_Email` → `idx_Customer_email_address`). An existing database keeps its old, vacuous index
+(`idx_Customer_Email_…` → `idx_Customer_email_address_…`, digest included — the path is a digest field
+too, so both halves move). An existing database keeps its old, vacuous index
 and `DropIndexAsync<T>` no longer names it — dropping it is a one-line `ExecuteRawAsync`.
 
 ---
@@ -1534,12 +1539,12 @@ an `ExecuteRawAsync` job.
 
 ### Why the name pre-check compares definitions instead of skipping
 
-This is `TableNameCollisionGuard`'s precedent applied to index names, and it exists because the derivation
-is not injective and nothing else made a collision visible:
+This is `TableNameCollisionGuard`'s precedent applied to index names, and it arrived because the derivation
+was then a bare fold and nothing else made a collision visible:
 
-- `GenerateIndexName` folds `$.A.B` and `$.A_B` onto one name.
-- `GenerateCompositeIndexName` folds `["$.A","$.B"]` and `["$.A.B"]` onto one.
-- `AddVirtualColumnAsync`'s `idx_{table}_{columnName}` collides with `CreateIndexAsync`'s derived name for
+- `GenerateIndexName` folded `$.A.B` and `$.A_B` onto one name.
+- `GenerateCompositeIndexName` folded `["$.A","$.B"]` and `["$.A.B"]` onto one.
+- `AddVirtualColumnAsync`'s `idx_{table}_{columnName}` collided with `CreateIndexAsync`'s derived name for
   the same member.
 
 That third one is the measured cost, because **an index on the generated column does not serve a query on
@@ -1547,6 +1552,14 @@ the raw expression**: with `idx_T_Email` over `[Email]`, `WHERE json_extract(dat
 `SCAN T`, while the expression index that call was silently skipped would have given
 `SEARCH T USING INDEX … (<expr>=?)`. So the pre-check turned a name collision into a permanent table scan,
 reported by one Debug line.
+
+Those three families no longer collide — the digest below separates them, and that measurement is why it
+was worth adding rather than merely documenting. **The pre-check is not retired by it.** Three things can
+still put a different definition under a name a derivation produces, and the digest reaches none of them:
+an explicitly passed `indexName`, which carries no digest and can name anything; an index a consumer's
+`IMigration` or raw SQL created; and the residual 24-bit digest collision. Two tests pin the first case
+directly — `IndexNameCollisionIntegrationTests.CreateIndexAsync_WhenAnExplicitNameHoldsADifferentDefinition_Throws`
+and `…CreateCompositeIndexAsync_WhenAnExplicitNameHoldsADifferentDefinition_Throws`.
 
 ### Why the textual comparison is exact
 
@@ -1591,11 +1604,63 @@ The post-create check still runs, because the preflight only closes the *pre-exi
 connection can still claim the name in between, and closing that residual would mean wrapping the whole
 operation in a transaction.
 
-### What the pre-check does not close
+### Why a derived index name carries a digest
 
-`DropIndexAsync<T>(x => x.A.B)` still derives `idx_T_A_B` and drops whatever holds that name, so a
-collision can still drop the wrong index. No check at a creation site can catch that; closing it needs an
-injective scheme (a hash suffix, `idx_T_A_B_7f3c1a`) and is its own job.
+The pre-check closed the creation sites and could not close the drop: `DropIndexAsync<T>(x => x.A.B)` is
+handed a path, derives a name and drops whatever holds it, so a fold collision silently dropped the wrong
+index and no check at a creation site could see it coming. The close is distinct names, in the shape this
+file named while it was still future work — a hash suffix, `idx_T_A_B_7f3c1a`.
+
+**What it cost while it was open** is the measurement above, under "Why the name pre-check compares
+definitions instead of skipping": `SCAN T` where a `SEARCH T USING INDEX … (<expr>=?)` was asked for,
+because a generated column's index and the expression index for the same member folded onto one name and
+one of the two creations was silently skipped. That was the loud half. The drop was the quiet one.
+
+**The input encoding.** `DocumentOperations.IndexNameDigest` is the one owner — all three derivations call
+it and no site builds a name inline — and digests `kind \0 table \0 path[ \0 path…]` as UTF-8, taking the
+first three bytes of SHA-256 as six lowercase hex characters. `U+0000` is the delimiter because it is the
+one character no field can carry: `SqlGenerator.MemberFault` refuses it in a path permanently, and
+`ValidateIdentifier` admits only `[A-Za-z0-9_]` in a name. So no input can forge a field boundary. The
+boundary it actually buys is a column index's: a path carries its own leading `$.` and a table name can
+hold no `$`, so those fields already self-delimit, while table `A` with column `_B` and table `A_` with
+column `B` read alike (`idx_A__B`) and would digest the same bytes if the fields ran together.
+`IndexNameDerivationTests.GenerateColumnIndexName_KeepsTheTableAndColumnAsSeparateDigestFields` is that
+pair. `kind` is belt-and-braces and is reported that way rather than claimed as load-bearing: measured,
+folding all three kind literals to one leaves both suites green, since a validated path always carries
+`$.` and an identifier can carry no `$`, so the path slot alone already separates the kinds.
+
+**Collision-resistant, not injective**, the same wording the table-name fold earns: three bytes is 24
+bits, which is not a proof. That is exactly why the pre-check stays, and why the exception message claims
+no impossibility.
+
+Rejected alternatives:
+
+- **A genuinely injective, self-delimiting encoding** — length-prefixed segments, `idx_T_1A1B`, the same
+  shape "Why the fold is not injective" rejects for the table fold. It is not a name anyone reads in a SQL
+  client, and a readable schema is the point of a store that stays open to raw SQL. This is also the reason
+  the older prose gave for not closing the collision at all; the digest takes the readability and gives up
+  the proof, which is the trade the table fold already makes.
+- **Rewriting the path's separators so the fold stops colliding** — rejected when the widened grammar was
+  screened, under "Derived index names and the widened grammar": it maps more distinct paths onto one
+  spelling, so it adds collisions rather than removing them.
+- **A definition comparison on the drop path**, to catch a mis-aimed drop the way the creation sites catch
+  a mis-aimed create. Moot once the names are distinct, and it would have to guess which definition the
+  caller meant from a path alone.
+- **More digest bytes.** Six hex characters is already longer than most readable halves; the pre-check
+  covers the residual, and widening the suffix would rename every index again for a probability nobody
+  measured a failure at.
+- **Dropping the readable half for a pure hash** (`idx_T_7f3c1a…`). Same objection as the injective
+  encoding: the name is what a DBA reads in `EXPLAIN QUERY PLAN`.
+
+**What it does not close.** The two shapes with no derivable name — a widened member (`$.full-name`) and
+a Tier 2 quoted member (`$."a.b"`) — are still refused and still need an explicit `indexName`, because the
+digest separates names and the readable half must still be an identifier. And every auto-derived name
+changes, which is a breaking change on every existing database: an upgraded database keeps its old-named
+indexes, `DropIndexAsync<T>(expression)` no longer names them and — both drop overloads being
+`IF EXISTS` — succeeds while dropping nothing, and `CreateIndexAsync<T>(expression)` derives a new
+name that the per-name pre-check cannot match against the old-named index over the same expression, so the
+database silently ends up carrying two indexes over one path and pays both write costs. README carries the
+upgrade note, with the `sqlite_master` query that lists the old names.
 
 ### Why the projecting DDL rejects `$`
 
@@ -1705,7 +1770,8 @@ generator's own `tableName` check stays where it is as the generator's own contr
 reachable through the typed surface.
 
 Out of scope for that unit, deliberately: the `tableName` check above (closed later, below), the
-index-definition preflight, the derived-index-name scheme (still non-injective, still its own job), and
+index-definition preflight, the derived-index-name scheme (a bare fold then, and out of scope then; the
+digest that separates its collisions came later — "Why a derived index name carries a digest"), and
 any widening of what `ValidateColumnType` accepts — the five SQLite storage classes stay as they are.
 
 ---
@@ -1725,8 +1791,9 @@ branches were wrong in their own way:
 
 The fix is not a fourth hoist: `TableNameCollisionGuard` screens the convention-produced name, so the
 call cannot reach the column check at all and the generator's own `tableName` check becomes unreachable
-through the typed surface. The inline `idx_{tableName}_{columnName}` derivation is covered by the same
-screening — both halves are validated before it is built, so it cannot produce a non-identifier name.
+through the typed surface. `GenerateColumnIndexName`'s `idx_{tableName}_{columnName}_{digest}` is covered
+by the same screening — both readable halves are validated before the name is built and the digest is
+hex, so it cannot produce a non-identifier name.
 `ParameterAttributionIntegrationTests` pins all three rows. Reverting the screening turns the first and
 third back into the `ArgumentException` above, and the middle one back into the **silent no-op** — which
 is why that row needs a test of its own: no other fact in the suite exercises the existing-column branch,

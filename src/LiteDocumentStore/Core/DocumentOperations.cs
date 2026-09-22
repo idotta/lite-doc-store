@@ -4,6 +4,8 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using LiteDocumentStore.Exceptions;
 using Microsoft.Data.Sqlite;
@@ -1040,7 +1042,7 @@ internal readonly struct DocumentOperations
         // that makes "refuse before any work" true by construction instead of by the
         // short-circuit happening to skip the ALTER: the call now fails identically whether or
         // not the column is already there, and in both cases with nothing written.
-        var indexName = createIndex ? $"idx_{tableName}_{columnName}" : null;
+        var indexName = createIndex ? GenerateColumnIndexName(tableName, columnName) : null;
         var expectedIndexSql = indexName is null
             ? null
             : SqlGenerator.GenerateCreateColumnIndexSql(tableName, indexName, columnName, ifNotExists: false);
@@ -1905,14 +1907,111 @@ internal readonly struct DocumentOperations
     private string ExtractJsonPath<T>(Expression<Func<T, object>> expression, string paramName) =>
         JsonPathResolver.Resolve(expression, _serializerOptions, paramName);
 
+    /// <summary>The digest kind for a single-path expression index.</summary>
+    private const string SingleIndexKind = "single";
+
+    /// <summary>The digest kind for a composite expression index.</summary>
+    private const string CompositeIndexKind = "composite";
+
+    /// <summary>The digest kind for the index on a generated column.</summary>
+    private const string ColumnIndexKind = "column";
+
     /// <summary>
-    /// Generates an index name from table name and JSON path.
+    /// Generates the auto-derived name of a single-path expression index.
     /// </summary>
-    private static string GenerateIndexName(string tableName, string jsonPath)
+    /// <remarks>
+    /// <c>idx_{table}_{flattened path}_{digest}</c>. See <see cref="IndexNameDigest"/> for what
+    /// the digest is for. Internal rather than private so a test can resolve the name a store
+    /// will derive instead of re-spelling the digest by hand, which would prove nothing.
+    /// </remarks>
+    internal static string GenerateIndexName(string tableName, string jsonPath) =>
+        $"idx_{tableName}_{FlattenPath(jsonPath)}_{IndexNameDigest(SingleIndexKind, tableName, [jsonPath])}";
+
+    /// <summary>
+    /// Generates the auto-derived name of the index <see cref="AddVirtualColumnAsync{T}(string, string, bool, string, CancellationToken)"/>
+    /// puts on a generated column.
+    /// </summary>
+    /// <remarks>
+    /// The column name takes the path slot in the digest input. The two readable halves coincide
+    /// whenever the column is named after the member — and they must stay separate names, because
+    /// an index on the generated column does not serve a query on the raw expression. What
+    /// separates the digests today is that a path carries its leading <c>$.</c> and an identifier
+    /// cannot; the <c>column</c> kind states the distinction instead of leaving it to that, so it
+    /// survives a change to the readable fold or to what occupies the path slot. Measured: with
+    /// the kind folded to <c>single</c> every test in the unit still passes, so the field is
+    /// belt-and-braces rather than load-bearing, and is reported that way.
+    /// </remarks>
+    internal static string GenerateColumnIndexName(string tableName, string columnName) =>
+        $"idx_{tableName}_{columnName}_{IndexNameDigest(ColumnIndexKind, tableName, [columnName])}";
+
+    /// <summary>
+    /// Generates the auto-derived name of a composite expression index.
+    /// </summary>
+    /// <remarks>
+    /// The readable half joins every path's flattening, which is exactly what makes it fold
+    /// <c>["$.A","$.B"]</c> onto the same spelling as <c>["$.A.B"]</c>; the digest is taken over
+    /// the paths as separate <c>U+0000</c>-delimited fields, so the two are told apart there.
+    /// </remarks>
+    internal static string GenerateCompositeIndexName(string tableName, IReadOnlyList<string> jsonPaths) =>
+        $"idx_{tableName}_composite_{string.Join("_", jsonPaths.Select(FlattenPath))}_" +
+        $"{IndexNameDigest(CompositeIndexKind, tableName, jsonPaths)}";
+
+    /// <summary>
+    /// Flattens a canonical JSON path into the readable half of a derived index name.
+    /// </summary>
+    /// <remarks>
+    /// Only a <em>leading</em> <c>$.</c> is stripped: a global replace folds <c>$.a$.b</c> and
+    /// <c>$.ab</c> alike, and while the digest separates them anyway, the readable half should not
+    /// lie about what it came from. After that strip every remaining <c>.</c> is a segment
+    /// separator — a member containing one has to be quoted and <see cref="RequireDerivableName"/>
+    /// refuses a quoted member outright — so folding them to <c>_</c> stays correct.
+    /// </remarks>
+    private static string FlattenPath(string jsonPath)
     {
-        // Remove special characters and convert to valid index name
-        var pathPart = jsonPath.Replace("$.", "").Replace(".", "_");
-        return $"idx_{tableName}_{pathPart}";
+        var body = jsonPath.StartsWith("$.", StringComparison.Ordinal) ? jsonPath[2..] : jsonPath;
+        return body.Replace('.', '_');
+    }
+
+    /// <summary>
+    /// The digest suffix that separates derived index names whose readable halves collide.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The readable fold maps distinct inputs onto one name — <c>$.A.B</c> and <c>$.A_B</c>, a
+    /// composite of <c>["$.A","$.B"]</c> and a single <c>$.A.B</c>, a generated column's index and
+    /// the expression index for the same member. A creation-time collision is caught by
+    /// <see cref="EnsureIndexDefinitionMatches"/>, but <see cref="DropIndexAsync{T}"/> cannot be:
+    /// it is handed a path, derives a name and drops whatever holds it. Distinct names are the
+    /// only close.
+    /// </para>
+    /// <para>
+    /// The digest input is <c>kind \0 table \0 path[ \0 path…]</c>, UTF-8. <c>U+0000</c> is the
+    /// one character a validated path can never carry (<c>SqlGenerator.MemberFault</c> refuses it
+    /// permanently) and no identifier can either, so it is the one delimiter no input can forge;
+    /// <c>kind</c> names which derivation the fields came from rather than relying on their shapes
+    /// to differ. The boundary the delimiter actually buys is a column index's: a path carries
+    /// its own leading <c>$.</c> and a table name cannot hold a <c>$</c>, so those fields already
+    /// self-delimit, while table <c>A</c> with column <c>_B</c> and table <c>A_</c> with column
+    /// <c>B</c> read alike and would digest alike if the fields ran together.
+    /// </para>
+    /// <para>
+    /// Three bytes of SHA-256 as six lowercase hex characters: collision-resistant, not injective —
+    /// 24 bits is not a proof, the same wording the table-name fold earns. Hex is always
+    /// identifier-safe, so the suffix can never be what makes a derived name fail
+    /// <see cref="RequireDerivableName"/>'s screen.
+    /// </para>
+    /// </remarks>
+    private static string IndexNameDigest(string kind, string tableName, IReadOnlyList<string> paths)
+    {
+        var input = new StringBuilder(kind).Append('\0').Append(tableName);
+        foreach (var path in paths)
+        {
+            input.Append('\0').Append(path);
+        }
+
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(Encoding.UTF8.GetBytes(input.ToString()), hash);
+        return Convert.ToHexStringLower(hash[..3]);
     }
 
     /// <summary>
@@ -2004,13 +2103,19 @@ internal readonly struct DocumentOperations
     /// one the caller asked for.
     /// </summary>
     /// <remarks>
-    /// The derived-name scheme is not injective — <c>$.A.B</c> and <c>$.A_B</c> flatten alike,
-    /// a composite of <c>["$.A","$.B"]</c> collides with a single <c>$.A.B</c>, and a virtual
-    /// column's <c>idx_{table}_{column}</c> collides with the expression index for the same
-    /// member — so the <c>sqlite_master</c> pre-check would otherwise turn a collision into a
-    /// silently skipped creation, leaving every query over the losing path on a table scan.
-    /// Making the scheme injective would cost a name nobody can read in a SQL client, so the
-    /// residual collision is made loud instead, the way
+    /// The readable fold maps distinct inputs onto one name — <c>$.A.B</c> and <c>$.A_B</c>
+    /// flatten alike, a composite of <c>["$.A","$.B"]</c> collides with a single <c>$.A.B</c>, and
+    /// a generated column's index collides with the expression index for the same member — so the
+    /// <c>sqlite_master</c> pre-check would otherwise turn a collision into a silently skipped
+    /// creation, leaving every query over the losing path on a table scan. That is why a derived
+    /// name carries <see cref="IndexNameDigest"/>.
+    ///
+    /// The digest does not retire this check. A caller-supplied <paramref name="indexName"/>
+    /// carries no digest and can name anything, including a name another call already derived,
+    /// and so can an index created by raw SQL or by a consumer's own <c>IMigration</c>; and two
+    /// derived names can still collide in the residual 24 bits, which
+    /// <see cref="IndexNameDigest"/> is explicit about being no proof against. A name
+    /// held by a different definition is refused rather than silently adopted, the way
     /// <c>TableNameCollisionGuard</c> does for table names.
     /// </remarks>
     /// <param name="indexName">The index name both definitions claim</param>
@@ -2030,8 +2135,9 @@ internal readonly struct DocumentOperations
             $"Index '{indexName}' already exists with a different definition. " +
             $"Existing: {storedSql ?? "<an internal index with no CREATE statement>"}. " +
             $"Requested: {expectedSql}. " +
-            "Two different JSON paths can derive the same index name, and changing IndexOptions " +
-            "does not change the name either; drop the existing index before creating this one.");
+            "An explicitly passed index name, or one an IMigration or raw SQL created, can already " +
+            "be held by a different definition, and changing IndexOptions does not change a derived " +
+            "name either; drop the existing index before creating this one.");
     }
 
     /// <summary>
@@ -2041,9 +2147,10 @@ internal readonly struct DocumentOperations
     /// The flattening keeps a path's characters verbatim apart from its separators, so an
     /// indexer segment carries its brackets into the name and <c>ValidateIdentifier</c> rejects
     /// it — reported against the index name the caller never passed. Rewriting the brackets is
-    /// not the fix: the scheme already maps distinct paths onto one name, and the
-    /// <c>sqlite_master</c> pre-check turns a collision into a silently skipped creation, so
-    /// widening it trades a loud error for a quiet one.
+    /// not the fix: the readable half would then map distinct paths onto one spelling for a
+    /// second reason, and a name that is only readable by accident is worse than an explicit one.
+    /// The digest suffix does not rescue these shapes either — it separates names, it does not
+    /// make the readable half an identifier.
     ///
     /// The indexer is not the only shape: the member grammar admits any character but an
     /// apostrophe and U+0000, which is far wider than a SQL identifier, so a kebab-cased
@@ -2051,10 +2158,11 @@ internal readonly struct DocumentOperations
     /// expression-derived path cannot carry an indexer but can carry either of those, which is why
     /// all three shapes are screened here.
     ///
-    /// Blaming <c>paramName</c> — the caller's path parameter — is accurate because the other half
-    /// of the derived name cannot be the offender: <c>TableNameCollisionGuard</c> has already
-    /// refused a table name that is not an identifier, and <c>idx_</c> joined to two identifiers
-    /// with an underscore is one, so only the path can break the derived name.
+    /// Blaming <c>paramName</c> — the caller's path parameter — is accurate because no other part
+    /// of the derived name can be the offender: <c>TableNameCollisionGuard</c> has already refused
+    /// a table name that is not an identifier, the digest is always six hex characters, and
+    /// <c>idx_</c> joined to those with underscores is an identifier, so only the path can break
+    /// the derived name.
     /// </remarks>
     private static void RequireDerivableName(string tableName, string jsonPath, string paramName)
     {
@@ -2085,9 +2193,10 @@ internal readonly struct DocumentOperations
         // passed - the exact mis-attribution this helper exists to prevent. Screened through
         // SqlGenerator so the identifier rule keeps one owner rather than being re-implemented here.
         //
-        // The single-path derivation is the probe even for a composite index, because both
-        // derivations apply the same transform to each path ("$." stripped, '.' folded to '_'), so a
-        // character one rejects the other rejects too.
+        // The single-path derivation is the probe even for a composite index. Both derivations
+        // build their readable half by applying FlattenPath to each path, and the digest suffix is
+        // always six hex characters and so always identifier-safe, so only the readable half can
+        // fail this screen — and a character it rejects for one path it rejects for the other.
         if (!SqlGenerator.IsValidIdentifier(GenerateIndexName(tableName, jsonPath)))
         {
             throw new ArgumentException(
@@ -2098,12 +2207,4 @@ internal readonly struct DocumentOperations
         }
     }
 
-    /// <summary>
-    /// Generates a composite index name from table name and multiple JSON paths.
-    /// </summary>
-    private static string GenerateCompositeIndexName(string tableName, IEnumerable<string> jsonPaths)
-    {
-        var pathsPart = string.Join("_", jsonPaths.Select(p => p.Replace("$.", "").Replace(".", "_")));
-        return $"idx_{tableName}_composite_{pathsPart}";
-    }
 }

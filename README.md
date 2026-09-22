@@ -21,6 +21,9 @@ dotnet add package LiteDocumentStore
 this, and every connection is checked as it opens, so an older one fails fast with
 `UnsupportedSqliteVersionException` instead of `no such function: jsonb`.
 
+**Upgrading from 0.4.0?** [CHANGELOG.md](CHANGELOG.md) lists what breaks and what to do about each
+one — several of the breaks are silent.
+
 ## Quick start
 
 Register the store through dependency injection and resolve `IDocumentStore`:
@@ -218,7 +221,36 @@ write workloads.
 
   An existing database keeps the tables it has, so switching to the folded default means renaming
   them (or plugging the convention above). The same applies to raw SQL inside your own `IMigration`
-  implementations and to auto-derived index names, which are `idx_{table}_{path}`.
+  implementations, and to auto-derived index names, which embed the table name (next bullet).
+- **Index names.** An index created without an explicit `indexName` is called
+  `idx_{table}_{path}_{digest}`: the path with its leading `$.` dropped and its remaining `.`
+  separators folded to `_`, then six lowercase hex characters — the first three bytes of a SHA-256
+  over the derivation kind, the table name and the paths, `U+0000`-delimited. So
+  `CreateIndexAsync<Customer>(x => x.Email)` derives `idx_Customer_Email_3cf60a`, while the index
+  `AddVirtualColumnAsync<Customer>("$.Email", "Email", …)` puts on its generated column is
+  `idx_Customer_Email_4ee840`: the readable halves are one name and only the digest tells the two
+  apart — which matters, because an index on the generated column does not serve a query on the
+  raw expression. The digest is collision-resistant rather than injective (24 bits is not a proof),
+  so a name already held by a *different* definition is still refused rather than silently adopted.
+  A path whose readable half is no SQL identifier — `$.Tags[0]`, `$.full-name`, `$."a.b"` — has no
+  derived name at all and needs an explicit one.
+
+  The digest is new in 0.5.0, so **every auto-derived index name changes** on an existing database:
+  `idx_Customer_Email` is now `idx_Customer_Email_3cf60a`. Two consequences, both silent:
+
+  - `DropIndexAsync<T>(x => x.Email)` derives the *new* name, which nothing in an upgraded database
+    holds. Both drop overloads are `IF EXISTS`, so the call **succeeds without dropping anything**.
+    Drop the old index through the string overload instead: `DropIndexAsync("idx_Customer_Email")`.
+  - `CreateIndexAsync<T>(x => x.Email)` also derives the new name, and the `sqlite_master`
+    definition pre-check compares *per name*, so it neither finds nor refuses the old-named index
+    over the same expression. The new index is created beside it and the database ends up carrying
+    **two indexes over one path**, paying the write cost of both on every insert and update.
+
+  So list the old names once and drop each explicitly before re-creating anything:
+
+  ```sql
+  SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx\_%' ESCAPE '\';
+  ```
 - **Safety.** All *values* are parameterized. SQL identifiers and JSON paths cannot be bound, so
   they are interpolated — and validated first, in one place: table/index/column names must match
   `[A-Za-z_][A-Za-z0-9_]*`, JSON paths must match `$(.member|[index])*`, and column types come from

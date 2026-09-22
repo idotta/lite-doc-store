@@ -156,9 +156,11 @@ public sealed class KebabCasePathIntegrationTests : IAsyncLifetime
 
     // --- Auto-naming is refused against the path, not the derived name -------------------------
     //
-    // The path grammar is wider than a SQL identifier, so "$.full-name" derives "idx_T_full-name",
-    // which ValidateIdentifier rejects — against an indexName the caller never passed. That is the
-    // mis-attribution RequireDerivableName exists to prevent, and widening the grammar reopened it.
+    // The path grammar is wider than a SQL identifier, so "$.full-name" derives a readable half
+    // of "idx_T_full-name", which ValidateIdentifier rejects — against an indexName the caller
+    // never passed. That is the mis-attribution RequireDerivableName exists to prevent, and
+    // widening the grammar reopened it. The digest suffix does not rescue the shape: it separates
+    // names, it does not make the readable half an identifier.
 
     [Fact]
     public async Task AutoNamingAKebabCasedPath_IsRefusedAgainstThePath()
@@ -198,7 +200,7 @@ public sealed class KebabCasePathIntegrationTests : IAsyncLifetime
         var sql = await _store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(
             "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = @Name",
             ct,
-            ("Name", $"idx_{TableName}_age")));
+            ("Name", DocumentOperations.GenerateIndexName(TableName, "$.age"))));
         Assert.Contains("json_extract(data, '$.age')", sql, StringComparison.Ordinal);
     }
 
@@ -219,13 +221,18 @@ public sealed class KebabCasePathIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task DroppingAnIdentifierShapedPathByExpression_StillWorks()
     {
-        await _store.CreateIndexAsync<Person>(x => x.Age);
-        await _store.DropIndexAsync<Person>(x => x.Age);
+        var derived = DocumentOperations.GenerateIndexName(TableName, "$.age");
 
-        var count = await _store.ExecuteRawAsync((connection, ct) => connection.QueryFirstStringAsync(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = @Name",
-            ct,
-            ("Name", $"idx_{TableName}_age")));
-        Assert.Equal("0", count);
+        Task<string?> CountAsync() => _store.ExecuteRawAsync((connection, ct) =>
+            connection.QueryFirstStringAsync(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = @Name",
+                ct,
+                ("Name", derived)));
+
+        await _store.CreateIndexAsync<Person>(x => x.Age);
+        Assert.Equal("1", await CountAsync());
+
+        await _store.DropIndexAsync<Person>(x => x.Age);
+        Assert.Equal("0", await CountAsync());
     }
 }
