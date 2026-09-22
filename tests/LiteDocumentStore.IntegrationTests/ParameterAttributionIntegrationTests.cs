@@ -167,7 +167,7 @@ public sealed class ParameterAttributionIntegrationTests : IAsyncLifetime
         var count = await _store.ExecuteRawAsync((connection, ct) => connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = @Name",
             ct,
-            ("Name", $"idx_{_store.GetTableName<Gadget>()}_Name")));
+            ("Name", DocumentOperations.GenerateIndexName(_store.GetTableName<Gadget>(), "$.Name"))));
 
         Assert.Equal(1, count);
     }

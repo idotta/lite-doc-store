@@ -16,8 +16,9 @@ public class BasicOpsIntegrationTests
 
     private static readonly string TableName = DefaultTableNamingConvention.Instance.GetTableName<BasicDoc>();
 
-    // CreateIndexAsync auto-names an index idx_{table}_{json path with the leading "$." stripped}.
-    private static readonly string AutoIndexName = $"idx_{TableName}_Email";
+    // CreateIndexAsync auto-names an index idx_{table}_{flattened path}_{digest}; resolved
+    // through the production derivation rather than re-spelled, digest and all.
+    private static readonly string AutoIndexName = DocumentOperations.GenerateIndexName(TableName, "$.Email");
 
     private readonly LiteDocumentStoreTestFixture _fixture;
 

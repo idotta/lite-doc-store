@@ -618,10 +618,12 @@ public class DocumentStoreIntegrationTests : IDisposable
         // Act
         await _store.CreateIndexAsync<Person>(p => p.Name);
 
-        // Assert - the derived name is idx_{table}_{path}; matched exactly, since LIKE reads the
-        // table name's underscores as wildcards.
+        // Assert - the derived name is idx_{table}_{path}_{digest}, resolved through the
+        // production derivation rather than re-spelled here; matched exactly, since LIKE reads
+        // the table name's underscores as wildcards.
+        var derived = DocumentOperations.GenerateIndexName(_store.GetTableName<Person>(), "$.Name");
         var checkSql = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' " +
-            $"AND name = 'idx_{_store.GetTableName<Person>()}_Name'";
+            $"AND name = '{derived}'";
         var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }
@@ -692,10 +694,13 @@ public class DocumentStoreIntegrationTests : IDisposable
                 p => p.Email
             });
 
-        // Assert - the derived name joins both paths; matched exactly, since LIKE reads the table
-        // name's underscores as wildcards.
+        // Assert - the derived name joins both paths and ends in the digest over them, resolved
+        // through the production derivation; matched exactly, since LIKE reads the table name's
+        // underscores as wildcards.
+        var derived = DocumentOperations.GenerateCompositeIndexName(
+            _store.GetTableName<Person>(), ["$.Name", "$.Email"]);
         var checkSql = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' " +
-            $"AND name = 'idx_{_store.GetTableName<Person>()}_composite_Name_Email'";
+            $"AND name = '{derived}'";
         var count = await QueryIntAsync(checkSql);
         Assert.Equal(1, count);
     }

@@ -315,19 +315,22 @@ stated in the XML docs on the four string-path DDL overloads and pinned by
 widened member (`$.full-name`) already gets and for the same reason. `RequireDerivableName` gained one
 check for it, ahead of the indexer check, testing for the two-character sequence `."` — an exact test,
 since an unquoted member holds no `.` and a member starting with `"` is always quoted — so `$."a[b"`
-is refused as a quoted member rather than mis-blamed on an array indexer. Making the derivation
-injective is still its own job.
+is refused as a quoted member rather than mis-blamed on an array indexer. The digest every derived
+name now carries does not rescue the shape (Index DDL): it separates names, it does not make the
+readable half an identifier. Requiring an explicit name here is the shipped decision, not a residue.
 
-**Derived index names must be screened, at four sites.** `GenerateIndexName` is `idx_{table}_{path}`
-with separators flattened and everything else kept, so a widened member (`$.full-name` →
-`idx_T_full-name`) or an array index (`$.Tags[0]` → `idx_T_Tags[0]`) produces a name
-`ValidateIdentifier` rejects — against an `indexName` no caller passed. A Tier 2 path carries a `"`
+**Derived index names must be screened, at four sites.** `GenerateIndexName` is
+`idx_{table}_{fold}_{digest}` — the path's separators flattened and everything else kept, then the
+digest described under Index DDL — so a widened member (`$.full-name` → `idx_T_full-name_…`) or an
+array index (`$.Tags[0]` → `idx_T_Tags[0]_…`) produces a name `ValidateIdentifier` rejects — against
+an `indexName` no caller passed. A Tier 2 path carries a `"`
 into the name and is refused ahead of both. `RequireDerivableName` screens
-the derived name through **`SqlGenerator.IsValidIdentifier`**, the non-throwing form of the identifier
+**the whole derived name**, digest included, through **`SqlGenerator.IsValidIdentifier`**, the
+non-throwing form of the identifier
 rule, so that rule keeps one owner. The four sites are `CreateIndexAsync`, `CreateCompositeIndexAsync`,
 the composite loop, and `DropIndexAsync<T>(Expression)` (which reports against `expression`, its only
-parameter). An explicit index name works in every case. Making the scheme injective is still its own
-job. → rationale#sql-paths
+parameter). An explicit index name works in every case. Only the readable half can ever fail that
+screen, because the digest is always six hex characters. → rationale#sql-paths
 
 ### Table naming
 
@@ -363,7 +366,7 @@ has no caller parameter behind it (the caller passed a type), so an `ArgumentExc
 invent one, which is the mis-attribution class this rule exists to end. Only a custom convention can
 reach it — the default fold throws `NotSupportedException` instead of producing such a name. Closing it
 here makes two downstream blames correct rather than patching them: `RequireDerivableName` can honestly
-blame the caller's path, since `idx_` joined to two identifiers is an identifier, and no generator's
+blame the caller's path, since `idx_` joined to two identifiers and a hex digest is an identifier, and no generator's
 `tableName` check is reachable through the typed surface any more. The break reaches
 `GetTableName<T>()` too, which handed such a name back silently and now throws, so a consumer who was
 bracket-quoting it themselves inside `ExecuteRawAsync` loses that. → rationale#table-naming
@@ -930,8 +933,12 @@ mixed per-column direction stays raw SQL.
 **The `sqlite_master` name pre-check compares definitions rather than skipping blindly.** Identical
 text — the ordinary idempotent re-create — is a Debug-logged skip; a difference is an
 `InvalidOperationException` naming the index and **both** definitions. This is
-`TableNameCollisionGuard`'s precedent applied to index names, and it exists because the derivation is
-not injective: the worst collision silently downgraded an expression index to a permanent table scan.
+`TableNameCollisionGuard`'s precedent applied to index names, and it arrived because the derivation
+was then a bare fold: the worst collision silently downgraded an expression index to a permanent
+table scan. **The digest below has not retired it.** It still guards an explicitly passed
+`indexName`, a name a consumer's `IMigration` or raw SQL created, and the residual digest collision —
+pinned by `IndexNameCollisionIntegrationTests.CreateIndexAsync_WhenAnExplicitNameHoldsADifferentDefinition_Throws`
+and its `CreateCompositeIndexAsync` sibling.
 
 The comparison is exact because **one generator produces both sides** — the three index generators take
 an `ifNotExists` flag and the comparison form is generated with it false, since SQLite reconstructs the
@@ -950,9 +957,30 @@ construction. The post-create check still runs.
 **Deliberate break:** re-creating an index under a name that already exists with *different*
 `IndexOptions` used to no-op, and `IndexOptionsIntegrationTests` pinned that no-op; it now throws, and
 that test asserts the throw instead. `DropIndexAsync` first is still how an index's options are
-changed. **What this does not close:** `DropIndexAsync<T>(x => x.A.B)` still drops whatever holds the
-derived name, so a collision can still drop the wrong index — that needs an injective scheme and is its
-own job.
+changed.
+
+**An auto-derived index name carries a digest: `idx_{table}_{fold}_{digest}`.** The readable fold
+collides — `$.A.B` and `$.A_B` flatten alike, a composite of `["$.A","$.B"]` onto the same spelling
+as `["$.A.B"]`, a generated column's index onto the expression index for the same member — and
+`DropIndexAsync<T>(x => x.A.B)` is handed a path, derives a name and drops whatever holds it, so no
+check at a creation site can close that half. Distinct names can.
+`DocumentOperations.IndexNameDigest` is the single owner, called by all three derivations
+(`GenerateIndexName`, `GenerateCompositeIndexName`, `GenerateColumnIndexName`) and by no inline site:
+the first three bytes of SHA-256 over `kind \0 table \0 path[ \0 path…]` in UTF-8, rendered as six
+lowercase hex characters. `U+0000` is the delimiter because it is the one character neither a
+validated path nor an identifier can carry, so no input can forge a field boundary; `kind` is
+belt-and-braces rather than load-bearing, and the source remark says so — measured, folding all three
+kind literals to one leaves both suites green, because a validated path always carries `$.` and an
+identifier can carry no `$`. Hex is always identifier-safe, so the suffix can never be what fails
+`RequireDerivableName`'s screen. It is **collision-resistant, not injective** — 24 bits is not a
+proof, the same wording the table fold earns — which is why the definition pre-check above stays.
+`IndexNameDerivationTests` pins the shape, the determinism, each digest field and the golden names.
+
+**Breaking**, pre-1.0 and deliberate: every auto-derived index name changes, so on an existing
+database `DropIndexAsync<T>(x => x.Email)` names nothing and — both overloads being `IF EXISTS` —
+succeeds without dropping anything, while `CreateIndexAsync<T>(x => x.Email)` adds a *second* index
+over the path the old-named one already covers, because the pre-check compares per name. README
+carries the upgrade note and the `sqlite_master` query that lists the old names. → rationale#index-ddl
 
 **String-path DDL overloads** (`CreateIndexAsync<T>(string jsonPath, …)`,
 `CreateCompositeIndexAsync<T>(string[] jsonPaths, …)`, `AddVirtualColumnAsync<T>(string jsonPath, …)`,
@@ -991,9 +1019,9 @@ non-identifier table name never reaches this method on either branch, and the sh
 longer decide by database state what an argument decides. The generator's own check stays as the
 generator's own contract. It was never an injection surface either: `SchemaIntrospector.GetColumnsAsync`
 double-quotes the table name and doubles any embedded `"` itself before interpolating it into
-`PRAGMA table_xinfo(...)`. The same screening is why `AddVirtualColumnAsync`'s inline
-`idx_{tableName}_{columnName}` cannot derive a non-identifier index name: both halves are validated
-before it is built. → rationale#index-ddl
+`PRAGMA table_xinfo(...)`. The same screening is why `AddVirtualColumnAsync`'s derived
+`idx_{tableName}_{columnName}_{digest}` cannot be a non-identifier: both readable halves are validated
+before the name is built, and the digest is hex. → rationale#index-ddl
 
 ### Blobs
 
@@ -1441,7 +1469,9 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - `src/LiteDocumentStore/Query/DocumentPatch.cs` — the field-level update builder; the JSON-text
   carve-outs for `bool`/`decimal`/wide `ulong` live here.
 - `src/LiteDocumentStore/Indexing/IndexOptions.cs` + `IndexFilter.cs` — the index DDL options and the
-  value-free partial-index filter.
+  value-free partial-index filter. The auto-derived *name* lives elsewhere:
+  `Core/DocumentOperations.cs`, where `IndexNameDigest` is the one owner of the digest all three
+  `Generate*IndexName` methods append.
 - `src/LiteDocumentStore/Migrations/MigrationRunner.cs` — the history table, the membership check under
   `BEGIN IMMEDIATE`, and the checksum comparison.
 - `src/LiteDocumentStore/Core/SqliteCommandExtensions.cs` — the raw ADO.NET helpers that replaced Dapper.

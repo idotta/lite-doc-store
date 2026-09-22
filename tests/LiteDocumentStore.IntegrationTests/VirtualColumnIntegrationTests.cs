@@ -10,7 +10,8 @@ namespace LiteDocumentStore.IntegrationTests;
 [Trait("Category", "Integration")]
 public class VirtualColumnIntegrationTests : IDisposable
 {
-    // CreateIndexAsync derives idx_{table}_{path}, so a folded table name lands in the index name too.
+    // The derived index names carry the table name, so a folded table name lands in them too;
+    // they are resolved through the production derivation rather than re-spelled here.
     private static readonly string ProductTable = DefaultTableNamingConvention.Instance.GetTableName<Product>();
     private static readonly string ProductWithMetadataTable =
         DefaultTableNamingConvention.Instance.GetTableName<ProductWithMetadata>();
@@ -129,7 +130,8 @@ public class VirtualColumnIntegrationTests : IDisposable
         var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductTable));
         Assert.Contains(columns, c => c.Name == "price");
 
-        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync($"idx_{ProductTable}_price"));
+        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync(
+            DocumentOperations.GenerateColumnIndexName(ProductTable, "price")));
         Assert.True(indexExists);
     }
 
@@ -151,7 +153,8 @@ public class VirtualColumnIntegrationTests : IDisposable
         var columns = await IntrospectAsync(introspector => introspector.GetColumnsAsync(ProductWithMetadataTable));
         Assert.Contains(columns, c => c.Name == "brand");
 
-        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync($"idx_{ProductWithMetadataTable}_brand"));
+        var indexExists = await IntrospectAsync(introspector => introspector.IndexExistsAsync(
+            DocumentOperations.GenerateColumnIndexName(ProductWithMetadataTable, "brand")));
         Assert.True(indexExists);
     }
 

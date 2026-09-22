@@ -126,7 +126,7 @@ public sealed class IndexCreationRaceIntegrationTests : IDisposable
         await store.CreateTableAsync<Member>();
 
         var table = store.GetTableName<Member>();
-        var indexName = $"idx_{table}_Email";
+        var indexName = DocumentOperations.GenerateIndexName(table, "$.Email");
 
         // Claim the name with a *different* definition as the CREATE is built. The store's own
         // statement carries IF NOT EXISTS, so it silently no-ops against it.
@@ -153,7 +153,7 @@ public sealed class IndexCreationRaceIntegrationTests : IDisposable
         await store.CreateTableAsync<Member>();
 
         var table = store.GetTableName<Member>();
-        var indexName = $"idx_{table}_Email";
+        var indexName = DocumentOperations.GenerateIndexName(table, "$.Email");
 
         // The same race with the *same* definition must still succeed: two callers creating one
         // index is what IF NOT EXISTS is for, and refusing it would be the wrong over-correction.
