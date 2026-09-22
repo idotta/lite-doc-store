@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -216,6 +217,158 @@ public sealed class RawSqlSessionStateIntegrationTests : IDisposable
 
         await AssertStoreStillUsableAsync(store);
     }
+
+    [Fact]
+    public async Task ExecuteRawAsync_LeavingASessionPragma_DoesNotReachTheNextOperation()
+    {
+        // Measured to leak before the connection was retired: the next operation, an ordinary
+        // write and a store transaction all read 0 while EnableForeignKeys still reported true.
+        await using var store = await CreateStoreAsync(NewDatabasePath());
+
+        await store.ExecuteRawAsync((connection, _) =>
+        {
+            Execute(connection, "PRAGMA foreign_keys = OFF");
+            return Task.CompletedTask;
+        });
+
+        Assert.Equal(1L, await ScalarOnTheNextConnectionAsync(store, "PRAGMA foreign_keys"));
+        await AssertStoreStillUsableAsync(store);
+    }
+
+    [Fact]
+    public async Task ExecuteRawAsync_AttachingADatabase_DoesNotReachTheNextOperation()
+    {
+        // The shape re-applying a PRAGMA list could never have cleaned up: ATTACH is not a PRAGMA.
+        await using var store = await CreateStoreAsync(NewDatabasePath());
+
+        await store.ExecuteRawAsync((connection, _) =>
+        {
+            Execute(connection, "ATTACH DATABASE ':memory:' AS leaked");
+            return Task.CompletedTask;
+        });
+
+        Assert.Equal(
+            0L,
+            await ScalarOnTheNextConnectionAsync(
+                store,
+                "SELECT count(*) FROM pragma_database_list WHERE name = 'leaked'"));
+        await AssertStoreStillUsableAsync(store);
+    }
+
+    [Fact]
+    public async Task ExecuteRawAsync_CreatingATempTable_DoesNotReachTheNextOperation()
+    {
+        await using var store = await CreateStoreAsync(NewDatabasePath());
+
+        await store.ExecuteRawAsync((connection, _) =>
+        {
+            Execute(connection, "CREATE TEMP TABLE leaked(x INTEGER)");
+            return Task.CompletedTask;
+        });
+
+        Assert.Equal(
+            0L,
+            await ScalarOnTheNextConnectionAsync(
+                store,
+                "SELECT count(*) FROM temp.sqlite_master WHERE name = 'leaked'"));
+        await AssertStoreStillUsableAsync(store);
+    }
+
+    [Fact]
+    public async Task TransactionExecuteRawAsync_CreatingATempTable_DoesNotReachTheNextOperation()
+    {
+        // The transaction hands out its own connection and returns it through Release rather than
+        // ReturnAfterExternalAccess, so it carries its own record of having done so.
+        await using var store = await CreateStoreAsync(NewDatabasePath());
+
+        await using (var transaction = await store.BeginTransactionAsync())
+        {
+            await transaction.ExecuteRawAsync((connection, _) =>
+            {
+                Execute(connection, "CREATE TEMP TABLE leaked(x INTEGER)");
+                return Task.CompletedTask;
+            });
+
+            await transaction.UpsertAsync("in-tx", new Doc("in-tx", 1));
+            await transaction.CommitAsync();
+        }
+
+        Assert.Equal(
+            0L,
+            await ScalarOnTheNextConnectionAsync(
+                store,
+                "SELECT count(*) FROM temp.sqlite_master WHERE name = 'leaked'"));
+        Assert.Equal(new Doc("in-tx", 1), await store.GetAsync<Doc>("in-tx"));
+    }
+
+    [Fact]
+    public async Task TransactionWithoutRawAccess_StillRecyclesItsConnection()
+    {
+        // The other half of the transaction rule: a transaction that never handed the connection
+        // out costs no physical open, so the ordinary path is untouched.
+        var options = DocumentStoreOptions.ForFile(NewDatabasePath());
+        options.MaxPoolSize = 1;
+
+        var factory = new CountingConnectionFactory();
+        await using var store = await new DocumentStoreFactory(factory).CreateAsync(options);
+        await store.CreateTableAsync<Doc>();
+
+        var opensBefore = factory.Opens;
+
+        for (int i = 0; i < 3; i++)
+        {
+            await using var transaction = await store.BeginTransactionAsync();
+            await transaction.UpsertAsync($"plain-{i}", new Doc("plain", i));
+            await transaction.CommitAsync();
+        }
+
+        Assert.Equal(opensBefore, factory.Opens);
+
+        // Contrast: one raw callback on a transaction does cost an open.
+        await using (var transaction = await store.BeginTransactionAsync())
+        {
+            await transaction.ExecuteRawAsync((_, _) => Task.CompletedTask);
+            await transaction.CommitAsync();
+        }
+
+        await store.UpsertAsync("after", new Doc("after", 1));
+        Assert.Equal(opensBefore + 1, factory.Opens);
+    }
+
+    /// <summary>Counts physical connection opens, which is what retiring a connection costs.</summary>
+    private sealed class CountingConnectionFactory : IConnectionFactory
+    {
+        private readonly DefaultConnectionFactory _inner = new();
+        private int _opens;
+
+        public int Opens => Volatile.Read(ref _opens);
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options)
+        {
+            Interlocked.Increment(ref _opens);
+            return _inner.CreateConnection(options);
+        }
+
+        public async Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _opens);
+            return await _inner.CreateConnectionAsync(options, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Reads a scalar on whatever connection the store hands out next, which is a fresh one
+    /// whenever the previous renter had raw access to it.
+    /// </summary>
+    private static Task<long> ScalarOnTheNextConnectionAsync(IDocumentStore store, string sql) =>
+        store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt64(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
+        });
 
     private static async Task<bool> RowExistsOutsideTheStoreAsync(string path, string table, string id)
     {

@@ -120,16 +120,37 @@ public sealed class SqliteVersionGuardIntegrationTests
     public async Task IsHealthyAsync_WithATooOldSqlite_ReturnsFalseInsteadOfThrowing()
     {
         var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 1;
 
         // The store is built on a healthy factory so it can open at all, then the version is
         // spoofed on the connection it already holds — that is what the health check re-reads.
-        await using var store = await new DocumentStoreFactory().CreateAsync(options);
-        await store.ExecuteRawAsync((connection, _) =>
-        {
-            connection.CreateFunction("sqlite_version", () => "3.44.2");
-            return Task.CompletedTask;
-        });
+        // The spoof goes on through the factory's own record of the connection rather than
+        // through ExecuteRawAsync, which would retire that connection before the check ran.
+        var factory = new CapturingConnectionFactory();
+        await using var store = await new DocumentStoreFactory(factory).CreateAsync(options);
+        await store.CreateTableAsync<Doc>();
+
+        factory.Last.CreateFunction("sqlite_version", () => "3.44.2");
 
         Assert.False(await store.IsHealthyAsync());
+    }
+
+    /// <summary>
+    /// Hands out ordinary connections and keeps a reference to the last one, so a test can change
+    /// session state on a pooled connection without going through <c>ExecuteRawAsync</c>.
+    /// </summary>
+    private sealed class CapturingConnectionFactory : IConnectionFactory
+    {
+        private readonly DefaultConnectionFactory _inner = new();
+
+        public SqliteConnection Last { get; private set; } = null!;
+
+        public SqliteConnection CreateConnection(DocumentStoreOptions options) =>
+            Last = _inner.CreateConnection(options);
+
+        public async Task<SqliteConnection> CreateConnectionAsync(
+            DocumentStoreOptions options,
+            CancellationToken cancellationToken = default) =>
+            Last = await _inner.CreateConnectionAsync(options, cancellationToken);
     }
 }

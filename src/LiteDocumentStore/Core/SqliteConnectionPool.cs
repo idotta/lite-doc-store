@@ -29,8 +29,10 @@ namespace LiteDocumentStore;
 /// <para>
 /// A returned connection normally goes straight back to the idle bag rather than being closed. It
 /// is closed instead when it comes back unusable — a state other than Open, a caller reporting it
-/// through <see cref="Discard"/>, or transaction state left on it (see
-/// <see cref="SqliteSessionState"/> and <see cref="ReturnAfterExternalAccess"/>).
+/// through <see cref="Discard"/>, or a transaction left pending on it (see
+/// <see cref="SqliteSessionState"/>). A connection a caller has run their own SQL against is
+/// closed whatever state it is in, because its session is no longer the one the pool configured
+/// (see <see cref="ReturnAfterExternalAccess"/>).
 /// </para>
 /// <para>
 /// What keeps a shared-cache in-memory database alive is <em>not</em> that: such a database is
@@ -123,8 +125,8 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// For a shared-cache in-memory database that connection is <strong>reserved as a keeper</strong>
     /// rather than banked: such a database is destroyed when its last connection closes, and every
     /// site that closes an established connection — the two discard branches in
-    /// <see cref="ReturnCore"/>, <see cref="Discard"/>, and <see cref="TryTakeIdle"/> — can
-    /// otherwise take the count to zero. Measured before it was reserved: a caller leaving a raw
+    /// <see cref="ReturnCore"/>, <see cref="Discard"/>, <see cref="ReturnAfterExternalAccess"/>
+    /// and <see cref="TryTakeIdle"/> — can otherwise take the count to zero. Measured before it was reserved: a caller leaving a raw
     /// <c>BEGIN</c> in an <c>ExecuteRawAsync</c> callback made the guard discard the only
     /// connection and the whole database went with it, silently, while ordinary operations carried
     /// on against a fresh empty one.
@@ -321,28 +323,37 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// <remarks>
     /// A connection with a transaction still pending is closed rather than banked: recycling it
     /// would hand the next renter an open transaction, whose statements silently enlist in it.
-    /// Only the cheap half of the check runs here — see
-    /// <see cref="SqliteSessionState.HasPendingTransaction"/> for its cost and
-    /// <see cref="ReturnAfterExternalAccess"/> for the paths that pay for both halves.
+    /// See <see cref="SqliteSessionState.HasPendingTransaction"/> for the probe's cost, and
+    /// <see cref="ReturnAfterExternalAccess"/> for the paths that do not recycle at all.
     /// </remarks>
-    internal void Return(SqliteConnection connection) => ReturnCore(connection, externalAccess: false);
+    internal void Return(SqliteConnection connection) => ReturnCore(connection);
 
     /// <summary>
-    /// Returns a connection a caller has run their own SQL against, closing it when either half
-    /// of its transaction state is dirty.
+    /// Closes a connection a caller has run their own SQL against, rather than recycling it.
     /// </summary>
     /// <remarks>
-    /// The extra check over <see cref="Return"/> is
-    /// <see cref="SqliteSessionState.HasManagedTransaction"/>, which costs ~223 ns and 192 bytes
-    /// and catches what SQLite's own autocommit flag cannot: a transaction object the provider
-    /// still has attached after a raw <c>COMMIT</c> or <c>ROLLBACK</c>. Only the raw-connection
-    /// paths pay it — <c>ExecuteRawAsync</c> and a migration's own SQL — so the ~20 document
-    /// operations keep the cheap check alone.
+    /// <para>
+    /// Unconditional, because the pool has no way to tell whether the connection is still the one
+    /// it configured. The PRAGMAs are applied once, at physical open, and everything a callback
+    /// can change about the <em>session</em> rather than the file survives the return: a
+    /// session-scoped <c>PRAGMA</c>, an <c>ATTACH</c>ed database and a <c>TEMP</c> table were each
+    /// measured to be inherited by whoever rented the connection next. A probe would have to
+    /// enumerate that surface, and it cannot — <c>ATTACH</c> and <c>TEMP</c> are not PRAGMAs, and
+    /// registered functions and collations are not visible in SQL at all.
+    /// </para>
+    /// <para>
+    /// The cost is one physical open per <c>ExecuteRawAsync</c> call and per migration run, paid
+    /// only on those paths. Measured on a trivial raw round trip (<c>SELECT 1</c>, 5000 calls):
+    /// ~8 µs recycled against ~335 µs retired on a WAL file database, and ~8 µs against ~60 µs on
+    /// a shared-cache in-memory one — the difference between the two being what opening a file
+    /// database costs in <c>journal_mode</c>, <c>page_size</c> and the version guard. The ordinary
+    /// document operations go through <see cref="Return"/> and are untouched.
+    /// </para>
     /// </remarks>
     internal void ReturnAfterExternalAccess(SqliteConnection connection) =>
-        ReturnCore(connection, externalAccess: true);
+        DiscardCore(connection, "a caller ran their own SQL on it, so its session state is unknown");
 
-    private void ReturnCore(SqliteConnection connection, bool externalAccess)
+    private void ReturnCore(SqliteConnection connection)
     {
         if (connection is null)
         {
@@ -370,11 +381,11 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 return;
             }
 
-            // Only the probes are guarded, and the guard decides rather than cleans up: whatever
+            // Only the probe is guarded, and the guard decides rather than cleans up: whatever
             // it concludes, the connection is disposed of exactly once below. Nothing here is
             // allowed to throw — this runs from a lease disposal, so an exception would replace
             // whatever is already in flight, including the one a caller's own callback threw.
-            if (IsSessionDirty(connection, externalAccess, out var reason))
+            if (IsSessionDirty(connection, out var reason))
             {
                 DiscardBrokenConnection(connection, reason);
             }
@@ -429,7 +440,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Runs the session-state probes, treating a probe that throws as a dirty verdict.
+    /// Runs the session-state probe, treating a probe that throws as a dirty verdict.
     /// </summary>
     /// <remarks>
     /// A probe reads a live SQLite handle, so it can fail on a connection that went away
@@ -437,11 +448,11 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// finished — and a connection the pool cannot vouch for must not be recycled, so the
     /// failure is logged and answered as dirty.
     /// </remarks>
-    private bool IsSessionDirty(SqliteConnection connection, bool externalAccess, out string reason)
+    private bool IsSessionDirty(SqliteConnection connection, out string reason)
     {
         try
         {
-            return SqliteSessionState.IsSessionDirty(connection, externalAccess, out reason);
+            return SqliteSessionState.IsSessionDirty(connection, out reason);
         }
         catch (Exception ex)
         {
@@ -456,7 +467,10 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// longer be trusted (for example a transaction that failed to roll back — recycling it
     /// would hand the next renter an open transaction).
     /// </summary>
-    internal void Discard(SqliteConnection connection)
+    internal void Discard(SqliteConnection connection) =>
+        DiscardCore(connection, "the caller reported it as no longer usable");
+
+    private void DiscardCore(SqliteConnection connection, string reason)
     {
         if (connection is null)
         {
@@ -473,7 +487,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 return;
             }
 
-            DiscardBrokenConnection(connection, "the caller reported it as no longer usable");
+            DiscardBrokenConnection(connection, reason);
         }
         finally
         {

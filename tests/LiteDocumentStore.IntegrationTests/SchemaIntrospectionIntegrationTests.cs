@@ -51,6 +51,23 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         Assert.Contains(tables, t => t.Name == OrderTable);
     }
 
+    // Name and Sql are read by ordinal out of a two-column projection, so reading the wrong one
+    // hands back the table name and every other assertion in the suite still passes.
+    [Fact]
+    public async Task GetTablesAsync_ReturnsEachTablesCreateStatement()
+    {
+        // Arrange
+        await _store.CreateTableAsync<Customer>();
+
+        // Act
+        var tables = (await IntrospectAsync(introspector => introspector.GetTablesAsync())).ToList();
+
+        // Assert
+        var customer = tables.Single(t => t.Name == CustomerTable);
+        Assert.Contains("CREATE TABLE", customer.Sql!, StringComparison.Ordinal);
+        Assert.Contains("data BLOB NOT NULL", customer.Sql!, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task GetColumnsAsync_TableNameWithClosingBracket_IsEscaped()
     {

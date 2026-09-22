@@ -7,7 +7,7 @@ namespace LiteDocumentStore.IntegrationTests;
 
 /// <summary>
 /// U+0000 in a JSON path member, against real SQLite. Widening the member rule to SQLite's own
-/// unquoted label (C18 Tier 1) admitted a NUL, which the old identifier-shaped rule had rejected.
+/// unquoted label admitted a NUL, which the old identifier-shaped rule had rejected.
 ///
 /// <para>
 /// <c>sqlite3_prepare</c> reads a NUL-terminated string, so a NUL in an interpolated path truncates
@@ -21,7 +21,7 @@ namespace LiteDocumentStore.IntegrationTests;
 ///
 /// <para>
 /// What this test pins is the exception <em>type</em>: no provider error may reach the caller.
-/// It is not a C18 Tier 2 shape — quoting cannot rescue a NUL, measured both interpolated
+/// Quoting does not rescue it either, so it is not a <c>$."quoted"</c> shape — measured both interpolated
 /// (<c>unrecognized token</c>) and bound (<c>bad JSON path</c>).
 /// </para>
 /// </summary>

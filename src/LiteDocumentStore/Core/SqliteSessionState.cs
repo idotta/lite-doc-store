@@ -10,25 +10,21 @@ namespace LiteDocumentStore;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Two independent checks, because a poisoned connection has two independent halves. SQLite's
-/// own view is <c>sqlite3_get_autocommit</c>: zero means a transaction is pending on the
-/// handle, which is what a raw <c>BEGIN</c> or <c>SAVEPOINT</c> leaves behind — the next
-/// renter's statements then silently enlist in it. Microsoft.Data.Sqlite keeps a second,
-/// managed view: <see cref="SqliteConnection.CreateCommand"/> copies the connection's attached
-/// <see cref="SqliteTransaction"/> onto every command it makes, so an attached transaction
-/// object outlives the SQLite transaction and poisons the connection on its own — a raw
-/// <c>COMMIT</c> leaves one that makes the next <c>BeginTransaction</c> throw
-/// <c>SqliteConnection does not support nested transactions</c> and the eventual
-/// <c>Close</c> throw <c>cannot rollback - no transaction is active</c>, and a raw
-/// <c>ROLLBACK</c> leaves one that makes every later command throw
-/// <c>This SqliteTransaction has completed</c>.
+/// One probe, because it is the only one the path that runs it can act on. SQLite's own view is
+/// <c>sqlite3_get_autocommit</c>: zero means a transaction is pending on the handle, which is
+/// what a raw <c>BEGIN</c> or <c>SAVEPOINT</c> leaves behind — the next renter's statements then
+/// silently enlist in it.
 /// </para>
 /// <para>
-/// Neither check subsumes the other: measured against Microsoft.Data.Sqlite 10.0.11, a raw
-/// <c>BEGIN</c> is invisible to the managed check and a raw <c>COMMIT</c> or <c>ROLLBACK</c>
-/// is invisible to the autocommit one. They differ in cost by a factor of five, which is why
-/// the pool applies them at different places — see <see cref="SqliteConnectionPool.Return"/>
-/// and <see cref="SqliteConnectionPool.ReturnAfterExternalAccess"/>.
+/// Microsoft.Data.Sqlite keeps a second, managed view that this deliberately does <em>not</em>
+/// probe. <see cref="SqliteConnection.CreateCommand"/> copies the connection's attached
+/// <see cref="SqliteTransaction"/> onto every command it makes, so a raw <c>COMMIT</c> leaves one
+/// with nothing to roll back and a raw <c>ROLLBACK</c> leaves one already completed; the
+/// autocommit flag is clean in both cases. Measured against Microsoft.Data.Sqlite 10.0.11, that
+/// probe costs ~223 ns and 192 bytes — and it would be answering a question already decided,
+/// because an attached transaction object can only come from a caller who has had the raw
+/// connection, and every path that hands one out now discards the connection rather than
+/// returning it. See <see cref="SqliteConnectionPool.ReturnAfterExternalAccess"/>.
 /// </para>
 /// </remarks>
 internal static class SqliteSessionState
@@ -45,43 +41,15 @@ internal static class SqliteSessionState
         raw.sqlite3_get_autocommit(connection.Handle) == 0;
 
     /// <summary>
-    /// Reports whether a Microsoft.Data.Sqlite <see cref="SqliteTransaction"/> is still attached
-    /// to the connection. Measured at ~223 ns and 192 bytes, so it is applied only where a
-    /// caller has had the raw connection.
-    /// </summary>
-    /// <remarks>
-    /// This observes the provider's managed attachment, not SQLite's transaction state; the two
-    /// disagree in both directions. Safe on a closed connection, which reports false.
-    /// </remarks>
-    internal static bool HasManagedTransaction(SqliteConnection connection)
-    {
-        using var probe = connection.CreateCommand();
-        return probe.Transaction is not null;
-    }
-
-    /// <summary>
-    /// Reports whether a connection's transaction state is dirty, naming the half that is.
+    /// Reports whether a connection's transaction state is dirty, naming why.
     /// </summary>
     /// <param name="connection">The connection being returned to the pool.</param>
-    /// <param name="includeManagedTransaction">
-    /// Whether to pay for <see cref="HasManagedTransaction"/> as well. True only where a caller
-    /// has run their own SQL against the connection.
-    /// </param>
     /// <param name="reason">The dirty half, phrased for the pool's discard log.</param>
-    internal static bool IsSessionDirty(
-        SqliteConnection connection,
-        bool includeManagedTransaction,
-        out string reason)
+    internal static bool IsSessionDirty(SqliteConnection connection, out string reason)
     {
         if (connection.State == ConnectionState.Open && HasPendingTransaction(connection))
         {
             reason = "it was returned with a transaction still pending";
-            return true;
-        }
-
-        if (includeManagedTransaction && HasManagedTransaction(connection))
-        {
-            reason = "it was returned with a SQLite transaction object still attached";
             return true;
         }
 

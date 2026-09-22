@@ -17,6 +17,13 @@ namespace LiteDocumentStore;
 /// Every builder method returns a <b>new</b> instance, and paths are validated as the filter is
 /// built, so a malformed path throws at the call site.
 /// </para>
+/// <para>
+/// A path is <c>$</c> followed by <c>.member</c> and <c>[index]</c> segments. A member may hold
+/// any characters but U+0000 and an apostrophe; one that cannot be written bare — it holds a
+/// <c>.</c> or a <c>[</c>, or is the empty key — is written in SQLite's quoted form,
+/// <c>$."a.b"</c>, escaping <c>"</c> and <c>\</c> JSON-style (<c>\"</c>, <c>\\</c>). Quotes that
+/// buy nothing are dropped, so <c>$."Name"</c> and <c>$.Name</c> are one path.
+/// </para>
 /// </remarks>
 public sealed class IndexFilter
 {

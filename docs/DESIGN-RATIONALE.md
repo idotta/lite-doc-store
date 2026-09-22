@@ -76,17 +76,125 @@ and remove it. That is what makes a NUL dangerous to anyone binding a path throu
 `$."quoted"` and `$['bracket-quoted']` all fail, so such a key is unaddressable by every form;
 `json_each` does list it, so one can exist in a stored document and simply cannot be reached.
 
-### Tier 2 (quoted segments) — why it is deferred
+### Tier 2 (quoted segments) — shipped
 
-Three shapes remain unreachable *and* reachable by quoting: a key containing `.`, a key containing
-`[`, and the empty key. The dotted one is why Tier 2 is worth doing rather than documenting —
-measured, `json_extract` returns NULL for it while `jsonb_set` and `jsonb_remove` **silently
-no-op**, returning the document unchanged.
+Three shapes have no unquoted spelling and are now written `$."quoted"`: a key containing `.`, a key
+containing `[`, and the empty key. A fourth would need the quotes for its own reason — a member
+*starting* with `"`, because SQLite reads a `"` straight after the `.` as opening a quoted label and
+answers `$."lead` with `bad JSON path` — but that shape is refused outright, since needing the quotes
+while carrying a `"` is the version refusal below. A `"` anywhere else in a member is an ordinary
+unquoted character and stays one, measured: `json_extract('{"a\"b":7}', '$.a"b')` is `7` on both
+3.45.1 and 3.53.3. That is what keeps Tier 1 byte-identical.
 
-Tier 2 is a tokenizer emitting a canonical rendering (`$."a.b"`, `"` escaped JSON-style as `\"`,
-**not** by SQL doubling — measured, `'$."a""b"'` silently resolves the wrong key), plus the same
-rendering in `JsonPathResolver`. It stays deferred until someone actually needs one of those three
-keys. `U+0000` is a fourth shape needing permanent rejection and is not part of it.
+Accepting the quotes reinterprets that spelling, and only half of that is loud. A `"` used to be an
+ordinary member character everywhere, so `$."a.b"` already validated — as the two members `"a` and
+`b"` — and was interpolated verbatim. Such a path is now either reinterpreted, where `$."Name"` is
+the quoted member `Name` and comes back canonically as `$.Name` — the same key but not the same SQL
+text, so an expression index created through the old spelling silently stops being matched — or
+refused, when the quotes do not close (`$."lead`) or something follows the closing one (`$."a""b"`,
+which SQLite resolved as the wrong key anyway). Inherent to shipping Tier 2, and pre-1.0.
+
+The dotted key is why this was worth doing rather than documenting. Measured against real SQLite:
+
+| statement                                                   | result |
+| ----------------------------------------------------------- | ------ |
+| `json_extract('{"a.b":1}', '$.a.b')`                          | `NULL` — no error |
+| `jsonb_remove(jsonb('{"a.b":1,"z":2}'), '$.a.b')`             | `{"a.b":1,"z":2}` — **silent no-op** |
+| `jsonb_set(jsonb('{"a.b":1}'), '$.a.b', 99)`                  | `{"a.b":1,"a":{"b":99}}` — writes a *different*, nested key |
+| `jsonb_set(jsonb('{"a.b":1}'), '$."a.b"', 99)`                | `{"a.b":99}` |
+| `jsonb_remove(jsonb('{"a.b":1,"z":2}'), '$."a.b"')`           | `{"z":2}` |
+
+A patch through the unquoted spelling therefore reports success and bumps the version having written
+nothing the caller meant. That is a silent wrong answer, which is the class this library refuses to
+ship.
+
+`json_extract('{"":1}', '$.""')` is `1` and `json_extract('{"c[0]":1}', '$."c[0]"')` is `1`, on both
+builds; a quoted member composes with everything else (`$."a.b"."c.d"` → `9`, `$."a.b"[1]` → `11`,
+`json_each(…, '$."a.b"')` over an array → 3 rows), and an expression index over a quoted path is
+**used**: `EXPLAIN QUERY PLAN` → `SEARCH t USING INDEX ix (<expr>=?)`.
+
+**One canonical rendering, one owner.** `SqlGenerator.MemberNeedsQuoting` decides (empty, or holding
+a `.` or a `[`, or starting with `"`) and `AppendCanonicalMember` writes; `ValidateJsonPath` *returns*
+the rendering and `JsonPathResolver` appends through the same helper. Quotes that buy nothing are
+dropped, so `$."Name"` and `$.Name` are one path and a Tier 1 path is returned as the same string
+instance. This is not tidiness: SQLite matches an expression index only when the indexed expression
+appears **literally**, so an index created over one spelling and queried through another is never
+used, silently — which is also why the path is interpolated rather than bound in the first place.
+Three generators (`GenerateCreateJsonIndexSql`, `GenerateQueryByJsonPathSql`,
+`GenerateAddVirtualColumnSql`) called the validator for its side effect and then interpolated the
+caller's own string; they now assign the result back over their path parameter, so no second variable
+holds the raw text.
+
+The rendering is **idempotent** by construction — `DocumentQuery` and `DocumentPatch` validate at
+build time and the generators validate again at generation time. An unquoted member never needs
+quoting (the scan stops at `.` and `[`, an empty one is refused, and one starting with `"` is read as
+quoted), and a quoted member re-renders to exactly the text it was read from whenever it still needs
+quoting.
+
+**Escaping is JSON-style, never SQL doubling.** Measured, `'$."a""b"'` silently resolves the **wrong
+key** rather than failing, so the tokenizer refuses that spelling outright instead of emitting it.
+Only `\"` and `\\` are accepted on input, the two the renderer knows: SQLite unescapes a quoted label
+JSON-style, so reading `\b` as a backslash and a `b` would address a different key than SQLite does.
+Of those two only `\\` is ever *emitted* — the version refusal below takes the `\"` case away — so the
+`\"` arm of `AppendCanonicalMember` is defensive rather than reachable. It stays, because a renderer
+that dropped the escape would be wrong on its own terms, and `ReadQuotedMember` keeps accepting `\"`
+so that a caller who writes the spelling out is answered by the version refusal rather than by
+"unsupported escape".
+
+**A bare `$.` stays an error.** The empty key must be spelled `$.""`; reading a truncated path as the
+empty key would turn a typo into a working statement. The `allowRoot` split is untouched, and a
+length test on the raw path is what preserves it exactly: the bare `$` is refused by the patch targets
+and the projecting DDL, while `$[0]` and `$.""` are keys below the root and stay legal wherever a key
+is.
+
+**`U+0000` is not part of this and stays permanently rejected**, in both the quoted and the unquoted
+arm, for the reasons in the section above.
+
+#### The one version-sensitive shape is refused, not documented
+
+SQLite **3.45.1** — the floor `SqliteVersionGuard` enforces, since `jsonb()` shipped in 3.45.0 — does
+not unescape a quoted path label at all. So a member that needs the quotes **and** carries a `"` is
+**refused on every engine**, by a `PathMemberFault.QuoteInQuotedMember` arm inside `MemberFault`,
+which consults `MemberNeedsQuoting` rather than restating the quoting condition.
+
+The measurement is the reason. It was first taken against the key `q"k`, which is *not* a spelling
+this library emits — `q"k` needs no quotes under `MemberNeedsQuoting`, so `AppendCanonicalMember`
+writes it bare, as the Tier 1 path `$.q"k`. Re-measured against a key that genuinely needs the
+quotes and also carries a `"`, `a.b"c` → `$."a.b\"c"`, the divergence is the same and is now on an
+emitted spelling. Both builds, both functions, one document per row:
+
+| statement                                                      | 3.45.1 | 3.53.3 |
+| -------------------------------------------------------------- | ------ | ------ |
+| `json_extract('{"a.b\"c":4}', '$."a.b\"c"')`                     | `NULL` | `4` |
+| `jsonb_set(jsonb('{"a.b\"c":4}'), '$."a.b\"c"', 99)`             | `bad JSON path` | `{"a.b\"c":99}` |
+| `json_extract('{"a.b\\c":4}', '$."a.b\\c"')`                     | `4` | `4` |
+| `jsonb_set(jsonb('{"a.b\\c":4}'), '$."a.b\\c"', 99)`             | `{"a.b\\c":99}` | `{"a.b\\c":99}` |
+| `json_extract('{"a\"b":4}', '$.a"b')`                           | `4` | `4` |
+| `json_extract('{"a.b":4}', '$."a.b"')`                          | `4` | `4` |
+
+(3.45.1 is the system `libsqlite3.so.0.8.6` on the measuring machine, reached through `python3`'s
+`sqlite3`, which reports `sqlite_version` `3.45.1`; 3.53.3 is the `SQLitePCLRaw` build
+`Microsoft.Data.Sqlite` 10.0.12 bundles, which reports `3.53.3`.)
+
+On 3.45.x an index over such a key would be built over an expression that is NULL in every row — a
+**valid index over a path no row has**, vacuous and silent, the exact defect class `JsonPathResolver`
+was fixed to kill. Letting it work on the bundled engine and silently miss on the declared floor is
+the "works on some, silently wrong on others" outcome this library refuses to ship, so the key is
+refused everywhere and the caller is pointed at `ExecuteRawAsync` — truthful, because on 3.53.3 a
+*bound* path reaches the key, which an integration test asserts positively.
+
+**The refusal is on the `"`, not on escapes as a class, and rows 3 and 4 are why.** A `\` inside a
+quoted member reads and writes its own key on **both** builds, through `json_extract` and `jsonb_set`
+alike — 3.45.1's raw label comparison happens to coincide with the JSON-escaped form — so widening
+the rule to the mechanism (escape handling inside quoted labels) would refuse a key that works
+everywhere. Row 5 is the other boundary: a `"` in a member needing **no** quotes is written unquoted
+and is unaffected on both builds.
+
+Two things are deliberately *not* decided here. The exact release that fixed quoted-label unescaping
+was not determined — only two builds were available on the measuring machine, which is two points
+rather than a boundary — and `SqliteVersionGuard.MinimumVersion` is **not** raised: the owner
+considered that closure and chose the refusal instead, which holds across the whole declared range
+without moving it.
 
 ### Derived index names and the widened grammar
 
@@ -110,6 +218,14 @@ one directly.
 Rewriting the brackets was rejected as a fix for the array-indexed case: the scheme already maps
 distinct paths onto one name, so widening it adds collisions rather than removing any.
 
+Tier 2 adds a third shape to the same refusal: a `$."quoted"` path derives a name carrying a `"`,
+which is no identifier. It is refused ahead of the indexer check, by testing the path for the
+two-character sequence `."` — exact, because an unquoted member holds no `.` and a member starting
+with a `"` is always quoted — so `$."a[b"` is blamed on its quoted member rather than mis-blamed on
+an array indexer. An explicit index name works in every case, and that is the shipped answer, stated
+in the XML docs on the four string-path DDL overloads. Making the derivation injective remains its
+own job.
+
 ---
 
 ## table-naming
@@ -124,7 +240,7 @@ returned a **fabricated** document with `null` in a non-nullable member rather t
 
 Generic types were separately unusable: `Box<int>`'s `Name` is `` Box`1 ``, so `ValidateIdentifier`
 rejected it with `ParamName = tableName` — a parameter no caller passed, the same mis-attribution
-class C41 and C06 fixed.
+class as a *derived* name reported against a caller's argument.
 
 ### Why the fold is not injective
 
@@ -153,7 +269,7 @@ different arity, which *is* constructible.
 
 SQLite folds ASCII case in identifiers, so `[Order]` and `[order]` are one table. Measured under an
 ordinal comparer, two types whose names differed only in case shared a table and the first type read
-back a fabricated document with `null` in a non-nullable member — the exact C07 shape the guard
+back a fabricated document with `null` in a non-nullable member — the exact collision shape the guard
 exists to refuse. C# namespaces and type names are case-sensitive, so the default fold reaches it
 too (`NsA.Customer` beside `nsA.Customer`), not only a custom convention.
 
@@ -180,7 +296,7 @@ baseline table on a hand-managed connection, so those literals are correct; only
 
 ---
 
-### C29 — a convention-produced table name had no honest blame
+### A convention-produced table name had no honest blame
 
 A custom `ITableNamingConvention` returning `bad-name` reached two different validators, and both of
 them blamed the caller. Measured on a store built with such a convention, before the fix:
@@ -284,7 +400,9 @@ closes an established connection.
 
 ### Dirty-session guard — the four shapes
 
-Two probes are needed because neither sees the other's shapes (`Core/SqliteSessionState.cs`):
+Four shapes, and two views of them that disagree in both directions (`Core/SqliteSessionState.cs`).
+The library probes only the first view; retiring every connection a caller has had raw access to is why
+the other is no longer needed — see [raw-sql](#raw-sql):
 
 | what the callback left behind | `sqlite3_get_autocommit == 0` | provider transaction attached | next renter without the guard |
 |---|---|---|---|
@@ -298,10 +416,13 @@ Two probes are needed because neither sees the other's shapes (`Core/SqliteSessi
 Microsoft.Data.Sqlite's own dependency). Measured at **42 ns and no allocation**, so `Return` runs it
 on every one of the ~20 operations — ~1% of a 4.5 µs read.
 
-`HasManagedTransaction` asks the provider instead, through `CreateCommand().Transaction`, which is
-non-null exactly when a `SqliteTransaction` is still attached. That costs **223 ns and 192 B**,
-roughly doubling per-operation allocation, so only `ReturnAfterExternalAccess` pays it — the two
-`ExecuteRawAsync` overloads and `RunMigrationAsync`.
+The provider's view — `CreateCommand().Transaction`, non-null exactly when a `SqliteTransaction` is
+still attached — is the only thing that sees the bottom two rows. It cost **223 ns and 192 B**,
+roughly doubling per-operation allocation, so it was paid only by `ReturnAfterExternalAccess`. That
+path now discards unconditionally, so the probe decided nothing and was **removed**; the bottom two
+rows are reachable only through a raw connection, which is never recycled. `SqliteSessionStateTests`
+keeps the observation as a characterization test and pins those two rows as invisible to the
+surviving probe.
 
 Note the asymmetry the guard cannot fix: closing a connection rolls back a *pending* transaction, so
 a raw `BEGIN`'s writes vanish, but a raw `COMMIT`'s writes are already durable.
@@ -395,7 +516,7 @@ Every such path is guarded by a one-shot flag (`_released`, `_disposed`, `_dispo
 does not merely lose the message — it skips the release, and no retry can ever reach it again. A
 caller-supplied `ILogger` is caller code, and one that starts failing mid-process (a file or network
 sink that dies) is enough. `MaxPoolSize` occurrences later, the store deadlocks with nothing logged
-anywhere: the C05 terminal symptom, reached without leaking anything.
+anywhere — the terminal symptom, reached without leaking anything.
 
 `QuietLog` forwards its template and arguments verbatim under a scoped `CA2254` suppression, so
 structured logging survives and the analyzer (an *error* here, `TreatWarningsAsErrors` +
@@ -469,7 +590,7 @@ finalizer exists to recover) inside a `catch`-all (an escape from a finalizer ki
 disposing, so the choke point is the one place every completion path passes. Three `CA1816`
 suppressions carry that reasoning, since the analyzer only recognises the `Dispose` idiom.
 
-C27's twin defect in `~BlobReadStream` — the same log-then-release in one `try`, which stranded a
+The twin defect in `~BlobReadStream` — the same log-then-release in one `try`, which stranded a
 blob-stream slot on a throwing logger — was fixed alongside it.
 
 ### Two consequences
@@ -585,7 +706,7 @@ that constructor comes from the snapshot; re-reading `options` one line further 
 there. `SqliteConnectionPool.Normalize` still clones a third time, because the pool is constructed
 directly in tests and should defend itself.
 
-**C46 supersedes the factory-boundary half of the old paired check.** A mutation in that window is now
+**The factory snapshot supersedes the factory-boundary half of the old paired check.** A mutation in that window is now
 *ignored, not refused*. The constructor check is not dead: it still fires for **direct construction**,
 the one remaining way a caller hands the store options it must refuse; and it is no longer a standalone
 call, since the constructor's `snapshot.Validate()` ends in `ThrowIfSerializerOptionsUnusable`.
@@ -698,7 +819,7 @@ available, `a.db is missing; the directory holds b.db`.
 ### What `examples/AotVerification` still gates
 
 The AOT-null branch is unreachable from xUnit (the runner is JIT), so that example is its only gate.
-**C46 changed what two of its three shapes assert.**
+**The factory snapshot changed what two of its three shapes assert.**
 
 - Shape 1 is unchanged and gates the AOT-null half: resolver-less options are refused by `Validate()`
   before a store exists.
@@ -709,7 +830,8 @@ The AOT-null branch is unreachable from xUnit (the runner is JIT), so that examp
   through the source-generated context**, which is the positive evidence that the validated context was
   used.
 
-What a regression looks like there is worth stating, because it is *not* the `{}` C12 measured:
+What a regression looks like there is worth stating, because it is *not* the silently-empty `{}` an
+AOT binary on the reflection fallback was measured to write:
 reverting only the factory snapshot leaves the constructor cloning the **mutated** options and rejecting
 them in its own `Validate()`, so both shapes fail at resolution rather than round-tripping an empty
 document. Reaching `{}` needs both guards gone, and only for the nulled half — resolver-less options
@@ -1044,9 +1166,10 @@ one per connection.
 
 Measured at `MaxPoolSize = 4` with four concurrent transactions each re-issuing the idempotent DDL: four
 documents written with no exception, `CountAsync` = 1, three of the four `GetAsync` calls null,
-`IsHealthyAsync` still true — C08's exact shape on disk instead of in memory. It is silent only because
-the DDL is re-issued per connection; with the DDL run once at startup, connection #2 fails loudly with
-`no such table` on a store that just created it. The C48 keeper cannot rescue it either, since
+`IsHealthyAsync` still true — the private-database-per-connection shape, on disk instead of in memory. It
+is silent only because the DDL is re-issued per connection; with the DDL run once at startup, connection
+#2 fails loudly with
+`no such table` on a store that just created it. The reserved keeper cannot rescue it either, since
 `IsSharedInMemory` requires `!EmptyName`.
 
 The check sits **after** the in-memory rejection so the in-memory spellings of an empty filename keep
@@ -1297,7 +1420,7 @@ writes into the value the first set installed.
 
 ---
 
-### C29 — who a patch rejection blames
+### Who a patch rejection blames
 
 Measured through `PatchAsync` against real SQLite, before the fix:
 
@@ -1554,16 +1677,19 @@ ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 var validatedType = ValidateColumnType(columnType);
 ```
 
-The hoist covers the last three. The first stays in the generator, so on the short-circuit branch a
-non-identifier table name *is* still accepted or rejected by database state. That is deliberate, for three
-measured reasons:
+The hoist covers the last three. The first stays in the generator — and the gap that left behind, a
+non-identifier table name being accepted or rejected by database state on the short-circuit branch, is
+**closed**, at the point the name is produced rather than by a fourth hoist. See "the `tableName` gap
+PR #99 documented is closed at the source" below. Three measured reasons decided that it would not be
+hoisted, and all three still hold:
 
 1. **It is a derived name, not an argument.** `AddVirtualColumnAsync<T>` takes a type; the string comes from
    `_tableNamingConvention.GetTableName<T>()`. Hoisting the check would raise an `ArgumentException` with
    `ParamName=tableName` against a parameter the caller never supplied — the same mis-attribution the
-   `createIndex: true` row above shows for `indexName`, and the class **C29** addresses directly: a *derived*
-   name failing validation must be reported against whatever produced it, not against a caller's argument.
-   Fixing it here would mean picking a `ParamName` before that decision is made.
+   `createIndex: true` row above shows for `indexName`. A *derived* name failing validation must be
+   reported against whatever produced it, not against a caller's argument — which is exactly how it was
+   eventually closed: `TableNameCollisionGuard` refuses the name where the convention returns it, with an
+   `InvalidOperationException` naming the convention and no `ParamName` to invent.
 2. **The shape needs two deliberate steps to reach.** A custom `ITableNamingConvention` has to return a
    non-identifier name *and* the table has to have been created by raw SQL under it: every other path
    through `SqlGenerator` refuses the name, `GenerateCreateTableSql` (`SqlGenerator.cs:76`) included, so a
@@ -1573,16 +1699,18 @@ measured reasons:
    `"\"" + tableName.Replace("\"", "\"\"") + "\""` — before interpolating it into `PRAGMA table_xinfo(...)`.
    A `]`, a quote or a `;` in the name cannot break out of that identifier.
 
-So what is left open is a non-idempotence in one doubly-opted-into configuration, not a correctness or a
-safety hole — and closing it belongs with the `ParamName` question, not here.
+So what this left open was a non-idempotence in one doubly-opted-into configuration, not a correctness or
+a safety hole — and closing it belonged with the `ParamName` question, which is where it was closed. The
+generator's own `tableName` check stays where it is as the generator's own contract; it is simply no longer
+reachable through the typed surface.
 
-Out of scope, deliberately: the `tableName` check above, the index-definition preflight, the
-derived-index-name scheme (still non-injective, still its own job), and any widening of what
-`ValidateColumnType` accepts — the five SQLite storage classes stay as they are.
+Out of scope for that unit, deliberately: the `tableName` check above (closed later, below), the
+index-definition preflight, the derived-index-name scheme (still non-injective, still its own job), and
+any widening of what `ValidateColumnType` accepts — the five SQLite storage classes stay as they are.
 
 ---
 
-### C29 — the `tableName` gap PR #99 documented is closed at the source
+### The `tableName` gap PR #99 documented is closed at the source
 
 PR #99 hoisted `AddVirtualColumnAsync`'s generator checks past the existing-column short-circuit but
 left `tableName` there deliberately, because hoisting it would have raised an `ArgumentException`
@@ -1767,7 +1895,8 @@ a consumer created themselves — but the six read paths used to disagree comple
 | `GetBlobMetadataAsync`, `ListBlobsAsync` | leaked `InvalidOperationException` from the reader |
 | `OpenBlobReadAsync` | leaked `SqliteException` |
 
-**One corrupt row made blob listing impossible** — the C02 shape.
+**One corrupt row made blob listing impossible** — the same all-or-nothing shape a corrupt document row
+has for `GetAllAsync`.
 
 Two things make this bigger than SQL NULL:
 
@@ -1784,7 +1913,7 @@ Both are wrong answers rather than errors, which is why every blob read leads it
 load-bearing, not defensive: `GetFieldValue<byte[]>` silently succeeds on TEXT, INTEGER and REAL, so
 validating after reading would swap a detectable failure for wrong bytes. (`ExecuteScalarAsync<byte[]>`
 cannot serve the read at all — `ConvertScalar` reaches `Convert.ChangeType`, which has no `byte[]` target,
-which was C26's raw `InvalidCastException`.)
+which surfaced as a raw `InvalidCastException`.)
 
 An empty blob — `x''` or `zeroblob(0)` — is a BLOB of length 0 and stays legal on every path.
 
@@ -1902,11 +2031,12 @@ It copies the connection's active transaction onto the command. A directly const
 it while a transaction is pending (pinned by
 `Transaction_ExecuteRawAsync_EnlistsOnlyCommandsCreatedFromTheConnection`).
 
-### Connection-local state leaks — C47, open
+### Connection-local state leaks — closed by retiring the connection
 
-The dirty-session guard probes for a pending transaction and has no notion of session state, while the
-factory applies the PRAGMAs once, when the connection is physically opened — so what a callback changes
-persists on that connection until it is discarded or the store is disposed.
+**The defect.** The dirty-session guard probed for a pending transaction and had no notion of session
+state, while the factory applies the PRAGMAs once, when the connection is physically opened — so what a
+callback changed persisted on that connection until it was discarded or the store was disposed, and was
+inherited by whoever rented it next.
 
 Three kinds were **measured** to leak: a session-scoped `PRAGMA`, an `ATTACH`ed database (still in
 `pragma_database_list` on a later operation) and a `TEMP` table (still in `temp.sqlite_master`). They are
@@ -1923,9 +2053,69 @@ still reported `true` — one physical connection, never re-configured. A larger
 leak, only makes it less deterministic: it reaches fewer operations, but which ones depends on who draws
 that connection.
 
-Re-applying or probing a list of PRAGMAs cannot close it, since `ATTACH` and `TEMP` are not PRAGMAs;
-discarding the connection after external access would, at the per-operation cost this pool design exists to
-avoid.
+Re-applying or probing a list of PRAGMAs cannot close it, since `ATTACH` and `TEMP` are not PRAGMAs.
+
+**The fix, and why it is unconditional.** The store now closes a connection a caller has run their own SQL
+against instead of recycling it; the next rent opens a fresh one the factory configures from scratch.
+There is no opt-in flag, because the state a callback can change is not enumerable — the three measured
+shapes are examples, and registered functions, collations and loaded extensions are not observable in SQL
+at all, so no probe can decide the question. The dirty-session guard's two-probe design assumed a verdict
+was possible; on this path it is not.
+
+**What it costs, measured.** A scratch harness ran 5000 calls of a trivial `SELECT 1` callback through
+`ExecuteRawAsync` on one store, after a 500-call warmup, before and after the change (Release build, same
+machine, 3–8 samples each; the spread is wide, so these are medians):
+
+| store | recycled | retired | delta |
+| --- | --- | --- | --- |
+| WAL file database | ~8 µs / call | ~335 µs / call | **+~327 µs, ~41x** |
+| shared-cache in-memory | ~8 µs / call | ~60 µs / call | **+~52 µs, ~7x** |
+
+The gap between the two rows is what opening a *file* database costs beyond opening an in-memory one:
+`PRAGMA journal_mode = WAL`, `page_size`, the version guard's `SELECT sqlite_version()` and the page-size
+read-back, plus the filesystem. For scale, an ordinary `GetAsync` on the same file store measured ~31–45 µs
+in the same runs.
+
+This is far more expensive per call than the `+68% on a 4.5 µs read` that re-applying PRAGMAs per rent was
+measured to cost — which is exactly why the two paths are treated differently. The ~20 document operations
+still go through the cheap `Return` and are untouched; the raw-SQL and migration paths pay this, and a
+caller who cares batches statements into one callback.
+
+**Why `HasManagedTransaction` went with it.** The expensive probe (223 ns, 192 B) existed solely for
+`ReturnAfterExternalAccess`, to catch a transaction object left attached by a raw `COMMIT`/`ROLLBACK` that
+SQLite's autocommit flag cannot see. With that path discarding regardless, it decided nothing, and it is
+unreachable from the plain `Return` path — an attached transaction object can only come from a caller who
+had the raw connection, and `DocumentStoreTransaction.Release` discards on a failed
+`SqliteTransaction.Dispose` as well as on raw access. Keeping a probe no production path calls would be
+dead code; the observation it encoded is kept as a characterization test in `SqliteSessionStateTests`,
+which now pins the two shapes as **invisible** to the surviving probe. That inversion is the evidence for
+the unconditional discard.
+
+**The transaction path.** `IDocumentTransaction.ExecuteRawAsync` hands out the transaction's own
+connection, which is returned by `DocumentStoreTransaction.Release()` rather than
+`ReturnAfterExternalAccess`, so the store-level fix does not reach it. It is closed here by the smallest
+thing that works: a `_rawAccessed` flag set by both overloads before the callback runs (so it holds when
+the callback throws, and when a caller abandons the returned task) and read by `Release()` alongside the
+existing `_connectionCompromised`. One raw callback per transaction costs one open, not one per statement,
+and a transaction that never used the hatch still recycles its connection.
+
+**The keeper still holds.** This adds a discard site to the list `Initialize` enumerates, and a
+shared-cache in-memory database is destroyed when its last connection closes — so at `MaxPoolSize = 1`
+every `ExecuteRawAsync` now closes the only leasable connection to it. The reserved keeper is never leased
+and never discarded, so the database stands on it; `InMemoryKeeperIntegrationTests` gains a case for the
+new site, and its existing cases already exercise it, since its canary helpers are themselves
+`ExecuteRawAsync` calls.
+
+**Slot accounting.** The discard releases the slot in a `finally` and uncounts the connection before the
+replacement is opened, so `ConnectionCount` tracks what the pool can lease and a single-slot pool does not
+deadlock. `DrainIfDisposed`'s re-check is a *banking*-site concern and is not involved: this path never
+banks.
+
+**A knock-on the fix exposed.** `SqliteVersionGuardIntegrationTests.IsHealthyAsync_WithATooOldSqlite_…`
+spoofed `sqlite_version()` by registering a function through `ExecuteRawAsync` and relied on it surviving —
+the leak itself, used as a test fixture. It now spoofs the connection through a capturing
+`IConnectionFactory` instead. That a passing test depended on the defect is the measurement for the
+"registered functions carry the same way" half that had only been reasoned.
 
 ### Why the three synchronous helpers exist
 

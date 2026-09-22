@@ -27,7 +27,7 @@ public sealed class SchemaIntrospector
     public async Task<IEnumerable<TableInfo>> GetTablesAsync(CancellationToken cancellationToken = default)
     {
         const string sql = @"
-            SELECT name, type, sql
+            SELECT name, sql
             FROM sqlite_master
             WHERE type = 'table'
             AND name NOT LIKE 'sqlite_%'
@@ -43,8 +43,7 @@ public sealed class SchemaIntrospector
             tables.Add(new TableInfo
             {
                 Name = reader.GetString(0),
-                Type = reader.GetString(1),
-                Sql = reader.IsDBNull(2) ? null : reader.GetString(2)
+                Sql = reader.IsDBNull(1) ? null : reader.GetString(1)
             });
         }
 
@@ -228,6 +227,7 @@ public sealed class SchemaIntrospector
 
     /// <summary>
     /// Gets database statistics including page size, page count, and database size.
+    /// Costs two PRAGMA round trips.
     /// </summary>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>Database statistics</returns>
@@ -237,16 +237,12 @@ public sealed class SchemaIntrospector
             .ConfigureAwait(false);
         var pageSize = await _connection.ExecuteScalarAsync<long>("PRAGMA page_size", cancellationToken)
             .ConfigureAwait(false);
-        var freePages = await _connection.ExecuteScalarAsync<long>("PRAGMA freelist_count", cancellationToken)
-            .ConfigureAwait(false);
 
         return new DatabaseStatistics
         {
             PageCount = pageCount,
             PageSize = pageSize,
-            FreePages = freePages,
-            DatabaseSizeBytes = pageCount * pageSize,
-            UsedSizeBytes = (pageCount - freePages) * pageSize
+            DatabaseSizeBytes = pageCount * pageSize
         };
     }
 }
@@ -260,11 +256,6 @@ public sealed class TableInfo
     /// Gets or sets the table name.
     /// </summary>
     public string Name { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets the table type (typically "table").
-    /// </summary>
-    public string Type { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the CREATE TABLE SQL statement.
@@ -348,17 +339,7 @@ public sealed class DatabaseStatistics
     public long PageSize { get; set; }
 
     /// <summary>
-    /// Gets or sets the number of free pages.
-    /// </summary>
-    public long FreePages { get; set; }
-
-    /// <summary>
     /// Gets or sets the total database size in bytes.
     /// </summary>
     public long DatabaseSizeBytes { get; set; }
-
-    /// <summary>
-    /// Gets or sets the used space in bytes.
-    /// </summary>
-    public long UsedSizeBytes { get; set; }
 }

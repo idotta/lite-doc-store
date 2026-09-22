@@ -18,9 +18,10 @@ namespace LiteDocumentStore;
 /// <para>
 /// The read transaction is what makes the row's rowid stable: without it, another connection
 /// could delete the row between the rowid lookup and the blob open, and SQLite may reuse that
-/// rowid for a different row. The <c>BEGIN</c> is deferred, so it takes no lock by itself, but
-/// the rowid lookup immediately after it does, and that lock lives as long as the transaction
-/// does — that is, until this stream is disposed.
+/// rowid for a different row. The <c>BEGIN</c> is deferred, so it takes no lock by itself, and
+/// the rowid lookup immediately after it does take one — but that lock is held by the open
+/// <see cref="SqliteBlob"/> handle on this connection, measured to survive the transaction's
+/// removal, so it lasts until this stream is disposed whatever the transaction does.
 /// </para>
 /// <para>
 /// On a shared-cache in-memory database that lock is table-level, so while a stream is open a
@@ -28,7 +29,16 @@ namespace LiteDocumentStore;
 /// SQLite does not run the busy handler for a shared-cache table conflict, so
 /// <c>busy_timeout</c> never turns it into a wait; the provider merely re-runs the statement
 /// until its command timeout and then reports the conflict. Document tables and reads of the
-/// blob table are unaffected, and so is a file database in WAL mode.
+/// blob table are unaffected.
+/// </para>
+/// <para>
+/// On a file database in WAL mode writers keep running; an open stream only pins the log against
+/// truncation. On a file database running the rollback journal
+/// (<see cref="DocumentStoreOptions.EnableWalMode"/> false) the lock is database-wide and the
+/// busy handler <em>is</em> invoked, so a writer on another connection waits and then fails with
+/// plain <c>SQLITE_BUSY</c> (code 5, extended 5, <c>database is locked</c>) — and that covers a
+/// write to a <em>document</em> table as well, which is the difference that matters, since under
+/// a shared cache only the blob table locks. Reads of either table are unaffected there too.
 /// </para>
 /// <para>
 /// Disposal order is blob, then transaction, then connection — each in a <c>finally</c>, so a
@@ -77,12 +87,12 @@ internal sealed class BlobReadStream : Stream
 
         try
         {
-            // Deferred, so the BEGIN itself takes no lock; the rowid lookup below takes one and
-            // holds it until this transaction ends. Its job is to pin a read snapshot, which is
-            // what keeps the rowid resolved below from being reused by another connection before
-            // the blob handle opens. On a shared-cache in-memory database that lock is
-            // table-level, so blob-table writes fail with SQLITE_LOCKED while the stream lives —
-            // busy_timeout does not apply, the busy handler is never invoked for that conflict.
+            // Deferred, so the BEGIN itself takes no lock; the rowid lookup below takes one. Its
+            // job is to pin a read snapshot, which is what keeps the rowid resolved below from
+            // being reused by another connection before the blob handle opens. The lock is not
+            // this transaction's to release: measured, the open SqliteBlob handle holds it by
+            // itself, so it lives until the stream is disposed. The class remarks record what
+            // that costs a concurrent writer in each journal mode.
             transaction = connection.BeginTransaction(System.Data.IsolationLevel.Serializable, deferred: true);
 
             var row = await connection.QueryFirstInt64StringAsync(
