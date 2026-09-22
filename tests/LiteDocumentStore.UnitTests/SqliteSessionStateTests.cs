@@ -4,13 +4,16 @@ using Xunit;
 namespace LiteDocumentStore.UnitTests;
 
 /// <summary>
-/// Unit tests for <see cref="SqliteSessionState"/> — the two probes that decide whether a
-/// connection coming back to the pool still carries transaction state.
+/// Unit tests for <see cref="SqliteSessionState"/> — the probe that decides whether a connection
+/// coming back to the pool still carries transaction state.
 /// </summary>
 /// <remarks>
-/// The shapes are the ones a consumer's raw SQL can leave behind. Each was measured against
-/// Microsoft.Data.Sqlite 10.0.11: neither probe subsumes the other, so both are pinned per
-/// shape rather than only through <see cref="SqliteSessionState.IsSessionDirty"/>.
+/// The shapes are the ones a consumer's raw SQL can leave behind, each measured against
+/// Microsoft.Data.Sqlite 10.0.11. Two of them are invisible to the probe and are pinned as such:
+/// the provider's own attached-transaction view disagrees with SQLite's autocommit flag in both
+/// directions, which is why a connection a caller has had raw access to is discarded outright
+/// rather than probed. <see cref="HasManagedTransaction"/> below is that second view, kept here
+/// as the observation and not in the library, which no longer asks the question.
 /// </remarks>
 [Trait("Category", "Unit")]
 public sealed class SqliteSessionStateTests : IDisposable
@@ -28,6 +31,14 @@ public sealed class SqliteSessionStateTests : IDisposable
         return connection;
     }
 
+    // The provider view SqliteSessionState deliberately does not probe: CreateCommand copies the
+    // connection's attached transaction onto every command it makes.
+    private static bool HasManagedTransaction(SqliteConnection connection)
+    {
+        using var probe = connection.CreateCommand();
+        return probe.Transaction is not null;
+    }
+
     private static void Execute(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
@@ -41,8 +52,8 @@ public sealed class SqliteSessionStateTests : IDisposable
         using var connection = OpenConnection();
 
         Assert.False(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.False(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.False(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out _));
+        Assert.False(HasManagedTransaction(connection));
+        Assert.False(SqliteSessionState.IsSessionDirty(connection, out _));
     }
 
     [Fact]
@@ -57,74 +68,69 @@ public sealed class SqliteSessionStateTests : IDisposable
         }
 
         Assert.False(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.False(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.False(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out _));
+        Assert.False(HasManagedTransaction(connection));
+        Assert.False(SqliteSessionState.IsSessionDirty(connection, out _));
     }
 
     [Fact]
-    public void RawBegin_IsSeenOnlyByTheAutocommitProbe()
+    public void RawBegin_IsDirty()
     {
         using var connection = OpenConnection();
 
         Execute(connection, "BEGIN");
 
         Assert.True(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.False(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.True(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out var reason));
+        Assert.False(HasManagedTransaction(connection));
+        Assert.True(SqliteSessionState.IsSessionDirty(connection, out var reason));
         Assert.Contains("pending", reason);
-
-        // Seen by the cheap check alone, which is what every store operation pays for.
-        Assert.True(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: false, out _));
 
         Execute(connection, "ROLLBACK");
     }
 
     [Fact]
-    public void RawSavepointOutsideATransaction_IsSeenOnlyByTheAutocommitProbe()
+    public void RawSavepointOutsideATransaction_IsDirty()
     {
         using var connection = OpenConnection();
 
         Execute(connection, "SAVEPOINT sp");
 
         Assert.True(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.False(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.True(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out _));
+        Assert.False(HasManagedTransaction(connection));
+        Assert.True(SqliteSessionState.IsSessionDirty(connection, out _));
 
         Execute(connection, "RELEASE sp");
     }
 
     [Fact]
-    public void AnAbandonedManagedTransaction_IsSeenByBothProbes()
+    public void AnAbandonedManagedTransaction_IsDirty()
     {
         using var connection = OpenConnection();
 
         var abandoned = connection.BeginTransaction();
 
         Assert.True(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.True(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.True(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out _));
+        Assert.True(HasManagedTransaction(connection));
+        Assert.True(SqliteSessionState.IsSessionDirty(connection, out _));
 
         abandoned.Rollback();
     }
 
     [Fact]
-    public void RawCommitUnderAManagedTransaction_IsSeenOnlyByTheManagedProbe()
+    public void RawCommitUnderAManagedTransaction_IsInvisibleToTheProbe()
     {
         using var connection = OpenConnection();
 
         // The provider watches for an out-of-band ROLLBACK but not for a COMMIT, so the
-        // transaction object stays attached with nothing left to roll back. SQLite's own
-        // autocommit flag is clean here, which is why the cheap probe alone is not enough.
+        // transaction object stays attached with nothing left to roll back while SQLite's own
+        // autocommit flag reads clean. The probe therefore calls this connection usable, and it
+        // is not: this is the shape that makes discarding after raw access unconditional rather
+        // than a verdict.
         var stale = connection.BeginTransaction();
         Execute(connection, "COMMIT");
 
         Assert.False(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.True(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.True(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out var reason));
-        Assert.Contains("attached", reason);
-
-        // Invisible without the managed probe — the reason the raw-connection paths pay for it.
-        Assert.False(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: false, out _));
+        Assert.True(HasManagedTransaction(connection));
+        Assert.False(SqliteSessionState.IsSessionDirty(connection, out _));
 
         // Closing this connection as-is throws "cannot rollback - no transaction is active" — the
         // reason the pool closes through CloseQuietly. Give the attached transaction something to
@@ -134,34 +140,34 @@ public sealed class SqliteSessionStateTests : IDisposable
     }
 
     [Fact]
-    public void RawRollbackUnderAManagedTransaction_IsSeenOnlyByTheManagedProbe()
+    public void RawRollbackUnderAManagedTransaction_IsInvisibleToTheProbe()
     {
         using var connection = OpenConnection();
 
         // Here the provider's rollback hook does complete the transaction, but it stays attached,
         // and every later command on the connection throws "This SqliteTransaction has completed".
+        // Clean to the probe, like the COMMIT shape above.
         var stale = connection.BeginTransaction();
         Execute(connection, "ROLLBACK");
 
         Assert.False(SqliteSessionState.HasPendingTransaction(connection));
-        Assert.True(SqliteSessionState.HasManagedTransaction(connection));
-        Assert.True(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out _));
-        Assert.False(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: false, out _));
+        Assert.True(HasManagedTransaction(connection));
+        Assert.False(SqliteSessionState.IsSessionDirty(connection, out _));
 
         GC.KeepAlive(stale);
     }
 
     [Fact]
-    public void OnAClosedConnection_TheManagedProbeAnswersAndTheAutocommitProbeThrows()
+    public void OnAClosedConnection_TheAutocommitProbeThrows()
     {
         // Why IsSessionDirty checks State before calling the autocommit probe, and why the pool
-        // guards both behind its own State check and a catch.
+        // guards it behind its own State check and a catch.
         var connection = OpenConnection();
         connection.Close();
 
-        Assert.False(SqliteSessionState.HasManagedTransaction(connection));
+        Assert.False(HasManagedTransaction(connection));
         Assert.Throws<ArgumentNullException>(() => SqliteSessionState.HasPendingTransaction(connection));
-        Assert.False(SqliteSessionState.IsSessionDirty(connection, includeManagedTransaction: true, out _));
+        Assert.False(SqliteSessionState.IsSessionDirty(connection, out _));
 
         connection.Dispose();
     }

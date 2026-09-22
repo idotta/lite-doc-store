@@ -158,10 +158,11 @@ public class JsonPathResolverTests
         Assert.Contains("not serialized", exception.Message, StringComparison.Ordinal);
     }
 
-    // The member rule the resolver re-checks against is one or more characters, none of which is an
-    // apostrophe, a '.' or a '['. A kebab-cased name is the mundane case and used to be refused:
-    // JsonNamingPolicy.KebabCaseLower turns "FullName" into "full-name", so a store on the BCL's own
-    // policy could build no index, query or patch path at all.
+    // The member rule the resolver re-checks against refuses only an apostrophe and U+0000; every
+    // other serialized name is rendered, quoted when it has to be. A kebab-cased name is the mundane
+    // case and used to be refused: JsonNamingPolicy.KebabCaseLower turns "FullName" into
+    // "full-name", so a store on the BCL's own policy could build no index, query or patch path at
+    // all.
 
     [Fact]
     public void Resolve_WithAKebabCasedSerializedName_ResolvesIt()
@@ -170,14 +171,16 @@ public class JsonPathResolverTests
         Assert.Equal("$.full-name", Resolve<Person>(x => x.FullName, KebabCase()));
     }
 
+    // A [JsonPropertyName("a.b")] is how a consumer reaches Tier 2 without writing a path at all,
+    // and the rendering it gets must be the one SqlGenerator would produce for the same key written
+    // as a string — otherwise the index and the query name different keys.
     [Fact]
-    public void Resolve_WithASerializedNameCarryingAStructuralCharacter_ThrowsNamingTheMember()
+    public void Resolve_WithASerializedNameCarryingAStructuralCharacter_RendersTheQuotedForm()
     {
-        var exception = Assert.Throws<ArgumentException>(() => Resolve<Customer>(x => x.Dotted, Reflection()));
-
-        Assert.Equal("jsonPath", exception.ParamName);
-        Assert.Contains("a.b", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("Dotted", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("$.\"a.b\"", Resolve<Customer>(x => x.Dotted, Reflection()));
+        Assert.Equal(
+            "$.\"a.b\"",
+            SqlGenerator.ValidateJsonPath(Resolve<Customer>(x => x.Dotted, Reflection()), "jsonPath"));
     }
 
     // The injection boundary, reached through the expression overload rather than a string path.
@@ -194,7 +197,7 @@ public class JsonPathResolverTests
 
     // U+0000 terminates the SQL string sqlite3_prepare reads, truncating the whole statement. The
     // old identifier-shaped member rule rejected it; the widened rule must keep rejecting it, and
-    // permanently — quoting cannot rescue it, so it is not deferred to C18 Tier 2.
+    // permanently — quoting cannot rescue it either, so no spelling of a path reaches such a key.
     [Fact]
     public void Resolve_WithASerializedNameCarryingANul_ThrowsNamingTheMember()
     {
@@ -205,11 +208,13 @@ public class JsonPathResolverTests
         Assert.Contains("U+0000", exception.Message, StringComparison.Ordinal);
     }
 
-    // The recovery advice has to split by reason, because only one of these is this library's own
-    // limitation. A '.' or a '[' needs the $."quoted" rendering that is deferred to C18 Tier 2, and
-    // an apostrophe only breaks the interpolated literal - measured, a bound '$."a.b"' and '$.a''b'
-    // each read their own key, so ExecuteRawAsync really does reach them. A U+0000 member is
-    // reachable by nothing, so sending the caller to raw SQL would be false advice.
+    // The recovery advice has to split by reason, because only one of these is reachable by nothing.
+    // An apostrophe only breaks the interpolated literal - measured, a bound '$.a''b' reads its own
+    // key, so ExecuteRawAsync really does reach it, and so does a member that needs the $."quoted"
+    // form while also carrying a '"', which is refused for what the declared minimum engine does
+    // with the quotes rather than for the character. A U+0000 member is reachable by nothing, so
+    // sending the caller to raw SQL would be false advice. A '.' or a '[' is no longer a fault at
+    // all: AppendCanonicalMember writes such a member quoted.
     [Fact]
     public void Resolve_WithANulName_DoesNotPointTheCallerAtRawSql()
     {
@@ -217,13 +222,6 @@ public class JsonPathResolverTests
 
         Assert.Contains("No JSON path can address it", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("ExecuteRawAsync", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Resolve_WithADottedName_KeepsTheRawSqlPointer()
-    {
-        AssertKeepsTheRawSqlPointer(Assert.Throws<ArgumentException>(
-            () => Resolve<Customer>(x => x.Dotted, Reflection())));
     }
 
     [Fact]

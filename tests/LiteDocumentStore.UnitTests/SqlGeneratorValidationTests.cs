@@ -222,7 +222,7 @@ public class SqlGeneratorValidationTests
         Assert.Contains("json_extract(data, '$') IS NOT NULL", filtered, StringComparison.Ordinal);
     }
 
-    // --- The widened member rule (C18 Tier 1) --------------------------------------------------
+    // --- The widened member rule: members written unquoted ---------------------------------------
     //
     // A member is one or more characters, none of which is an apostrophe, a '.' or a '['. That
     // mirrors SQLite's own unquoted path label: measured against 3.53.3, every shape below resolves
@@ -256,8 +256,8 @@ public class SqlGeneratorValidationTests
     [Theory]
     // A '.' and a '[' stay structural, so a member cannot carry one: "$.a.b" is unambiguously the
     // nested path a -> b, never the single key "a.b", and "$.a[b" is read as an indexer. Reaching a
-    // key that really contains one needs the $."quoted" form (C18 Tier 2), which is not implemented;
-    // what is pinned here is that widening the member rule did not make these ambiguous or legal.
+    // key that really contains one needs the $."quoted" form, which ships and is pinned elsewhere; what
+    // is pinned here is that widening the member rule did not make these unquoted spellings legal.
     [InlineData("$..Email")]             // an empty member between two dots
     [InlineData("$.a.")]                 // an empty trailing member
     [InlineData("$.")]                   // the empty member: SQLite errors on it
@@ -315,7 +315,7 @@ public class SqlGeneratorValidationTests
     // generator that interpolates a path. Loud, but a raw SqliteException carrying a truncated,
     // misleading message, leaked from a typed API for an argument this validator should refuse.
     //
-    // It is NOT a C18 Tier 2 shape. Quoting cannot rescue it, measured both interpolated and bound:
+    // Quoting does not rescue it, so it is not a $."quoted" shape. Measured both interpolated and bound:
     // $."a\0b" and $['a\0b'] fail too, so such a key is unaddressable by every form.
     [Theory]
     [InlineData("$.\0ab")]               // at the start of a member
@@ -383,5 +383,49 @@ public class SqlGeneratorValidationTests
         {
             Assert.Throws<ArgumentException>(() => SqlGenerator.GenerateGetByIdSql(identifier));
         }
+    }
+
+    // --- Every interpolation site carries the canonical rendering -------------------------------
+    //
+    // ValidateJsonPath *returns* the canonical path; calling it for its side effect and then
+    // interpolating the caller's own string is the regression this pins. It is invisible to a
+    // round-trip assertion — '$."Name"' and '$.Name' read the same key — and shows up only as an
+    // expression index that silently stops being matched, so the generated text is the assertion.
+    // One row per generator that writes a path into SQL.
+    [Theory]
+    [InlineData("create-index")]
+    [InlineData("create-composite-index")]
+    [InlineData("index-filter")]
+    [InlineData("query-by-path")]
+    [InlineData("add-virtual-column")]
+    [InlineData("query-predicate")]
+    [InlineData("query-ordering")]
+    [InlineData("patch-set")]
+    [InlineData("patch-remove")]
+    public void EveryPathInterpolatingGenerator_EmitsTheCanonicalRendering(string generator)
+    {
+        // Non-canonical on the way in: quotes that buy nothing are dropped.
+        const string Raw = "$.\"Name\"";
+
+        var sql = generator switch
+        {
+            "create-index" => SqlGenerator.GenerateCreateJsonIndexSql("t", "ix", Raw),
+            "create-composite-index" => SqlGenerator.GenerateCreateCompositeJsonIndexSql("t", "ix", [Raw]),
+            "index-filter" => SqlGenerator.GenerateCreateJsonIndexSql(
+                "t", "ix", "$.Other", new IndexOptions { Filter = IndexFilter.IsNotNull(Raw) }),
+            "query-by-path" => SqlGenerator.GenerateQueryByJsonPathSql("t", Raw),
+            "add-virtual-column" => SqlGenerator.GenerateAddVirtualColumnSql("t", "c", Raw),
+            "query-predicate" => SqlGenerator.GenerateQuerySql(
+                "t", [new QueryPredicate(Raw, QueryOperator.Equal, "v", [])], [], null, null).Sql,
+            "query-ordering" => SqlGenerator.GenerateQuerySql(
+                "t", [], [new QueryOrdering(Raw, false)], null, null).Sql,
+            "patch-set" => SqlGenerator.GeneratePatchSql(
+                "t", [new PatchOperation(Raw, PatchOperationKind.Set, "v", false)], false, "patch").Sql,
+            _ => SqlGenerator.GeneratePatchSql(
+                "t", [new PatchOperation(Raw, PatchOperationKind.Remove, null, false)], false, "patch").Sql
+        };
+
+        Assert.Contains("'$.Name'", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Name\"", sql, StringComparison.Ordinal);
     }
 }

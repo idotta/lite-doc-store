@@ -212,20 +212,42 @@ public sealed class SqliteConnectionPoolTests
     }
 
     [Fact]
-    public async Task ReturnAfterExternalAccess_WithACleanConnection_RecyclesIt()
+    public async Task ReturnAfterExternalAccess_WithACleanConnection_StillDoesNotRecycleIt()
     {
-        // The raw path must not discard indiscriminately: a well-behaved callback costs nothing.
+        // Clean by the probe is not clean: the session state a raw callback can change is not
+        // observable, so the connection is retired whatever its transaction state looks like.
+        // The slot must come back before the replacement is opened, or this deadlocks at
+        // MaxPoolSize = 1.
         using var pool = CreatePool(maxPoolSize: 1);
 
         var lease = await pool.RentAsync();
         var connection = lease.Connection;
+        Execute(connection, "PRAGMA foreign_keys = OFF");
         lease.ReturnAfterExternalAccess();
 
-        Assert.Equal(ConnectionState.Open, connection.State);
-        Assert.Equal(1, pool.ConnectionCount);
+        Assert.Equal(ConnectionState.Closed, connection.State);
+        Assert.Equal(0, pool.ConnectionCount);
 
         await using var next = await pool.RentAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Same(connection, next.Connection);
+        Assert.NotSame(connection, next.Connection);
+        Assert.Equal(ConnectionState.Open, next.Connection.State);
+        Assert.Equal(1, pool.ConnectionCount);
+    }
+
+    [Fact]
+    public async Task ReturnAfterExternalAccess_Repeatedly_KeepsConnectionCountHonestAndDoesNotStarve()
+    {
+        // Each raw return uncounts its connection and hands the slot back, so the count tracks
+        // what the pool can lease rather than climbing with every open.
+        using var pool = CreatePool(maxPoolSize: 1);
+
+        for (int i = 0; i < 5; i++)
+        {
+            var lease = await pool.RentAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(1, pool.ConnectionCount);
+            lease.ReturnAfterExternalAccess();
+            Assert.Equal(0, pool.ConnectionCount);
+        }
     }
 
     [Fact]
@@ -250,7 +272,8 @@ public sealed class SqliteConnectionPoolTests
     {
         // The shape SQLite's own autocommit flag cannot see: a raw COMMIT leaves the provider's
         // transaction object attached, which breaks the next renter's BeginTransaction and makes
-        // closing the connection throw. Only the raw path pays for this check.
+        // closing the connection throw. Nothing probes for it any more — the raw path discards
+        // regardless — so this pins that the unconditional discard still handles it.
         using var pool = CreatePool(maxPoolSize: 1);
 
         var lease = await pool.RentAsync();

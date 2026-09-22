@@ -704,8 +704,8 @@ internal sealed class DocumentStore : IDocumentStore
         ArgumentNullException.ThrowIfNull(operation);
         ThrowIfDisposed();
 
-        // Not 'await using': the callback has had the raw connection, so it may have left a
-        // transaction on it — see PooledConnection.ReturnAfterExternalAccess.
+        // Not 'await using': the callback has had the raw connection, so the store can no longer
+        // vouch for its session — see PooledConnection.ReturnAfterExternalAccess.
         var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -924,8 +924,8 @@ internal sealed class DocumentStore : IDocumentStore
     {
         ThrowIfDisposed();
 
-        // A migration's UpAsync/DownAsync runs arbitrary SQL on this connection, so it is checked
-        // like an ExecuteRawAsync callback rather than like a store operation.
+        // A migration's UpAsync/DownAsync runs arbitrary SQL on this connection, so it is retired
+        // like an ExecuteRawAsync callback's rather than recycled like a store operation's.
         var lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
         try
         {

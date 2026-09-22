@@ -262,7 +262,11 @@ public interface IDocumentOperations
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>
     /// <typeparam name="TValue">The compared value's type</typeparam>
-    /// <param name="jsonPath">The JSON path, e.g. <c>$.Email</c></param>
+    /// <param name="jsonPath">
+    /// The JSON path, e.g. <c>$.Email</c>. A key that cannot be written as a bare member — one
+    /// holding a <c>.</c> or a <c>[</c>, or the empty key — is written in SQLite's quoted form,
+    /// <c>$."a.b"</c>, escaping <c>"</c> and <c>\</c> JSON-style
+    /// </param>
     /// <param name="value">The value to match</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>The matching documents</returns>
@@ -367,8 +371,11 @@ public interface IDocumentOperations
     /// </remarks>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
     /// <param name="jsonPath">
-    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A path holding an array indexer
-    /// has no derivable index name, so it needs an explicit <paramref name="indexName"/>
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>.
+    /// A key that cannot be written as a bare member — one holding a <c>.</c> or a <c>[</c>, or the
+    /// empty key — is written in SQLite's quoted form, <c>$."a.b"</c>, escaping <c>"</c> and
+    /// <c>\</c> JSON-style. A path holding an array indexer or a quoted member has no derivable
+    /// index name, so it needs an explicit <paramref name="indexName"/>
     /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
@@ -426,8 +433,11 @@ public interface IDocumentOperations
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
     /// <param name="jsonPath">
-    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A path holding an array indexer
-    /// has no derivable index name, so it needs an explicit <paramref name="indexName"/>
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>.
+    /// A key that cannot be written as a bare member — one holding a <c>.</c> or a <c>[</c>, or the
+    /// empty key — is written in SQLite's quoted form, <c>$."a.b"</c>, escaping <c>"</c> and
+    /// <c>\</c> JSON-style. A path holding an array indexer or a quoted member has no derivable
+    /// index name, so it needs an explicit <paramref name="indexName"/>
     /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
     /// <param name="options">The index DDL options</param>
@@ -473,7 +483,10 @@ public interface IDocumentOperations
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
     /// <param name="jsonPaths">
-    /// The JSON paths, in index column order. A path holding an array indexer has no derivable
+    /// The JSON paths, in index column order.
+    /// A key that cannot be written as a bare member — one holding a <c>.</c> or a <c>[</c>, or the
+    /// empty key — is written in SQLite's quoted form, <c>$."a.b"</c>, escaping <c>"</c> and
+    /// <c>\</c> JSON-style. A path holding an array indexer or a quoted member has no derivable
     /// index name, so it needs an explicit <paramref name="indexName"/>
     /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
@@ -533,7 +546,10 @@ public interface IDocumentOperations
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
     /// <param name="jsonPaths">
-    /// The JSON paths, in index column order. A path holding an array indexer has no derivable
+    /// The JSON paths, in index column order.
+    /// A key that cannot be written as a bare member — one holding a <c>.</c> or a <c>[</c>, or the
+    /// empty key — is written in SQLite's quoted form, <c>$."a.b"</c>, escaping <c>"</c> and
+    /// <c>\</c> JSON-style. A path holding an array indexer or a quoted member has no derivable
     /// index name, so it needs an explicit <paramref name="indexName"/>
     /// </param>
     /// <param name="indexName">An explicit index name, or null to derive one</param>
@@ -595,7 +611,11 @@ public interface IDocumentOperations
     /// index and seek on it.
     /// </summary>
     /// <typeparam name="T">The document type, which selects the table</typeparam>
-    /// <param name="jsonPath">The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c></param>
+    /// <param name="jsonPath">
+    /// The JSON path, e.g. <c>$.email</c> or <c>$.Tags[0]</c>. A key that cannot be written as a
+    /// bare member — one holding a <c>.</c> or a <c>[</c>, or the empty key — is written in
+    /// SQLite's quoted form, <c>$."a.b"</c>, escaping <c>"</c> and <c>\</c> JSON-style
+    /// </param>
     /// <param name="columnName">The generated column's name</param>
     /// <param name="createIndex">Whether to also index the column</param>
     /// <param name="columnType">The column's SQLite type (default TEXT)</param>
@@ -968,32 +988,38 @@ public interface IDocumentOperations
     /// transaction and will not execute while one is pending.
     /// </para>
     /// <para>
-    /// <strong>Connection-local state a callback changes must be restored before the callback
-    /// returns</strong>, because <strong>the store resets none of it</strong>. The connection is
-    /// pooled, its PRAGMAs are applied once when it is physically opened, and the guard that runs
-    /// on the way back probes for a pending transaction rather than for session state — so a change
-    /// persists on that connection until it is discarded or the store is disposed, and is inherited
-    /// by unrelated later operations that draw it.
+    /// <strong>Connection-local state a callback changes cannot leak into a later operation: the
+    /// store closes the connection instead of recycling it.</strong> A callback may change
+    /// whatever it needs and leave it changed. Nothing is restored and nothing is re-applied — the
+    /// connection is retired, and the next rent opens a fresh one that the factory configures from
+    /// scratch.
     /// </para>
     /// <para>
-    /// Three kinds were <em>measured</em> to leak this way. A session-scoped <c>PRAGMA</c>: with
+    /// That is unconditional because the alternative does not exist. PRAGMAs are applied once,
+    /// when a connection is physically opened, and the state a callback can change is not
+    /// enumerable: three kinds were <em>measured</em> to be inherited by the next renter before
+    /// this — a session-scoped <c>PRAGMA</c> (with
     /// <see cref="DocumentStoreOptions.MaxPoolSize"/> = 1 and
     /// <see cref="DocumentStoreOptions.EnableForeignKeys"/> = <c>true</c>, a callback issuing
     /// <c>PRAGMA foreign_keys = OFF</c> left the next operation, an ordinary store write and a
-    /// store transaction all reading <c>0</c>, with the option still reporting <c>true</c>. An
-    /// <c>ATTACH</c>ed database: still listed in <c>pragma_database_list</c> on a later operation.
-    /// And a <c>TEMP</c> table: still in <c>temp.sqlite_master</c> on a later operation.
+    /// store transaction all reading <c>0</c>, with the option still reporting <c>true</c>), an
+    /// <c>ATTACH</c>ed database still listed in <c>pragma_database_list</c>, and a <c>TEMP</c>
+    /// table still in <c>temp.sqlite_master</c> — and the rest of the category is not reachable by
+    /// re-applying a PRAGMA list at all: the remaining <c>TEMP</c> schema (views, indexes,
+    /// triggers), <see cref="SqliteConnection.DefaultTimeout"/>, functions, aggregates and
+    /// collations registered on the connection, and loaded extensions.
     /// </para>
     /// <para>
-    /// Those three are examples of the category rather than the extent of it. Anything else that
-    /// lives on a <see cref="SqliteConnection"/> rather than in the database file behaves the same
-    /// way by the same mechanism — the rest of the <c>TEMP</c> schema (views, indexes, triggers),
-    /// <see cref="SqliteConnection.DefaultTimeout"/>, functions, aggregates and collations
-    /// registered on the connection (including ones overriding a built-in), and loaded extensions.
-    /// Those were reasoned from the mechanism, not measured. Treat the rule as "restore what you
-    /// changed", not as a list to check against. A larger pool removes none of it and only makes it
-    /// less deterministic: it reaches fewer operations, but which ones depends on who draws that
-    /// connection.
+    /// <strong>The cost is one physical connection open per call</strong>, paid only here and by
+    /// <see cref="IDocumentStore.MigrateAsync(IEnumerable{IMigration}, CancellationToken)"/>, never
+    /// by a document operation, and it is not small: measured over 5000 calls of a trivial
+    /// <c>SELECT 1</c> callback, a round trip that took ~8 µs when the connection was recycled
+    /// takes ~335 µs on a WAL file database and ~60 µs on a shared-cache in-memory one. Prefer one
+    /// callback doing several statements over several callbacks doing one each. The same rule
+    /// applies to the
+    /// <see cref="IDocumentTransaction"/> overload — a transaction that has run a raw callback
+    /// retires its connection when it completes — so one raw callback per transaction costs one
+    /// open, not one per statement.
     /// </para>
     /// </remarks>
     /// <typeparam name="TResult">The result type</typeparam>

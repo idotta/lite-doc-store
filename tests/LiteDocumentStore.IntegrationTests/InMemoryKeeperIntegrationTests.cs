@@ -69,6 +69,24 @@ public sealed class InMemoryKeeperIntegrationTests : IDisposable
         Assert.Equal(1, await CanaryRowsAsync(store));
     }
 
+    /// <summary>
+    /// The new discard site: a raw callback that left nothing behind still retires the connection,
+    /// so at <c>MaxPoolSize = 1</c> the last leasable connection to the in-memory database closes
+    /// on every <c>ExecuteRawAsync</c>. Only the reserved keeper stops the database going with it.
+    /// </summary>
+    [Fact]
+    public async Task CleanExternalAccessDiscard_LeavesTheInMemoryDatabaseIntact()
+    {
+        await using var store = await StoreWithCanaryAsync(InMemoryOptions());
+
+        for (int i = 0; i < 3; i++)
+        {
+            await store.ExecuteRawAsync((_, _) => Task.CompletedTask);
+        }
+
+        Assert.Equal(1, await CanaryRowsAsync(store));
+    }
+
     /// <summary>An undisposed provider transaction: the second documented shape.</summary>
     [Fact]
     public async Task UndisposedProviderTransactionDiscard_LeavesTheInMemoryDatabaseIntact()

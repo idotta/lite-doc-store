@@ -2046,9 +2046,10 @@ internal readonly struct DocumentOperations
     /// widening it trades a loud error for a quiet one.
     ///
     /// The indexer is not the only shape: the member grammar admits any character but an
-    /// apostrophe, a <c>.</c> and a <c>[</c>, which is wider than a SQL identifier, so a
-    /// kebab-cased serialized name reaches the derivation too. An expression-derived path cannot
-    /// carry an indexer but can carry such a member, which is why both shapes are screened here.
+    /// apostrophe and U+0000, which is far wider than a SQL identifier, so a kebab-cased
+    /// serialized name reaches the derivation too, and so does a <c>$."quoted"</c> member. An
+    /// expression-derived path cannot carry an indexer but can carry either of those, which is why
+    /// all three shapes are screened here.
     ///
     /// Blaming <c>paramName</c> — the caller's path parameter — is accurate because the other half
     /// of the derived name cannot be the offender: <c>TableNameCollisionGuard</c> has already
@@ -2057,6 +2058,19 @@ internal readonly struct DocumentOperations
     /// </remarks>
     private static void RequireDerivableName(string tableName, string jsonPath, string paramName)
     {
+        // A quoted member always renders as the two characters '."' and nothing else in a
+        // canonical path can produce them — an unquoted member holds no '.', and a member starting
+        // with a '"' is always quoted — so this is an exact test for "the path has a Tier 2
+        // segment". Such a name derives one carrying a '"', which is no identifier; refusing it by
+        // its own reason keeps the indexer message below honest for '$."a[b"'.
+        if (jsonPath.Contains(".\"", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"No index name can be derived from '{jsonPath}': a path with a quoted member name " +
+                "needs an explicit index name.",
+                paramName);
+        }
+
         if (jsonPath.Contains('[', StringComparison.Ordinal))
         {
             throw new ArgumentException(
@@ -2065,7 +2079,7 @@ internal readonly struct DocumentOperations
                 paramName);
         }
 
-        // The path grammar admits any member character but an apostrophe, a '.' and a '[', which is
+        // The path grammar admits any member character but an apostrophe and U+0000, which is far
         // wider than a SQL identifier: under JsonNamingPolicy.KebabCaseLower, "$.full-name" derives
         // "idx_T_full-name", which ValidateIdentifier rejects against an indexName the caller never
         // passed - the exact mis-attribution this helper exists to prevent. Screened through

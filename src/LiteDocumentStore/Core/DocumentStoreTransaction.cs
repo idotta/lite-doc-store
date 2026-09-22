@@ -24,6 +24,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     private int _disposed;
     private int _released;
     private bool _connectionCompromised;
+    private bool _rawAccessed;
 
     internal DocumentStoreTransaction(
         PooledConnection lease,
@@ -556,6 +557,10 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         ArgumentNullException.ThrowIfNull(operation);
         ActiveTransaction();
+
+        // Set before the callback runs, not after: it must hold even if the callback throws, and
+        // a caller who abandons the returned task has still had the connection.
+        _rawAccessed = true;
         return operation(_lease.Connection, cancellationToken);
     }
 
@@ -566,6 +571,9 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     {
         ArgumentNullException.ThrowIfNull(operation);
         ActiveTransaction();
+
+        // See the generic overload.
+        _rawAccessed = true;
         return operation(_lease.Connection, cancellationToken);
     }
 
@@ -692,7 +700,11 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
 
     /// <summary>
     /// Disposes the SQLite transaction and hands its connection back to the pool, discarding
-    /// the connection instead when its session state can no longer be trusted.
+    /// the connection instead when its session state can no longer be trusted — because
+    /// disposing the transaction failed, or because <see cref="ExecuteRawAsync{TResult}"/> handed
+    /// the connection to the caller, which is the store-level rule
+    /// (<see cref="SqliteConnectionPool.ReturnAfterExternalAccess"/>) applied to the one raw path
+    /// that does not go through it.
     /// </summary>
     /// <remarks>
     /// Idempotent, so commit-then-dispose does not return the same connection twice. Once it has
@@ -736,7 +748,7 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         }
         finally
         {
-            if (_connectionCompromised)
+            if (_connectionCompromised || _rawAccessed)
             {
                 _lease.Discard();
             }

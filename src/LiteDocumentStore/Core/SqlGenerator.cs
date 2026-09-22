@@ -664,7 +664,10 @@ internal static class SqlGenerator
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(indexName, nameof(indexName));
-        ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
+
+        // Assigned back over the parameter, not called for its side effect: the return value is the
+        // canonical rendering, and the raw argument must not survive to be interpolated instead.
+        jsonPath = ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
 
         return BuildCreateIndexSql(tableName, indexName, [jsonPath], options, ifNotExists);
     }
@@ -886,7 +889,7 @@ internal static class SqlGenerator
     public static string GenerateQueryByJsonPathSql(string tableName, string jsonPath)
     {
         ValidateIdentifier(tableName, nameof(tableName));
-        ValidateJsonPath(jsonPath, nameof(jsonPath));
+        jsonPath = ValidateJsonPath(jsonPath, nameof(jsonPath));
 
         return $"SELECT id, json(data) as data FROM [{tableName}] WHERE json_extract(data, '{jsonPath}') = @Value";
     }
@@ -907,7 +910,7 @@ internal static class SqlGenerator
     {
         ValidateIdentifier(tableName, nameof(tableName));
         ValidateIdentifier(columnName, nameof(columnName));
-        ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
+        jsonPath = ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
         var validatedType = ValidateColumnType(columnType);
 
         // VIRTUAL columns are computed on read and don't take up storage space
@@ -1404,10 +1407,27 @@ internal static class SqlGenerator
         return null;
     }
 
-    // Grammar: $(.member|[index])*. What a member may contain is stated once, by
-    // PathMemberFault/MemberFault below, which this walk calls for each member it slices out and
-    // which JsonPathResolver calls for an already-isolated serialized name. Each caller keeps its
-    // own message - see MemberFault's own comment for why the rule is what it is.
+    // Grammar: $(.member|."member"|[index])*. What a member may contain is stated once, by
+    // PathMemberFault/MemberFault below, and how a member is *written* is stated once by
+    // MemberNeedsQuoting/AppendCanonicalMember beside it. This walk calls both for each member it
+    // tokenizes out; JsonPathResolver calls both for an already-isolated serialized name. Each
+    // caller keeps its own message - see MemberFault's own comment for why the rule is what it is.
+    //
+    // THE RETURN VALUE IS THE CANONICAL RENDERING AND IS WHAT MUST BE INTERPOLATED. A member that
+    // can be written unquoted is written unquoted, so a Tier 1 path comes back as the same string
+    // instance and a default-configured store sees byte-identical SQL; a member that cannot is
+    // written $."quoted". Interpolating the caller's original argument instead would let index
+    // creation and query emit different text for one key, and SQLite matches an expression index
+    // only when the indexed expression appears literally - so the index would silently stop being
+    // used. Every generator in this file therefore assigns the result back over its own path
+    // parameter, leaving no second variable holding the raw text.
+    //
+    // The rendering is idempotent: DocumentQuery and DocumentPatch validate at build time and the
+    // generators validate again at generation time, so ValidateJsonPath(ValidateJsonPath(p)) must
+    // equal ValidateJsonPath(p). It holds because an unquoted member never needs quoting (the scan
+    // stops at '.' and '[', an empty one is refused, and one starting with '"' is read as quoted)
+    // and a quoted member re-renders to exactly the text it was read from whenever it still needs
+    // quoting.
     //
     // The bare root "$" is grammatically valid; whether it is *usable* splits by what the caller
     // does with the value it extracts, which is what allowRoot selects:
@@ -1431,7 +1451,9 @@ internal static class SqlGenerator
     // explicitly named ones and the virtual column succeeded. Rejecting the root here makes all of
     // them fail the same way, against the path parameter that actually carries it.
     //
-    // An indexer at the root ("$[0]") reaches *into* the document and stays legal on every path.
+    // The root test is a length test, so the tokenizer preserves the split exactly: "$[0]" reaches
+    // into the document and stays legal everywhere, and "$.\"\"" is the empty *key* rather than the
+    // root and is legal wherever a key is.
     internal static string ValidateJsonPath(string jsonPath, string paramName, bool allowRoot = true)
     {
         if (string.IsNullOrEmpty(jsonPath) || jsonPath[0] != '$')
@@ -1449,77 +1471,174 @@ internal static class SqlGenerator
                 paramName);
         }
 
+        // Materialized only when a segment's canonical rendering differs from the text it was read
+        // from, so a Tier 1 path allocates nothing and is handed back as the very instance passed in.
+        StringBuilder? canonical = null;
         var i = 1;
         while (i < jsonPath.Length)
         {
+            var segmentStart = i;
             if (jsonPath[i] == '.')
             {
                 i++;
-                var memberStart = i;
-                while (i < jsonPath.Length && jsonPath[i] != '.' && jsonPath[i] != '[')
+                var member = ReadMember(jsonPath, ref i, paramName, out var quoted);
+
+                // An unquoted member is already canonical by construction; a quoted one is exactly
+                // when it still needs its quotes, since the only escapes accepted are the two this
+                // renderer emits.
+                if (canonical is null && (!quoted || MemberNeedsQuoting(member)))
                 {
-                    i++;
+                    continue;
                 }
 
-                switch (MemberFault(jsonPath.AsSpan(memberStart, i - memberStart)))
-                {
-                    case PathMemberFault.None:
-                        break;
-
-                    case PathMemberFault.Apostrophe:
-                        throw new ArgumentException(
-                            $"Invalid JSON path '{jsonPath}': a member name cannot contain an apostrophe, " +
-                            "which would close the SQL literal the path is written into.",
-                            paramName);
-
-                    case PathMemberFault.Nul:
-                        throw new ArgumentException(
-                            $"Invalid JSON path '{jsonPath}': a member name cannot contain U+0000, which " +
-                            "truncates the SQL statement the path is written into. No quoting form can " +
-                            "address such a key.",
-                            paramName);
-
-                    // Empty, plus the unreachable pair: the scan above stops at '.' and at '[', so a
-                    // member sliced out of a path can never carry either and PathMemberFault.Dot and
-                    // PathMemberFault.Bracket are unobservable here. Only JsonPathResolver, which is
-                    // handed a name nothing tokenized, can see them. No mutation reaches this arm
-                    // through ValidateJsonPath; the message states the whole member rule, which is
-                    // the right answer for all three anyway.
-                    default:
-                        throw new ArgumentException(
-                            $"Invalid JSON path '{jsonPath}': a '.' must be followed by a member name of one or " +
-                            "more characters, none of which is U+0000, an apostrophe, a '.' or a '['.",
-                            paramName);
-                }
+                canonical ??= new StringBuilder(jsonPath.Length).Append(jsonPath, 0, segmentStart);
+                canonical.Append('.');
+                AppendCanonicalMember(canonical, member);
             }
             else if (jsonPath[i] == '[')
             {
-                i++;
-                var digitStart = i;
-                while (i < jsonPath.Length && char.IsAsciiDigit(jsonPath[i]))
-                {
-                    i++;
-                }
-
-                if (i == digitStart || i >= jsonPath.Length || jsonPath[i] != ']')
-                {
-                    throw new ArgumentException(
-                        $"Invalid JSON path '{jsonPath}': an indexer must be a decimal number in brackets, for example '[0]'.",
-                        paramName);
-                }
-
-                i++;
+                ReadIndexer(jsonPath, ref i, paramName);
+                canonical?.Append(jsonPath, segmentStart, i - segmentStart);
             }
             else
             {
                 throw new ArgumentException(
-                    $"Invalid JSON path '{jsonPath}': only '.member' and '[index]' segments are supported, " +
-                    "so every segment after the '$' must begin with a '.' or a '['.",
+                    $"Invalid JSON path '{jsonPath}': only '.member', '.\"member\"' and '[index]' segments " +
+                    "are supported, so every segment after the '$' must begin with a '.' or a '['.",
                     paramName);
             }
         }
 
-        return jsonPath;
+        return canonical?.ToString() ?? jsonPath;
+    }
+
+    // Reads the member that follows a '.', in either spelling, and applies the member rule to it.
+    // The span is safe to hand back: it is cut from jsonPath itself, or from the string the quoted
+    // reader built.
+    private static ReadOnlySpan<char> ReadMember(
+        string jsonPath,
+        ref int i,
+        string paramName,
+        out bool quoted)
+    {
+        ReadOnlySpan<char> member;
+        if (i < jsonPath.Length && jsonPath[i] == '"')
+        {
+            member = ReadQuotedMember(jsonPath, ref i, paramName);
+            quoted = true;
+        }
+        else
+        {
+            var memberStart = i;
+            while (i < jsonPath.Length && jsonPath[i] != '.' && jsonPath[i] != '[')
+            {
+                i++;
+            }
+
+            member = jsonPath.AsSpan(memberStart, i - memberStart);
+            quoted = false;
+
+            // The empty key is reachable, but only spelled out: SQLite errors on a bare "$." and
+            // reading it as the empty key would silently turn a truncated path into a working one.
+            if (member.IsEmpty)
+            {
+                throw new ArgumentException(
+                    $"Invalid JSON path '{jsonPath}': a '.' must be followed by a member name of one " +
+                    "or more characters, or by a double-quoted member name. The empty key is " +
+                    "written '$.\"\"'.",
+                    paramName);
+            }
+        }
+
+        switch (MemberFault(member))
+        {
+            case PathMemberFault.None:
+                return member;
+
+            case PathMemberFault.Apostrophe:
+                throw new ArgumentException(
+                    $"Invalid JSON path '{jsonPath}': a member name cannot contain an apostrophe, " +
+                    "which would close the SQL literal the path is written into.",
+                    paramName);
+
+            case PathMemberFault.QuoteInQuotedMember:
+                throw new ArgumentException(
+                    $"Invalid JSON path '{jsonPath}': a member name with no unquoted spelling " +
+                    "cannot also contain a '\"'. SQLite 3.45.x, the minimum this library " +
+                    "supports, does not unescape a quoted member name, so the key would resolve " +
+                    "on a newer engine and silently match nothing on the minimum. Address it " +
+                    "through ExecuteRawAsync.",
+                    paramName);
+
+            default:
+                throw new ArgumentException(
+                    $"Invalid JSON path '{jsonPath}': a member name cannot contain U+0000, which " +
+                    "truncates the SQL statement the path is written into. No quoting form can " +
+                    "address such a key.",
+                    paramName);
+        }
+    }
+
+    private static void ReadIndexer(string jsonPath, ref int i, string paramName)
+    {
+        i++;
+        var digitStart = i;
+        while (i < jsonPath.Length && char.IsAsciiDigit(jsonPath[i]))
+        {
+            i++;
+        }
+
+        if (i == digitStart || i >= jsonPath.Length || jsonPath[i] != ']')
+        {
+            throw new ArgumentException(
+                $"Invalid JSON path '{jsonPath}': an indexer must be a decimal number in brackets, for example '[0]'.",
+                paramName);
+        }
+
+        i++;
+    }
+
+    // The escapes accepted are exactly the two AppendCanonicalMember emits. Anything else is
+    // refused rather than guessed at: SQLite unescapes a quoted path label JSON-style, so reading
+    // "\b" as a backslash and a 'b' would address a different key than SQLite does - silently.
+    private static string ReadQuotedMember(string jsonPath, ref int i, string paramName)
+    {
+        var member = new StringBuilder();
+        var j = i + 1;
+
+        while (j < jsonPath.Length)
+        {
+            var c = jsonPath[j];
+            if (c == '"')
+            {
+                i = j + 1;
+                return member.ToString();
+            }
+
+            if (c == '\\')
+            {
+                j++;
+                if (j >= jsonPath.Length)
+                {
+                    break;
+                }
+
+                if (jsonPath[j] is not ('"' or '\\'))
+                {
+                    throw new ArgumentException(
+                        $"Invalid JSON path '{jsonPath}': a quoted member name supports only the '\\\"' and " +
+                        "'\\\\' escapes.",
+                        paramName);
+                }
+            }
+
+            member.Append(jsonPath[j]);
+            j++;
+        }
+
+        throw new ArgumentException(
+            $"Invalid JSON path '{jsonPath}': a quoted member name must be closed by an unescaped '\"'.",
+            paramName);
     }
 
     /// <summary>
@@ -1535,51 +1654,71 @@ internal static class SqlGenerator
         /// <summary>The member satisfies the rule.</summary>
         None,
 
-        /// <summary>The member has no characters.</summary>
-        Empty,
-
         /// <summary>The member contains an apostrophe.</summary>
         Apostrophe,
 
         /// <summary>The member contains U+0000.</summary>
         Nul,
 
-        /// <summary>The member contains a '.'.</summary>
-        Dot,
-
-        /// <summary>The member contains a '['.</summary>
-        Bracket
+        /// <summary>
+        /// The member has no unquoted spelling and also contains a <c>"</c>, so reaching it needs
+        /// an escape the minimum supported SQLite does not decode.
+        /// </summary>
+        QuoteInQuotedMember
     }
 
-    // The one owner of the member rule, shared by ValidateJsonPath - which slices each member out
-    // of a whole path - and JsonPathResolver.ValidPathMember, which is handed a single serialized
-    // name. It judges one isolated member and reports *which* rule was broken rather than a bool,
-    // because the two callers' messages differ deliberately; it is the path-member equivalent of
-    // IdentifierError above, which keeps the identifier rule single-owner the same way. The member
-    // is taken as a span so slicing a path allocates nothing on this validation path.
+    // The one owner of the member rule, shared by ValidateJsonPath - which tokenizes each member
+    // out of a whole path - and JsonPathResolver.ValidPathMember, which is handed a single
+    // serialized name. It judges one isolated member and reports *which* rule was broken rather
+    // than a bool, because the two callers' messages differ deliberately; it is the path-member
+    // equivalent of IdentifierError above, which keeps the identifier rule single-owner the same
+    // way. The member is taken as a span so slicing a path allocates nothing on this path.
     //
-    // Emptiness is answered first, and the offending character is otherwise the first one by
-    // position - both callers reported it that way before the rule was consolidated, and
-    // JsonPathResolver's recovery advice splits on it, so "$.a'b\0c" must still name the
-    // apostrophe and "$.a\0b'c" the U+0000.
+    // The offending character is the first one by position - both callers reported it that way
+    // before the rule was consolidated, and JsonPathResolver's recovery advice splits on it, so
+    // "$.a'b\0c" must still name the apostrophe and "$.a\0b'c" the U+0000.
     //
-    // THE RULE: a member is one or more characters, none of which is U+0000, an apostrophe, a '.'
-    // or a '['.
+    // THE RULE: a member may hold any characters at all except U+0000 and an apostrophe - and,
+    // when it has no unquoted spelling, except a '"' as well. Which members can be written
+    // *unquoted* is a separate question, answered by MemberNeedsQuoting below; this rule consults
+    // it, because the third exclusion applies only to the members that one sends through quotes.
     //
-    // That mirrors SQLite's own unquoted path label, which terminates only at '.' or '['. Measured
-    // against 3.53.3 in json_extract, jsonb_set, jsonb_remove and json_each, all unquoted:
-    // $.full-name, "$.a b", an accented key, an emoji key, $.2024, $.a$b, $.a]b and keys carrying a
-    // newline or a tab all resolve, and an expression index over such a path is still used
-    // (EXPLAIN QUERY PLAN -> SEARCH t USING INDEX ix (<expr>=?)). Identifier-shaped members were the
-    // old rule and were far narrower than SQLite allows: JsonNamingPolicy.KebabCaseLower turns
-    // "FullName" into "full-name", so a store on the BCL's own kebab-case policy could use no typed
-    // query, index or patch API at all.
+    // That third exclusion is a version refusal, measured on SQLite 3.45.1 (the floor
+    // SqliteVersionGuard enforces, reached through the system libsqlite3) against 3.53.3 (the build
+    // Microsoft.Data.Sqlite bundles and every test here runs on), for the key "a.b\"c" - a key that
+    // genuinely needs the quotes and also carries a '"', so $."a.b\"c" is a spelling this library
+    // really emits:
+    //
+    //   json_extract(doc, '$."a.b\"c"')       3.45.1 -> NULL             3.53.3 -> the value
+    //   jsonb_set(jsonb(doc), same path, 99)  3.45.1 -> bad JSON path    3.53.3 -> writes the key
+    //
+    // 3.45.1 does not unescape a quoted path label at all, so on the declared minimum an index over
+    // such a key would be a valid index over a path no row has - vacuous and silent, the exact
+    // defect class JsonPathResolver was fixed to kill. The library therefore refuses the key on
+    // every engine rather than letting it work on some and silently miss on others.
+    //
+    // A '"' in a member that does NOT need quoting is untouched: it renders unquoted, where the
+    // character is ordinary and both builds resolve it ($.a"b, measured on both). A '\' inside a
+    // quoted member is untouched too, and that is a measurement rather than an assumption:
+    // $."a.b\\c" reads and writes its own key on 3.45.1 as well as on 3.53.3, through json_extract
+    // and jsonb_set alike - the raw label 3.45.1 compares happens to coincide with the JSON-escaped
+    // form there. So the refusal stays on the '"' and is not widened to escapes in general.
+    //
+    // The unquoted form mirrors SQLite's own unquoted path label, which terminates only at '.' and
+    // at '['. Measured against 3.53.3 in json_extract, jsonb_set, jsonb_remove and json_each, all
+    // unquoted: $.full-name, "$.a b", an accented key, an emoji key, $.2024, $.a$b, $.a]b, $.a"b
+    // and keys carrying a newline or a tab all resolve, and an expression index over such a path is
+    // still used (EXPLAIN QUERY PLAN -> SEARCH t USING INDEX ix (<expr>=?)). Identifier-shaped
+    // members were the old rule and were far narrower than SQLite allows: JsonNamingPolicy
+    // .KebabCaseLower turns "FullName" into "full-name", so a store on the BCL's own kebab-case
+    // policy could use no typed query, index or patch API at all.
     //
     // The apostrophe stays rejected, and is the injection boundary: the path is interpolated into a
     // single-quoted SQL literal (json_extract(data, '...')), which an apostrophe would close. It is
     // deliberately *not* supported by doubling - SQLite only matches a query against an expression
     // index when the indexed expression appears literally, so the emitted text must stay
-    // byte-identical to what CreateIndexAsync wrote, and a rewrite would break that.
+    // byte-identical to what CreateIndexAsync wrote, and a rewrite would break that. Quoting does
+    // not rescue it either: the quotes sit *inside* that SQL literal.
     //
     // U+0000 is rejected for a different reason, and permanently. sqlite3_prepare reads a
     // NUL-terminated string, so a NUL in an interpolated path truncates the whole SQL statement at
@@ -1591,7 +1730,7 @@ internal static class SqlGenerator
     // truncated prefixes is valid SQL. So the failure is loud, but it is a raw SqliteException
     // leaked from six typed APIs carrying a truncated, misleading message, for an argument the
     // validator should refuse up front - the same class as the jsonb_remove(data, '$') NOT NULL
-    // leak the root guard below closes. (Bound as a parameter, which this library never does, the
+    // leak the root guard above closes. (Bound as a parameter, which this library never does, the
     // quirk is worse and silent: json_extract(doc, @p) with "$.a\0b" reads key "a", and jsonb_set /
     // jsonb_remove write and remove it. Worth knowing when binding a path through ExecuteRawAsync.)
     //
@@ -1599,19 +1738,9 @@ internal static class SqlGenerator
     // $."a\0b" fails with "unrecognized token", bound $."a\0b" fails with "bad JSON path". Unquoted,
     // $."quoted" and $['bracket-quoted'] all fail, so such a key is unaddressable by every form.
     // json_each does list it, so one can exist in a stored document and simply cannot be reached.
-    //
-    // '.' and '[' stay rejected inside a member because they are structural in this grammar, and the
-    // empty member stays rejected because SQLite errors on it. Those three shapes - a key containing
-    // '.', a key containing '[', and the empty key - need the $."quoted" form, which is not
-    // implemented (C18 Tier 2). A dotted key is the reason it is worth implementing rather than
-    // documenting: measured, jsonb_set and jsonb_remove silently no-op on one instead of failing.
     internal static PathMemberFault MemberFault(ReadOnlySpan<char> member)
     {
-        if (member.IsEmpty)
-        {
-            return PathMemberFault.Empty;
-        }
-
+        var carriesQuote = false;
         foreach (var c in member)
         {
             switch (c)
@@ -1620,14 +1749,78 @@ internal static class SqlGenerator
                     return PathMemberFault.Apostrophe;
                 case '\0':
                     return PathMemberFault.Nul;
-                case '.':
-                    return PathMemberFault.Dot;
-                case '[':
-                    return PathMemberFault.Bracket;
+                case '"':
+                    carriesQuote = true;
+                    break;
             }
         }
 
-        return PathMemberFault.None;
+        // Tested after the scan so the two positional faults keep their precedence: a member
+        // carrying both an apostrophe and a '"' is still blamed on the apostrophe.
+        return carriesQuote && MemberNeedsQuoting(member)
+            ? PathMemberFault.QuoteInQuotedMember
+            : PathMemberFault.None;
+    }
+
+    // The second half of the member rule's owner: which members cannot be written unquoted, and
+    // how a quoted one is spelled. Both entry points render through AppendCanonicalMember, so the
+    // path an index is created over and the path a query interpolates are one string by
+    // construction rather than by review.
+    //
+    // Three shapes need the quotes, each measured against real SQLite:
+    //
+    //   a key containing '.'  - "$.a.b" is unambiguously the nested path a -> b. Reaching the
+    //     single key "a.b" is why Tier 2 is worth implementing rather than documenting: measured,
+    //     json_extract returns NULL for it while jsonb_set and jsonb_remove SILENTLY NO-OP,
+    //     returning the document unchanged, so a patch reports success and bumps the version
+    //     having written nothing. Quoted, all three address the key.
+    //   a key containing '['  - "$.a[0]" is the member a followed by an indexer.
+    //   the empty key         - SQLite errors on a bare "$.".
+    //
+    // A member merely *starting* with '"' needs them too, because SQLite reads a '"' straight after
+    // the '.' as opening a quoted label: measured, "$.\"lead" is answered with "bad JSON path". A
+    // '"' anywhere else is an ordinary unquoted character and stays one, which is what keeps Tier 1
+    // byte-identical.
+    //
+    // Inside the quotes, '"' and '\' are escaped JSON-style as \" and \\ - never by SQL doubling,
+    // which SQLite reads as something else entirely: measured, '$."a""b"' silently resolves the
+    // WRONG key rather than failing.
+    //
+    // The \" arm of AppendCanonicalMember below is defensive rather than reachable, and the reason
+    // sits beside MemberFault: a member that needs these quotes and carries a '"' is refused there,
+    // because 3.45.1 does not unescape a quoted label and such a key resolves to nothing on the
+    // declared minimum. So only the \\ arm fires through either entry point. The \" arm stays
+    // because this is the renderer, and a renderer that dropped the escape would be wrong on its
+    // own terms; ReadQuotedMember keeps accepting \" for the same reason, so a caller who writes
+    // the spelling out is answered by the version refusal rather than by "unsupported escape".
+    internal static bool MemberNeedsQuoting(ReadOnlySpan<char> member) =>
+        member.IsEmpty || member[0] == '"' || member.IndexOfAny('.', '[') >= 0;
+
+    /// <summary>
+    /// Appends a member in its canonical rendering — unquoted when it can be, <c>"quoted"</c> when
+    /// it cannot. The single owner of that rendering, called by
+    /// <see cref="ValidateJsonPath" /> and by <c>JsonPathResolver</c>.
+    /// </summary>
+    internal static void AppendCanonicalMember(StringBuilder sb, ReadOnlySpan<char> member)
+    {
+        if (!MemberNeedsQuoting(member))
+        {
+            sb.Append(member);
+            return;
+        }
+
+        sb.Append('"');
+        foreach (var c in member)
+        {
+            if (c is '"' or '\\')
+            {
+                sb.Append('\\');
+            }
+
+            sb.Append(c);
+        }
+
+        sb.Append('"');
     }
 
     // The type lands unquoted in ALTER TABLE ... ADD COLUMN, so a whitelist is the only option.

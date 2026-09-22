@@ -12,7 +12,7 @@ var serializerOptions = new JsonSerializerOptions
     TypeInfoResolver = AppJsonContext.Default,
 };
 
-// C12: under Native AOT the reflection fallback is unreachable, so options that would
+// Under Native AOT the reflection fallback is unreachable, so options that would
 // land on it must be refused at validation rather than silently mis-serializing. The assertion
 // is unconditional because PublishAot puts the IsDynamicCodeSupported feature switch in this
 // project's runtimeconfig, so the property is false on `dotnet run` as well as in a published
@@ -27,7 +27,7 @@ catch (ArgumentException ex) when (ex.ParamName == "SerializerOptions")
     Console.WriteLine($"Reflection fallback => refused ({ex.ParamName})");
 }
 
-// C46, at the other boundary: the factory validates, then builds a logger, then constructs the
+// The other boundary: the factory validates, then builds a logger, then constructs the
 // store, and caller code runs in that window. A logger factory that nulls SerializerOptions stands
 // in for any such writer (another thread setting the property reaches the same window). The factory
 // now snapshots the options *before* CreateLogger runs, so the mutation lands on the caller's object
