@@ -94,18 +94,35 @@ var q = DocumentQuery<Customer>.Where("$.Age", QueryOperator.GreaterThanOrEqual,
 
 var adults = await store.QueryAsync(q);
 var howMany = await store.CountAsync(q);   // predicates only; ordering and paging are ignored
+
+// Delete by query — paging is honoured, so this drops the oldest 1000
+var removed = await store.DeleteAsync(DocumentQuery<Reading>.All().OrderBy("$.Ticks").Take(1000));
 ```
 
-Predicates combine with AND only. For joins, aggregates, OR groups and virtual-column seeks, drop to
+Predicates combine with AND only.
+
+**Range over time as an integer.** A UTC or Local `DateTime`, or a `DateTimeOffset`, is refused by
+`>`, `>=`, `<` and `<=`: the serializer writes `…00Z` for a whole second and `…00.5Z` for half past,
+and the text sorts the second one first, so the range would silently drop documents. Store
+`DateTime.Ticks` (or Unix milliseconds) as a `long` and range over that. An Unspecified-kind
+`DateTime` carries no suffix and still sorts correctly; equality and `In` accept every kind.
+`OrderBy` over a field declared `DateTime` or `DateTimeOffset` (nullable included) sorts
+chronologically — the store resolves the path's type through the serializer metadata and orders by
+epoch seconds plus the fraction, offsets applied. That ordering cannot be served by an index, and a
+path the metadata does not describe (a key only a derived type writes, say) falls back to text order. For joins, aggregates, OR groups and virtual-column seeks, drop to
 raw SQL.
 
 ### Raw SQL
 
 The connection is on loan for the duration of the callback. `GetTableName<T>()` gives the table the
 store uses for `T`, so nothing is hardcoded, and `DeserializeDocument<T>()` reads a `json(data)`
-column back with the store's own serializer options. Finish any transaction you open in the
-callback: a connection handed back with one still on it is closed rather than pooled, so the leak
-costs a connection instead of poisoning the next caller.
+column back with the store's own serializer options. The connection is **retired** after the
+callback, never returned to the pool, so anything the callback changes — a session `PRAGMA`, an
+`ATTACH`, a `TEMP` table, a transaction left open — dies with it and needs no restoring. The price
+is one fresh connection per call (measured ~335 µs on a WAL file database against ~8 µs for a pooled
+one), so prefer one callback running several statements over several callbacks running one each.
+On a transaction, the callback gets the transaction's own connection, which is retired when the
+transaction ends.
 
 ```csharp
 var table = store.GetTableName<Customer>();

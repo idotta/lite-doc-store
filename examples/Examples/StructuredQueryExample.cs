@@ -14,7 +14,7 @@ internal static class StructuredQueryExample
         string City,
         int Age,
         string? Email,
-        DateTime SignedUpAt,
+        long SignedUpTicks,
         string[] Tags);
 
     public static async Task RunAsync()
@@ -52,9 +52,10 @@ internal static class StructuredQueryExample
         await ShowAsync(store, "Tags contains 'vip'", DocumentQuery<Customer>
             .WhereArrayContains("$.Tags", "vip"));
 
-        // A DateTime is normalized to the text System.Text.Json wrote, so it compares correctly.
-        await ShowAsync(store, "SignedUpAt >= 2023", DocumentQuery<Customer>
-            .Where("$.SignedUpAt", QueryOperator.GreaterThanOrEqual, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        // Instants are stored as ticks: serialized UTC DateTime text does not sort chronologically,
+        // so a range over one is refused.
+        await ShowAsync(store, "SignedUp >= 2023", DocumentQuery<Customer>
+            .Where("$.SignedUpTicks", QueryOperator.GreaterThanOrEqual, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks));
 
         // Predicates combine with AND, in any order; every builder call returns a new query.
         var anded = DocumentQuery<Customer>
@@ -101,7 +102,7 @@ internal static class StructuredQueryExample
         foreach (var (id, name, city, age, email, year, tags) in rows)
         {
             yield return (id, new Customer(
-                id, name, city, age, email, new DateTime(year, 6, 1, 0, 0, 0, DateTimeKind.Utc), tags));
+                id, name, city, age, email, new DateTime(year, 6, 1, 0, 0, 0, DateTimeKind.Utc).Ticks, tags));
         }
     }
 

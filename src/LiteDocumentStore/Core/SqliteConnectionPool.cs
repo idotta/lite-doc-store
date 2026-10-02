@@ -349,9 +349,14 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     /// database costs in <c>journal_mode</c>, <c>page_size</c> and the version guard. The ordinary
     /// document operations go through <see cref="Return"/> and are untouched.
     /// </para>
+    /// <para>
+    /// Logged at Debug, not Warning: this is the documented outcome of every raw call, not
+    /// a fault, so a store that uses <c>ExecuteRawAsync</c> routinely would otherwise emit a
+    /// warning per call. Warning stays reserved for connections that come back broken or dirty.
+    /// </para>
     /// </remarks>
     internal void ReturnAfterExternalAccess(SqliteConnection connection) =>
-        DiscardCore(connection, "a caller ran their own SQL on it, so its session state is unknown");
+        DiscardCore(connection, "a caller ran their own SQL on it, so its session state is unknown", expected: true);
 
     private void ReturnCore(SqliteConnection connection)
     {
@@ -470,7 +475,7 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     internal void Discard(SqliteConnection connection) =>
         DiscardCore(connection, "the caller reported it as no longer usable");
 
-    private void DiscardCore(SqliteConnection connection, string reason)
+    private void DiscardCore(SqliteConnection connection, string reason, bool expected = false)
     {
         if (connection is null)
         {
@@ -487,7 +492,14 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 return;
             }
 
-            DiscardBrokenConnection(connection, reason);
+            if (expected)
+            {
+                RetireConnection(connection, reason);
+            }
+            else
+            {
+                DiscardBrokenConnection(connection, reason);
+            }
         }
         finally
         {
@@ -778,6 +790,15 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
     {
         Interlocked.Decrement(ref _created);
         _logger.LogWarningQuietly("Discarding a pooled connection: {Reason}", reason);
+        CloseQuietly(connection);
+    }
+
+    // The same close and accounting as DiscardBrokenConnection, for a retirement that is by
+    // design rather than a fault. See ReturnAfterExternalAccess.
+    private void RetireConnection(SqliteConnection connection, string reason)
+    {
+        Interlocked.Decrement(ref _created);
+        _logger.LogDebugQuietly("Retiring a pooled connection: {Reason}", reason);
         CloseQuietly(connection);
     }
 

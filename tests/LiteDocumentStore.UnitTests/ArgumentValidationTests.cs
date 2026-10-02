@@ -299,6 +299,7 @@ public sealed class ArgumentValidationTests
         table.Add("QueryAsync(query)", (s, ct) => s.QueryAsync<Doc>((DocumentQuery<Doc>)null!, ct));
         table.Add("CountAsync(query)", (s, ct) => s.CountAsync<Doc>(null!, ct));
         table.Add("ExistsAsync(query)", (s, ct) => s.ExistsAsync<Doc>((DocumentQuery<Doc>)null!, ct));
+        table.Add("DeleteAsync(query)", (s, ct) => s.DeleteAsync<Doc>((DocumentQuery<Doc>)null!, ct));
     }
 
     private static void AddSchemaNullArguments(ArgTable table)

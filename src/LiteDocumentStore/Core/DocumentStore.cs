@@ -261,6 +261,14 @@ internal sealed class DocumentStore : IDocumentStore
     }
 
     /// <inheritdoc />
+    public Task<int> DeleteAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        return RunAsync(ops => ops.DeleteAsync(query, cancellationToken), cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken = default) =>
         RunAsync(ops => ops.DeleteAllAsync<T>(cancellationToken), cancellationToken);
 

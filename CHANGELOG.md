@@ -7,6 +7,43 @@ All notable changes to LiteDocumentStore are documented here. The format follows
 **This file starts at 0.5.0.** Releases 0.1.0 through 0.4.0 shipped before it existed; that history
 is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag` for the list.
 
+## [Unreleased]
+
+### Breaking changes
+
+- **A range over a UTC or Local `DateTime`, or a `DateTimeOffset`, now throws.** `DocumentQuery<T>`
+  refuses `>`, `>=`, `<` and `<=` with such a value, raising `ArgumentException` naming `value`. It
+  used to run and silently return the wrong rows: the serializer trims a zero fraction, so
+  `"…00Z"` sorts after `"…00.5Z"`, and differing offsets compare as text rather than as instants.
+  *Remedy:* store the instant as an integer (`DateTime.Ticks` or Unix milliseconds) and range over
+  that. An Unspecified-kind `DateTime` is unaffected, as are equality and `In` for every kind.
+- **`DeleteAsync<T>(null!)` no longer compiles** — the new `DocumentQuery<T>` overload makes it
+  ambiguous, the same consequence `ExistsAsync<T>` already carries. Cast to say which one is meant.
+
+### Added
+
+- **`DeleteAsync<T>(DocumentQuery<T>)`** on `IDocumentOperations`, so on the store and on a
+  transaction: one statement, returns the rows deleted. Unlike `CountAsync`/`ExistsAsync` it
+  **honours paging** — `.OrderBy("$.Ticks").Take(1000)` deletes the oldest thousand — through an
+  `id IN (SELECT id … LIMIT …)` subquery, since the bundled SQLite lacks `DELETE … LIMIT`. Unpaged,
+  it is a plain filtered `DELETE` and the ordering is ignored. The interpolated path still matches an
+  expression index in both shapes.
+
+### Fixed
+
+- **`OrderBy` over a `DateTime` or `DateTimeOffset` field now sorts chronologically.** It sorted the
+  serialized text, so `…00.5Z` came before `…00Z` and differing offsets sorted as text rather than as
+  instants — in `QueryAsync` and in a paged `DeleteAsync`, which could delete the wrong page. The
+  store now resolves each ordering path's declared type through the serializer metadata and, for a
+  date type (nullable included), orders by `unixepoch` seconds then the fraction — exact to the tick.
+  Such an ordering can no longer be served by an expression index; an Unspecified-kind value is
+  ordered as UTC; a path the metadata does not describe keeps the text ordering.
+- **Retiring a raw-access connection no longer logs a warning.** Every `ExecuteRawAsync` call and
+  migration run closes its connection by design, and that logged `Discarding a pooled connection` at
+  Warning each time — on a transaction's raw path with the wrong reason as well. It now logs
+  `Retiring a pooled connection` at Debug; Warning stays reserved for a connection that came back
+  broken or dirty.
+
 ## [0.5.0] - 2026-09-22
 
 0.5.0 is a large pre-1.0 release: 73 commits since 0.4.0, and the breaking half is wider than the

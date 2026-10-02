@@ -312,4 +312,73 @@ public class JsonPathResolverTests
     }
 
     private static readonly Customer Shared = new();
+
+    // --- Path -> declared type -------------------------------------------------------------
+
+    private sealed class Clock
+    {
+        public DateTime At { get; set; }
+
+        public DateTimeOffset? Seen { get; set; }
+
+        public Clock? Inner { get; set; }
+
+        public List<DateTime> History { get; set; } = [];
+
+        public Dictionary<string, DateTime> ByName { get; set; } = [];
+
+        [JsonPropertyName("when")]
+        public DateTime Renamed { get; set; }
+
+        public string Label { get; set; } = "";
+    }
+
+    [Theory]
+    [InlineData("$", typeof(Clock))]
+    [InlineData("$.At", typeof(DateTime))]
+    [InlineData("$.Seen", typeof(DateTimeOffset?))]
+    [InlineData("$.Inner.At", typeof(DateTime))]
+    [InlineData("$.Inner.Inner.Seen", typeof(DateTimeOffset?))]
+    [InlineData("$.History[2]", typeof(DateTime))]
+    [InlineData("$.ByName.first", typeof(DateTime))]
+    [InlineData("$.when", typeof(DateTime))]
+    [InlineData("$.Label", typeof(string))]
+    public void ResolvePathType_WithAPathTheMetadataDescribes_ReturnsTheDeclaredType(string path, Type expected)
+    {
+        Assert.Equal(expected, JsonPathResolver.ResolvePathType(typeof(Clock), path, Reflection()));
+    }
+
+    [Theory]
+    // The CLR name, where the serializer writes "when".
+    [InlineData("$.Renamed")]
+    [InlineData("$.Missing")]
+    [InlineData("$.Label.Length")]
+    [InlineData("$.At[0]")]
+    [InlineData("$.History.Count")]
+    [InlineData("$.Inner.Missing.At")]
+    public void ResolvePathType_WithAPathTheMetadataDoesNotDescribe_ReturnsNull(string path)
+    {
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), path, Reflection()));
+    }
+
+    [Fact]
+    public void ResolvePathType_UnderANamingPolicy_MatchesTheSerializedName()
+    {
+        Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(Clock), "$.at", CamelCase()));
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), "$.At", CamelCase()));
+    }
+
+    [Fact]
+    public void ResolvePathType_WithAQuotedMember_MatchesTheUnquotedName()
+    {
+        Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(Clock), "$.\"At\"", Reflection()));
+    }
+
+    [Fact]
+    public void ResolvePathType_WhenTheOptionsHaveNoMetadataForTheType_ReturnsNull()
+    {
+        var empty = new JsonSerializerOptions { TypeInfoResolver = JsonTypeInfoResolver.Combine() };
+
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), "$.At", empty));
+    }
 }

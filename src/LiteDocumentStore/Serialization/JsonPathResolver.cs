@@ -86,6 +86,50 @@ internal static class JsonPathResolver
     }
 
     /// <summary>
+    /// Resolves the declared CLR type a validated JSON path reaches in <paramref name="root"/>'s
+    /// serialized shape, or null when the metadata does not describe it.
+    /// </summary>
+    /// <remarks>
+    /// Walks the same <see cref="JsonTypeInfo"/> the serializer writes through, matching each
+    /// member on its serialized name. Declared types only: a polymorphic member resolves to its
+    /// declared type, and a key only a derived type writes resolves to null.
+    /// </remarks>
+    internal static Type? ResolvePathType(Type root, string jsonPath, JsonSerializerOptions serializerOptions)
+    {
+        var current = root;
+        foreach (var member in SqlGenerator.SplitJsonPath(jsonPath, nameof(jsonPath)))
+        {
+            JsonTypeInfo typeInfo;
+            try
+            {
+                typeInfo = serializerOptions.GetTypeInfo(current);
+            }
+            catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+            {
+                return null;
+            }
+
+            Type? next = (typeInfo.Kind, member) switch
+            {
+                (JsonTypeInfoKind.Enumerable, null) => typeInfo.ElementType,
+                (JsonTypeInfoKind.Dictionary, not null) => typeInfo.ElementType,
+                (JsonTypeInfoKind.Object, not null) => typeInfo.Properties
+                    .FirstOrDefault(p => string.Equals(p.Name, member, StringComparison.Ordinal))?.PropertyType,
+                _ => null
+            };
+
+            if (next is null)
+            {
+                return null;
+            }
+
+            current = next;
+        }
+
+        return current;
+    }
+
+    /// <summary>
     /// Strips the <c>Convert</c> the compiler inserts to box a value type into <c>object</c>, and
     /// the one an explicit cast to a base type adds mid-chain.
     /// </summary>

@@ -305,6 +305,235 @@ public sealed class DocumentQueryIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task QueryAsync_RangingOverUnspecifiedDateTimesAtASubSecondBoundary_IsChronological()
+    {
+        var boundary = new DateTime(2024, 6, 1);
+        await _store.UpsertAsync("w6", Seed[0] with { Id = "w6", CreatedAt = boundary });
+        await _store.UpsertAsync("w7", Seed[0] with { Id = "w7", CreatedAt = boundary.AddMilliseconds(500) });
+
+        var fromBoundary = DocumentQuery<Widget>
+            .Where("$.CreatedAt", QueryOperator.GreaterThanOrEqual, boundary)
+            .OrderBy("$.CreatedAt");
+        var beforeHalf = DocumentQuery<Widget>
+            .Where("$.CreatedAt", QueryOperator.GreaterThanOrEqual, boundary)
+            .And("$.CreatedAt", QueryOperator.LessThan, boundary.AddMilliseconds(500));
+
+        Assert.Equal("w6,w7", await IdsAsync(fromBoundary));
+        Assert.Equal("w6", await IdsAsync(beforeHalf));
+    }
+
+    private sealed record Stamp(string Id, DateTime At);
+
+    private sealed record Sighting(string Id, DateTimeOffset At);
+
+    private sealed record MaybeStamp(string Id, DateTime? At);
+
+    private async Task<string> StampIdsAsync(DocumentQuery<Stamp> query) =>
+        string.Join(',', (await _store.QueryAsync(query)).Select(s => s.Id));
+
+    private async Task SeedStampsAsync()
+    {
+        // STJ writes "...00Z", "...00.0000001Z" and "...00.5Z"; as text, '.' sorts before 'Z', so
+        // the plain ordering would put the whole second last.
+        await _store.CreateTableAsync<Stamp>();
+        var whole = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.UpsertAsync("half", new Stamp("half", whole.AddMilliseconds(500)));
+        await _store.UpsertAsync("whole", new Stamp("whole", whole));
+        await _store.UpsertAsync("tick", new Stamp("tick", whole.AddTicks(1)));
+    }
+
+    [Fact]
+    public async Task OrderBy_OverUtcDateTimes_SortsChronologically()
+    {
+        await SeedStampsAsync();
+
+        Assert.Equal("whole,tick,half", await StampIdsAsync(DocumentQuery<Stamp>.All().OrderBy("$.At")));
+        Assert.Equal(
+            "half,tick,whole",
+            await StampIdsAsync(DocumentQuery<Stamp>.All().OrderBy("$.At", descending: true)));
+    }
+
+    [Fact]
+    public async Task OrderBy_OverDateTimeOffsetsWithDifferentOffsets_SortsByInstant()
+    {
+        // As text: c ("2025-12-31T21:30"), b, a. As instants: a (23:00Z), b (00:00Z), c (00:30Z).
+        await _store.CreateTableAsync<Sighting>();
+        await _store.UpsertAsync("a", new Sighting("a", new DateTimeOffset(2026, 1, 1, 1, 0, 0, TimeSpan.FromHours(2))));
+        await _store.UpsertAsync("b", new Sighting("b", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)));
+        await _store.UpsertAsync("c", new Sighting("c", new DateTimeOffset(2025, 12, 31, 21, 30, 0, TimeSpan.FromHours(-3))));
+
+        var ordered = await _store.QueryAsync(DocumentQuery<Sighting>.All().OrderBy("$.At"));
+
+        Assert.Equal("a,b,c", string.Join(',', ordered.Select(s => s.Id)));
+    }
+
+    [Fact]
+    public async Task OrderBy_OverANullableDateTime_SortsNullFirstThenChronologically()
+    {
+        await _store.CreateTableAsync<MaybeStamp>();
+        var whole = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.UpsertAsync("half", new MaybeStamp("half", whole.AddMilliseconds(500)));
+        await _store.UpsertAsync("whole", new MaybeStamp("whole", whole));
+        await _store.UpsertAsync("none", new MaybeStamp("none", null));
+
+        var ordered = await _store.QueryAsync(DocumentQuery<MaybeStamp>.All().OrderBy("$.At"));
+
+        Assert.Equal("none,whole,half", string.Join(',', ordered.Select(s => s.Id)));
+    }
+
+    [Fact]
+    public async Task OrderBy_OverUtcDateTimesInsideATransaction_SortsChronologically()
+    {
+        await SeedStampsAsync();
+
+        await using var transaction = await _store.BeginTransactionAsync();
+        var ordered = await transaction.QueryAsync(DocumentQuery<Stamp>.All().OrderBy("$.At"));
+
+        Assert.Equal("whole,tick,half", string.Join(',', ordered.Select(s => s.Id)));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithAPageOrderedByAUtcDateTime_DeletesTheTrulyOldest()
+    {
+        await SeedStampsAsync();
+
+        Assert.Equal(1, await _store.DeleteAsync(DocumentQuery<Stamp>.All().OrderBy("$.At").Take(1)));
+        Assert.Equal("tick,half", await StampIdsAsync(DocumentQuery<Stamp>.All().OrderBy("$.At")));
+    }
+
+    // --- Delete by query ------------------------------------------------------------------
+
+    private async Task<string> RemainingIdsAsync() =>
+        await SortedIdsAsync(DocumentQuery<Widget>.All());
+
+    [Fact]
+    public async Task DeleteAsync_WithAFilter_DeletesOnlyTheMatchesAndReturnsTheCount()
+    {
+        var deleted = await _store.DeleteAsync(
+            DocumentQuery<Widget>.Where("$.Quantity", QueryOperator.GreaterThanOrEqual, 30));
+
+        Assert.Equal(3, deleted);
+        Assert.Equal("w1,w2", await RemainingIdsAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithOrderByAndTake_DeletesOnlyTheFirstPage()
+    {
+        // The retention shape: drop the oldest N, leave the rest.
+        var deleted = await _store.DeleteAsync(
+            DocumentQuery<Widget>.All().OrderBy("$.CreatedAt").Take(2));
+
+        Assert.Equal(2, deleted);
+        Assert.Equal("w3,w4,w5", await RemainingIdsAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithSkipAndTake_DeletesOnlyTheRequestedPage()
+    {
+        var deleted = await _store.DeleteAsync(
+            DocumentQuery<Widget>.All().OrderBy("$.Quantity", descending: true).Skip(1).Take(2));
+
+        Assert.Equal(2, deleted);
+        Assert.Equal("w1,w2,w5", await RemainingIdsAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithAFilterAndAPage_PagesWithinTheMatchOnly()
+    {
+        var deleted = await _store.DeleteAsync(
+            DocumentQuery<Widget>.WhereArrayContains("$.Tags", "heavy").OrderBy("$.Quantity").Take(1));
+
+        Assert.Equal(1, deleted);
+        Assert.Equal("w2,w3,w4,w5", await RemainingIdsAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithAll_DeletesEveryDocumentAndKeepsTheTable()
+    {
+        Assert.Equal(5, await _store.DeleteAsync(DocumentQuery<Widget>.All()));
+        Assert.Equal(0, await _store.CountAsync<Widget>());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_MatchingNothing_ReturnsZeroAndDeletesNothing()
+    {
+        var deleted = await _store.DeleteAsync(
+            DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Nope"));
+
+        Assert.Equal(0, deleted);
+        Assert.Equal("w1,w2,w3,w4,w5", await RemainingIdsAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_InsideATransaction_IsUndoneByRollback()
+    {
+        await using (var transaction = await _store.BeginTransactionAsync())
+        {
+            Assert.Equal(2, await transaction.DeleteAsync(
+                DocumentQuery<Widget>.Where("$.Name", QueryOperator.Like, "anvil")));
+            Assert.Equal(3, await transaction.CountAsync<Widget>());
+            await transaction.RollbackAsync();
+        }
+
+        Assert.Equal("w1,w2,w3,w4,w5", await RemainingIdsAsync());
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithAnAlreadyCancelledToken_ThrowsAndDeletesNothing()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _store.DeleteAsync(DocumentQuery<Widget>.All(), cts.Token));
+        Assert.Equal(5, await _store.CountAsync<Widget>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteAsync_WithAnIndexedPath_SearchesTheIndex(bool paged)
+    {
+        await _store.CreateIndexAsync<Widget>(w => w.Name);
+
+        var query = DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Anvil");
+        if (paged)
+        {
+            query = query.OrderBy("$.Name").Take(1);
+        }
+
+        var generated = SqlGenerator.GenerateFilteredDeleteSql(
+            _store.GetTableName<Widget>(),
+            query.Predicates,
+            query.Orderings,
+            query.SkipCount,
+            query.TakeCount);
+
+        var plan = await _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "EXPLAIN QUERY PLAN " + generated.Sql;
+            for (var i = 0; i < generated.ParameterValues.Count; i++)
+            {
+                command.Parameters.AddWithValue("@p" + i, generated.ParameterValues[i]);
+            }
+
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            var rows = new List<string>();
+            while (await reader.ReadAsync(ct))
+            {
+                rows.Add(reader.GetString(3));
+            }
+
+            return string.Join(" | ", rows);
+        });
+
+        Assert.Contains("idx_", plan, StringComparison.Ordinal);
+        Assert.Equal(1, await _store.DeleteAsync(query));
+        Assert.Equal("w2,w3,w4,w5", await RemainingIdsAsync());
+    }
+
+    [Fact]
     public async Task QueryAsync_InsideATransaction_SeesUncommittedWritesUntilRollback()
     {
         var query = DocumentQuery<Widget>.Where("$.Name", QueryOperator.Equal, "Zeta");

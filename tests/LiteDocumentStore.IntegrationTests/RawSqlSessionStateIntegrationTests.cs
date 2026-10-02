@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -369,6 +371,63 @@ public sealed class RawSqlSessionStateIntegrationTests : IDisposable
             command.CommandText = sql;
             return Convert.ToInt64(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
         });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecuteRawAsync_RetiringTheConnection_LogsAtDebugNotWarning(bool onTransaction)
+    {
+        // Retirement is the documented outcome of every raw call, so it must not warn. The
+        // transaction path used to report it as "the caller reported it as no longer usable".
+        var loggerFactory = new CapturingLoggerFactory();
+        var options = DocumentStoreOptions.ForFile(NewDatabasePath());
+        options.MaxPoolSize = 1;
+        await using var store = await new DocumentStoreFactory(new DefaultConnectionFactory(), null, loggerFactory)
+            .CreateAsync(options);
+
+        if (onTransaction)
+        {
+            await store.ExecuteInTransactionAsync(tx =>
+                tx.ExecuteRawAsync((connection, _) => Task.FromResult(connection.State)));
+        }
+        else
+        {
+            await store.ExecuteRawAsync((connection, _) => Task.FromResult(connection.State));
+        }
+
+        Assert.Contains(loggerFactory.Entries, e => e.Level == LogLevel.Debug && e.Message.Contains("Retiring"));
+        Assert.DoesNotContain(loggerFactory.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    private sealed class CapturingLoggerFactory : ILoggerFactory
+    {
+        public ConcurrentBag<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(Entries);
+
+        public void AddProvider(ILoggerProvider provider)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class CapturingLogger(ConcurrentBag<(LogLevel, string)> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+                entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
 
     private static async Task<bool> RowExistsOutsideTheStoreAsync(string path, string table, string id)
     {
