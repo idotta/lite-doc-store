@@ -1325,8 +1325,14 @@ the key ordered every one by instant. The text is fixed-width up to the fraction
 
 What it costs: an ordering by that path can no longer be read off an expression index, so a sort
 step is added; ordering by a non-date path is unchanged. An Unspecified value is ordered as if UTC.
-And it assumes STJ's default format — the same assumption bound-value normalization makes — so a
-custom date converter writing anything else orders arbitrarily (`unixepoch` answers NULL).
+And it assumes STJ's default format — the same assumption bound-value normalization makes. A custom
+converter is therefore detected rather than assumed away: `ResolvePathType` answers null when any
+converter outside STJ's own assembly writes the path — `JsonPropertyInfo.CustomConverter`, a
+type-level converter at any hop, or an options converter for the leaf type or a nullable leaf's
+underlying type — and the path keeps its plain ordering. Before that check, a `DateTime` written as
+epoch millis got `unixepoch` = NULL on every row: an ordering that had been correct (numeric) became
+arbitrary, and `DeleteAsync(q.OrderBy("$.At").Take(1000))` deleted an arbitrary page instead of the
+oldest. `DeleteAsync_WithAPageOrderedByAConvertedDateTime_DeletesTheTrulyOldest` pins it.
 
 ### Why `DeleteAsync(query)` honours paging when `CountAsync` does not
 

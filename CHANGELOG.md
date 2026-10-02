@@ -37,7 +37,8 @@ is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag
   store now resolves each ordering path's declared type through the serializer metadata and, for a
   date type (nullable included), orders by `unixepoch` seconds then the fraction — exact to the tick.
   Such an ordering can no longer be served by an expression index; an Unspecified-kind value is
-  ordered as UTC; a path the metadata does not describe keeps the text ordering.
+  ordered as UTC; a path the metadata does not describe, or one a custom converter writes (a
+  `DateTime` stored as epoch millis, say), keeps the plain ordering.
 - **Retiring a raw-access connection no longer logs a warning.** Every `ExecuteRawAsync` call and
   migration run closes its connection by design, and that logged `Discarding a pooled connection` at
   Warning each time — on a transaction's raw path with the wrong reason as well. It now logs

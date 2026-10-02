@@ -109,7 +109,8 @@ and the text sorts the second one first, so the range would silently drop docume
 `OrderBy` over a field declared `DateTime` or `DateTimeOffset` (nullable included) sorts
 chronologically — the store resolves the path's type through the serializer metadata and orders by
 epoch seconds plus the fraction, offsets applied. That ordering cannot be served by an index, and a
-path the metadata does not describe (a key only a derived type writes, say) falls back to text order. For joins, aggregates, OR groups and virtual-column seeks, drop to
+path the metadata does not describe (a key only a derived type writes, say) or that a custom
+converter writes keeps the plain ordering. For joins, aggregates, OR groups and virtual-column seeks, drop to
 raw SQL.
 
 ### Raw SQL

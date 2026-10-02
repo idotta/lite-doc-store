@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Xunit;
 
 namespace LiteDocumentStore.IntegrationTests;
@@ -399,6 +401,35 @@ public sealed class DocumentQueryIntegrationTests : IAsyncLifetime
 
         Assert.Equal(1, await _store.DeleteAsync(DocumentQuery<Stamp>.All().OrderBy("$.At").Take(1)));
         Assert.Equal("tick,half", await StampIdsAsync(DocumentQuery<Stamp>.All().OrderBy("$.At")));
+    }
+
+    private sealed class EpochMillisConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            DateTime.UnixEpoch.AddMilliseconds(reader.GetInt64());
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
+            writer.WriteNumberValue((long)(value - DateTime.UnixEpoch).TotalMilliseconds);
+    }
+
+    private sealed record EpochStamp(string Id, [property: JsonConverter(typeof(EpochMillisConverter))] DateTime At);
+
+    [Fact]
+    public async Task DeleteAsync_WithAPageOrderedByAConvertedDateTime_DeletesTheTrulyOldest()
+    {
+        // Stored as a JSON number: a chronological key would be NULL for every row and the page
+        // arbitrary, so the path must keep its plain (numeric) ordering.
+        await _store.CreateTableAsync<EpochStamp>();
+        var start = new DateTime(2024, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        await _store.UpsertAsync("late", new EpochStamp("late", start.AddDays(2)));
+        await _store.UpsertAsync("early", new EpochStamp("early", start));
+        await _store.UpsertAsync("middle", new EpochStamp("middle", start.AddDays(1)));
+
+        var byAt = DocumentQuery<EpochStamp>.All().OrderBy("$.At");
+        Assert.Equal("early,middle,late", string.Join(',', (await _store.QueryAsync(byAt)).Select(s => s.Id)));
+
+        Assert.Equal(1, await _store.DeleteAsync(byAt.Take(1)));
+        Assert.Equal("middle,late", string.Join(',', (await _store.QueryAsync(byAt)).Select(s => s.Id)));
     }
 
     // --- Delete by query ------------------------------------------------------------------

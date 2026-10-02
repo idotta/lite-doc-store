@@ -374,6 +374,56 @@ public class JsonPathResolverTests
         Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(Clock), "$.\"At\"", Reflection()));
     }
 
+    private sealed class EpochMillisConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            DateTime.UnixEpoch.AddMilliseconds(reader.GetInt64());
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
+            writer.WriteNumberValue((long)(value - DateTime.UnixEpoch).TotalMilliseconds);
+    }
+
+    private sealed class ConvertedClock
+    {
+        [JsonConverter(typeof(EpochMillisConverter))]
+        public DateTime At { get; set; }
+
+        public DateTime Plain { get; set; }
+    }
+
+    [Fact]
+    public void ResolvePathType_WhenThePropertyCarriesAConverter_ReturnsNull()
+    {
+        // The converter writes a number; the declared DateTime says nothing about the stored shape.
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(ConvertedClock), "$.At", Reflection()));
+        Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(ConvertedClock), "$.Plain", Reflection()));
+    }
+
+    [Theory]
+    [InlineData("$.At")]
+    [InlineData("$.Seen")]
+    [InlineData("$.Inner.At")]
+    [InlineData("$.History[0]")]
+    [InlineData("$.ByName.first")]
+    public void ResolvePathType_WhenTheOptionsCarryAConverterForTheLeafType_ReturnsNull(string path)
+    {
+        var options = Reflection();
+        options.Converters.Add(new EpochMillisConverter());
+        options.Converters.Add(new OffsetAsTextConverter());
+
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), path, options));
+        Assert.Equal(typeof(string), JsonPathResolver.ResolvePathType(typeof(Clock), "$.Label", options));
+    }
+
+    private sealed class OffsetAsTextConverter : JsonConverter<DateTimeOffset>
+    {
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            DateTimeOffset.Parse(reader.GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     [Fact]
     public void ResolvePathType_WhenTheOptionsHaveNoMetadataForTheType_ReturnsNull()
     {

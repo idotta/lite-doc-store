@@ -784,7 +784,11 @@ the type, so `DocumentOperations.ResolveOrderings<T>` resolves each ordering pat
 `AppendChronologicalKey` then orders by `unixepoch` over the text with its fraction cut out, then the
 fraction as a REAL — exact to the tick, offsets applied (`unixepoch` alone keeps only milliseconds).
 Costs: no expression index serves it; Unspecified is ordered as UTC; it assumes STJ's default format;
-an unresolvable path (polymorphic-only key, no metadata) keeps text order. Applies to `QueryAsync` and
+an unresolvable path (polymorphic-only key, no metadata) keeps plain order. **A path any custom
+converter writes is unresolvable by design** — on the property, on a type along it, or in the
+options for the leaf (or a nullable leaf's underlying) type: the converter decides the stored shape,
+and a `DateTime` written as epoch millis would get a NULL key on every row, turning a paged delete of
+the oldest rows into an arbitrary one. Built-in means the converter's assembly is STJ's own. Applies to `QueryAsync` and
 a paged `DeleteAsync`. → rationale#querying
 
 The LINQ-predicate `QueryAsync<T>(Expression<Func<T,bool>>)` and the `SelectAsync` projections stay
