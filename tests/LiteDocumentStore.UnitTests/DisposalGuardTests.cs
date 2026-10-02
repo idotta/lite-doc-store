@@ -76,6 +76,7 @@ public sealed class DisposalGuardTests
         table.Add("QueryAsync(query)", s => s.QueryAsync(Query));
         table.Add("CountAsync(query)", s => s.CountAsync(Query));
         table.Add("ExistsAsync(query)", s => s.ExistsAsync(Query));
+        table.Add("DeleteAsync(query)", s => s.DeleteAsync(Query));
     }
 
     private static void AddSchemaOperations(GuardTable table)

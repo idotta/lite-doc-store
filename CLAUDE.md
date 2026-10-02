@@ -744,6 +744,13 @@ Operators: `Equal`, `NotEqual`, `GreaterThan(OrEqual)`, `LessThan(OrEqual)`, `Li
 
 `CountAsync` and `ExistsAsync` apply the query's **predicates only** — ordering and paging are ignored,
 so `ExistsAsync` on a query paged past the end of its match still reports `true`.
+**`DeleteAsync<T>(DocumentQuery<T>)` is the exception: it honours paging**, because ignoring a
+`.Take(1000)` on a delete would remove every match. `GenerateFilteredDeleteSql` emits a plain
+`DELETE … WHERE` when unpaged (ordering dropped, still validated) and `WHERE id IN (SELECT id … ORDER
+BY … LIMIT … OFFSET …)` when paged — the bundled SQLite is not built with
+`SQLITE_ENABLE_UPDATE_DELETE_LIMIT`. Paging without an ordering deletes an unspecified page. Same
+overload consequence as `ExistsAsync`: `DeleteAsync<T>(null!)` is ambiguous.
+
 `GenerateFilteredExistsSql` wraps a `LIMIT 1` subquery in `SELECT EXISTS(...)` and reuses the same
 `AppendWhere` pass as the count, which is what keeps the interpolated path matching an expression index
 (pinned by an `EXPLAIN QUERY PLAN` assertion). One API-shape consequence: `ExistsAsync<T>` is overloaded
@@ -761,6 +768,28 @@ that matches nothing *silently* — `DateTime`, `byte[]`, `decimal`, `float` and
 measured against real SQLite. This assumes default serialization; a custom converter for one of those
 types breaks the alignment. `ValidateValue` also rejects a non-finite `float`/`double`.
 → rationale#querying
+
+**A range operator refuses a UTC/Local `DateTime` or any `DateTimeOffset`** (`CreatePredicate`,
+`ArgumentException` on `value`, pointing at `Ticks`). Normalization makes the bound text *equal* to
+what STJ wrote, but not *ordered*: STJ trims a zero fraction, so `…00Z` sorts after `…00.5Z`
+(measured), and offsets compare as text. Rewriting the SQL comparison would stop it matching the
+expression index, so the range is refused instead. Unspecified kind has no suffix and sorts correctly;
+equality, `In` and `ArrayContains` are untouched. → rationale#querying
+
+**`OrderBy` over a date-typed path is ordered chronologically, not refused.** The builder cannot see
+the type, so `DocumentOperations.ResolveOrderings<T>` resolves each ordering path at execution through
+`JsonPathResolver.ResolvePathType` (the serializer's `JsonTypeInfo`, serialized names, path split by
+`SqlGenerator.SplitJsonPath` — the same tokenizer as `ValidateJsonPath`) and sets
+`QueryOrdering.Chronological` for `DateTime`/`DateTimeOffset`, nullable included.
+`AppendChronologicalKey` then orders by `unixepoch` over the text with its fraction cut out, then the
+fraction as a REAL — exact to the tick, offsets applied (`unixepoch` alone keeps only milliseconds).
+Costs: no expression index serves it; Unspecified is ordered as UTC; it assumes STJ's default format;
+an unresolvable path (polymorphic-only key, no metadata) keeps plain order. **A path any custom
+converter writes is unresolvable by design** — on the property, on a type along it, or in the
+options for the leaf (or a nullable leaf's underlying) type: the converter decides the stored shape,
+and a `DateTime` written as epoch millis would get a NULL key on every row, turning a paged delete of
+the oldest rows into an arbitrary one. Built-in means the converter's assembly is STJ's own. Applies to `QueryAsync` and
+a paged `DeleteAsync`. → rationale#querying
 
 The LINQ-predicate `QueryAsync<T>(Expression<Func<T,bool>>)` and the `SelectAsync` projections stay
 **removed** (runtime reflection / IL generation that AOT can't support). `CreateIndexAsync`,
@@ -1254,7 +1283,9 @@ The three sites are the two `DocumentStore.ExecuteRawAsync` overloads and `RunMi
 is the fourth**, and it does not go through that member: `IDocumentTransaction.ExecuteRawAsync` hands out
 the transaction's *own* connection, which returns through `DocumentStoreTransaction.Release()`, so the
 transaction records the raw access in `_rawAccessed` and `Release()` discards instead of returning. One
-raw callback per transaction therefore costs one open, not one per statement.
+raw callback per transaction therefore costs one open, not one per statement. **The retirement logs at
+Debug, not Warning** (`RetireConnection` in the pool) — it is the expected outcome of every raw
+call; Warning stays reserved for a connection that came back broken or dirty.
 
 **The cost is one physical connection open per call, and it is not small.** Measured over 5000 trivial
 `SELECT 1` callbacks: ~8 µs recycled against **~335 µs** retired on a WAL file database, and ~8 µs

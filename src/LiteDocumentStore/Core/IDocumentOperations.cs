@@ -232,6 +232,23 @@ public interface IDocumentOperations
     Task<int> DeleteManyAsync<T>(IEnumerable<string> ids, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Deletes every document matching a structured query, in a single statement.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="CountAsync{T}(DocumentQuery{T}, CancellationToken)"/>, paging is honoured:
+    /// with <see cref="DocumentQuery{T}.Take"/> or <see cref="DocumentQuery{T}.Skip"/> only that page
+    /// of the ordered match is deleted, so <c>.OrderBy("$.At").Take(1000)</c> removes the oldest
+    /// thousand. Paging without an ordering deletes an unspecified page. Without paging the
+    /// ordering has no effect.
+    /// </remarks>
+    /// <typeparam name="T">The document type</typeparam>
+    /// <param name="query">The query specification, built from <see cref="DocumentQuery{T}"/></param>
+    /// <param name="cancellationToken">A token to cancel the operation</param>
+    /// <returns>The number of deleted rows</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="query"/> is null</exception>
+    Task<int> DeleteAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Deletes every document of the given type, leaving the table itself in place.
     /// </summary>
     /// <typeparam name="T">The document type</typeparam>

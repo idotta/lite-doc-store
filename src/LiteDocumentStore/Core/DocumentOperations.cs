@@ -392,7 +392,7 @@ internal readonly struct DocumentOperations
     /// </summary>
     /// <remarks>
     /// A patch cannot insert — it carries no full document — so a missing row is a conflict
-    /// rather than a no-op, unlike <see cref="DeleteAsync{T}"/>.
+    /// rather than a no-op, unlike <see cref="DeleteAsync{T}(string, CancellationToken)"/>.
     /// </remarks>
     private async Task<long> PatchCoreAsync<T>(
         string id,
@@ -635,7 +635,7 @@ internal readonly struct DocumentOperations
         return documents;
     }
 
-    /// <inheritdoc cref="IDocumentOperations.DeleteAsync{T}" />
+    /// <inheritdoc cref="IDocumentOperations.DeleteAsync{T}(string, CancellationToken)" />
     public async Task<bool> DeleteAsync<T>(string id, CancellationToken cancellationToken)
     {
         ValidateId(id);
@@ -747,6 +747,20 @@ internal readonly struct DocumentOperations
         }
     }
 
+    /// <inheritdoc cref="IDocumentOperations.DeleteAsync{T}(DocumentQuery{T}, CancellationToken)" />
+    public async Task<int> DeleteAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var tableName = _tableNamingConvention.GetTableName<T>();
+        var generated = SqlGenerator.GenerateFilteredDeleteSql(
+            tableName, query.Predicates, ResolveOrderings<T>(query.Orderings), query.SkipCount, query.TakeCount);
+
+        return await _connection
+            .ExecuteAsync(generated.Sql, cancellationToken, BindPositionally(generated))
+            .ConfigureAwait(false);
+    }
+
     /// <inheritdoc cref="IDocumentOperations.DeleteAllAsync{T}" />
     public async Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken)
     {
@@ -799,6 +813,29 @@ internal readonly struct DocumentOperations
         return DeserializeResults<T>(rows, tableName);
     }
 
+    // The builder cannot see the type a path holds; the serializer metadata can. A DateTime or
+    // DateTimeOffset path is marked so the generator orders it chronologically rather than as text.
+    private IReadOnlyList<QueryOrdering> ResolveOrderings<T>(IReadOnlyList<QueryOrdering> orderings)
+    {
+        if (orderings.Count == 0)
+        {
+            return orderings;
+        }
+
+        var resolved = new QueryOrdering[orderings.Count];
+        for (var i = 0; i < orderings.Count; i++)
+        {
+            var type = JsonPathResolver.ResolvePathType(typeof(T), orderings[i].JsonPath, _serializerOptions);
+            var underlying = type is null ? null : Nullable.GetUnderlyingType(type) ?? type;
+            resolved[i] = orderings[i] with
+            {
+                Chronological = underlying == typeof(DateTime) || underlying == typeof(DateTimeOffset)
+            };
+        }
+
+        return resolved;
+    }
+
     /// <inheritdoc cref="IDocumentOperations.QueryAsync{T}(DocumentQuery{T}, CancellationToken)" />
     public async Task<IEnumerable<T>> QueryAsync<T>(
         DocumentQuery<T> query,
@@ -810,7 +847,7 @@ internal readonly struct DocumentOperations
         var generated = SqlGenerator.GenerateQuerySql(
             tableName,
             query.Predicates,
-            query.Orderings,
+            ResolveOrderings<T>(query.Orderings),
             query.SkipCount,
             query.TakeCount);
 

@@ -73,6 +73,7 @@ public class TransactionArgumentValidationIntegrationTests
         table.Add("UpsertAsync(null data)", o => o.UpsertAsync<TxnDoc>("a", null!));
         table.Add("PatchAsync(null patch)", o => o.PatchAsync<TxnDoc>("a", null!));
         table.Add("CountAsync(null query)", o => o.CountAsync<TxnDoc>((DocumentQuery<TxnDoc>)null!));
+        table.Add("DeleteAsync(null query)", o => o.DeleteAsync<TxnDoc>((DocumentQuery<TxnDoc>)null!));
 
         // The out-of-range family: a compare-and-swap version and a paging offset.
         table.Add("DeleteWithVersionAsync(negative version)", o => o.DeleteWithVersionAsync<TxnDoc>("a", -1));

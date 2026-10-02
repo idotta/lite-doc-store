@@ -1289,6 +1289,60 @@ stored document can hold one; ADO rejected NaN at bind time anyway, and infinity
 SQLite's `9e999`. That guard is in the shared helper, so a `DocumentQuery` comparison against NaN fails at
 the call site too instead of matching nothing.
 
+### Why a range over a UTC `DateTime` is refused
+
+Normalization makes a bound `DateTime` *equal* to the text STJ stored; it does not make the text
+*ordered*. STJ trims trailing fractional zeros, so a whole second is written `2026-01-01T00:00:00Z`
+and half past `2026-01-01T00:00:00.5Z` — and since `.` (0x2E) sorts before `Z` (0x5A), SQLite orders
+the half-past value first. Measured: `json_extract` of the `.5Z` document compared `>=` the `00Z` one
+answered `0`. So `>= midnight` silently dropped every point in the first second after midnight that
+carried a fraction. Two offsets are worse: they compare as text, not as instants.
+
+Three fixes were considered. Rewriting the comparison in SQL (`julianday(...)`, or a bound-side
+rewrite) stops the predicate matching the expression index, which is the point of an interpolated
+path; and no bound-side rewrite works anyway, because the *stored* text is non-monotonic. Changing
+the stored format needs a converter inside the caller's `SerializerOptions`, which the library does
+not own. Refusing at build time was chosen: loud, at the call site, and the remedy — an integer
+`Ticks` or Unix-ms field — is the shape time-series data wants regardless.
+
+The refusal is narrow. Unspecified kind carries no suffix, so a trimmed fraction is a *prefix* of the
+untrimmed one and the text sorts correctly. Equality, `In` and `ArrayContains` never depend on order.
+### Why `OrderBy` over a date is rewritten rather than refused
+
+`OrderBy` over a UTC field has the same mis-order, and the builder cannot refuse it: an ordering takes
+no value, and `DocumentQuery<T>` has no serializer options to look the path up with. The store does,
+at execution. Refusing every date-typed ordering was rejected because it would break ordering by an
+Unspecified `DateTime` — correct and common. Refusing `DateTimeOffset` alone was rejected because it
+leaves the UTC `DateTime` case open, and a type cannot reveal a kind.
+
+So the ordering is rewritten. The key is `unixepoch` over the text with the fraction removed — whole
+seconds, offset applied, nothing rounded — then the fraction parsed as a REAL. `unixepoch(x,
+'subsec')` or `julianday` alone was not enough: SQLite's date parser keeps only milliseconds, so
+two values a tick apart would tie. Measured against real SQLite over `0001-01-01Z`, pre-1970 values
+with and without fractions, `+02:00`/`-03:00` offsets, an Unspecified value and `9999-12-31…9999999Z`:
+the key ordered every one by instant. The text is fixed-width up to the fraction (19 characters, a
+`DateTime` year has four digits), so `substr` positions are exact.
+
+What it costs: an ordering by that path can no longer be read off an expression index, so a sort
+step is added; ordering by a non-date path is unchanged. An Unspecified value is ordered as if UTC.
+And it assumes STJ's default format — the same assumption bound-value normalization makes. A custom
+converter is therefore detected rather than assumed away: `ResolvePathType` answers null when any
+converter outside STJ's own assembly writes the path — `JsonPropertyInfo.CustomConverter`, a
+type-level converter at any hop, or an options converter for the leaf type or a nullable leaf's
+underlying type — and the path keeps its plain ordering. Before that check, a `DateTime` written as
+epoch millis got `unixepoch` = NULL on every row: an ordering that had been correct (numeric) became
+arbitrary, and `DeleteAsync(q.OrderBy("$.At").Take(1000))` deleted an arbitrary page instead of the
+oldest. `DeleteAsync_WithAPageOrderedByAConvertedDateTime_DeletesTheTrulyOldest` pins it.
+
+### Why `DeleteAsync(query)` honours paging when `CountAsync` does not
+
+A count that ignores `.Take(20)` over-reports; a delete that ignores `.Take(1000)` removes every match,
+which is data loss. So the delete honours ordering and paging. SQLite's `DELETE … ORDER BY … LIMIT`
+needs `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, which the bundled build lacks, so the paged shape is
+`DELETE … WHERE id IN (SELECT id … ORDER BY … LIMIT … OFFSET …)`; the inner `WHERE` keeps the
+literal path, so the expression index is still searched (pinned by `EXPLAIN QUERY PLAN`, paged and
+unpaged). Unpaged, the ordering decides nothing and is dropped from the statement, but still validated.
+
 ### `ExistsAsync` and the index
 
 `GenerateFilteredExistsSql` wraps a `LIMIT 1` subquery in `SELECT EXISTS(...)`, so it stops at the first

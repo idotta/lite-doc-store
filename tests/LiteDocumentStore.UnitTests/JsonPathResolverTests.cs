@@ -312,4 +312,123 @@ public class JsonPathResolverTests
     }
 
     private static readonly Customer Shared = new();
+
+    // --- Path -> declared type -------------------------------------------------------------
+
+    private sealed class Clock
+    {
+        public DateTime At { get; set; }
+
+        public DateTimeOffset? Seen { get; set; }
+
+        public Clock? Inner { get; set; }
+
+        public List<DateTime> History { get; set; } = [];
+
+        public Dictionary<string, DateTime> ByName { get; set; } = [];
+
+        [JsonPropertyName("when")]
+        public DateTime Renamed { get; set; }
+
+        public string Label { get; set; } = "";
+    }
+
+    [Theory]
+    [InlineData("$", typeof(Clock))]
+    [InlineData("$.At", typeof(DateTime))]
+    [InlineData("$.Seen", typeof(DateTimeOffset?))]
+    [InlineData("$.Inner.At", typeof(DateTime))]
+    [InlineData("$.Inner.Inner.Seen", typeof(DateTimeOffset?))]
+    [InlineData("$.History[2]", typeof(DateTime))]
+    [InlineData("$.ByName.first", typeof(DateTime))]
+    [InlineData("$.when", typeof(DateTime))]
+    [InlineData("$.Label", typeof(string))]
+    public void ResolvePathType_WithAPathTheMetadataDescribes_ReturnsTheDeclaredType(string path, Type expected)
+    {
+        Assert.Equal(expected, JsonPathResolver.ResolvePathType(typeof(Clock), path, Reflection()));
+    }
+
+    [Theory]
+    // The CLR name, where the serializer writes "when".
+    [InlineData("$.Renamed")]
+    [InlineData("$.Missing")]
+    [InlineData("$.Label.Length")]
+    [InlineData("$.At[0]")]
+    [InlineData("$.History.Count")]
+    [InlineData("$.Inner.Missing.At")]
+    public void ResolvePathType_WithAPathTheMetadataDoesNotDescribe_ReturnsNull(string path)
+    {
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), path, Reflection()));
+    }
+
+    [Fact]
+    public void ResolvePathType_UnderANamingPolicy_MatchesTheSerializedName()
+    {
+        Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(Clock), "$.at", CamelCase()));
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), "$.At", CamelCase()));
+    }
+
+    [Fact]
+    public void ResolvePathType_WithAQuotedMember_MatchesTheUnquotedName()
+    {
+        Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(Clock), "$.\"At\"", Reflection()));
+    }
+
+    private sealed class EpochMillisConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            DateTime.UnixEpoch.AddMilliseconds(reader.GetInt64());
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
+            writer.WriteNumberValue((long)(value - DateTime.UnixEpoch).TotalMilliseconds);
+    }
+
+    private sealed class ConvertedClock
+    {
+        [JsonConverter(typeof(EpochMillisConverter))]
+        public DateTime At { get; set; }
+
+        public DateTime Plain { get; set; }
+    }
+
+    [Fact]
+    public void ResolvePathType_WhenThePropertyCarriesAConverter_ReturnsNull()
+    {
+        // The converter writes a number; the declared DateTime says nothing about the stored shape.
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(ConvertedClock), "$.At", Reflection()));
+        Assert.Equal(typeof(DateTime), JsonPathResolver.ResolvePathType(typeof(ConvertedClock), "$.Plain", Reflection()));
+    }
+
+    [Theory]
+    [InlineData("$.At")]
+    [InlineData("$.Seen")]
+    [InlineData("$.Inner.At")]
+    [InlineData("$.History[0]")]
+    [InlineData("$.ByName.first")]
+    public void ResolvePathType_WhenTheOptionsCarryAConverterForTheLeafType_ReturnsNull(string path)
+    {
+        var options = Reflection();
+        options.Converters.Add(new EpochMillisConverter());
+        options.Converters.Add(new OffsetAsTextConverter());
+
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), path, options));
+        Assert.Equal(typeof(string), JsonPathResolver.ResolvePathType(typeof(Clock), "$.Label", options));
+    }
+
+    private sealed class OffsetAsTextConverter : JsonConverter<DateTimeOffset>
+    {
+        public override DateTimeOffset Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            DateTimeOffset.Parse(reader.GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+
+        public override void Write(Utf8JsonWriter writer, DateTimeOffset value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public void ResolvePathType_WhenTheOptionsHaveNoMetadataForTheType_ReturnsNull()
+    {
+        var empty = new JsonSerializerOptions { TypeInfoResolver = JsonTypeInfoResolver.Combine() };
+
+        Assert.Null(JsonPathResolver.ResolvePathType(typeof(Clock), "$.At", empty));
+    }
 }

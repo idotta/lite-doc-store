@@ -285,8 +285,24 @@ public sealed class DocumentQuery<T>
                 nameof(value));
         }
 
+        if (op is QueryOperator.GreaterThan or QueryOperator.GreaterThanOrEqual
+                or QueryOperator.LessThan or QueryOperator.LessThanOrEqual
+            && value is DateTime { Kind: not DateTimeKind.Unspecified } or DateTimeOffset)
+        {
+            throw new ArgumentException(
+                $"A '{op}' comparison cannot range over a {DescribeInstant(value)}: the serializer " +
+                "trims a zero fraction and writes the offset as text, so the stored values do not " +
+                "sort chronologically (\"...00Z\" sorts after \"...00.5Z\") and the range would " +
+                "silently drop or admit documents. Store the instant as an integer — DateTime.Ticks " +
+                "or Unix milliseconds — and range over that, or use an Unspecified-kind DateTime.",
+                nameof(value));
+        }
+
         return new QueryPredicate(path, op, ValidateValue(value, nameof(value)), NoValues);
     }
+
+    private static string DescribeInstant(object value) =>
+        value is DateTime dateTime ? $"DateTime of kind {dateTime.Kind}" : nameof(DateTimeOffset);
 
     private static QueryPredicate CreateInPredicate(string jsonPath, IEnumerable<object?> values)
     {

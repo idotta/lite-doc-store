@@ -449,6 +449,93 @@ public class DocumentQueryTests
         Assert.Equal("2026-08-23T00:00:00Z", Assert.Single(query.Predicates).Value);
     }
 
+    /// <summary>
+    /// Instants whose serialized text does not sort chronologically. STJ trims a zero fraction,
+    /// so "...00Z" sorts after "...00.5Z" ('Z' > '.'), and two offsets compare as text, not as
+    /// instants — a range over either drops or admits rows silently.
+    /// </summary>
+    public static TheoryData<QueryOperator, object> UnorderableInstants()
+    {
+        var data = new TheoryData<QueryOperator, object>();
+        object[] instants =
+        [
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Local),
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+        ];
+
+        foreach (var op in new[]
+        {
+            QueryOperator.GreaterThan, QueryOperator.GreaterThanOrEqual,
+            QueryOperator.LessThan, QueryOperator.LessThanOrEqual
+        })
+        {
+            foreach (var instant in instants)
+            {
+                data.Add(op, instant);
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(UnorderableInstants))]
+    public void Where_WithARangeOverAnUnorderableInstant_ThrowsArgumentExceptionPointingAtTicks(
+        QueryOperator op, object value)
+    {
+        var ex = Assert.Throws<ArgumentException>(
+            () => DocumentQuery<QueryDocument>.Where(Path, op, value));
+
+        Assert.Equal("value", ex.ParamName);
+        Assert.Contains("Ticks", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void And_WithARangeOverAUtcDateTime_ThrowsArgumentException()
+    {
+        var query = DocumentQuery<QueryDocument>.WhereIsNotNull(Path);
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => query.And(Path, QueryOperator.GreaterThanOrEqual, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+
+        Assert.Equal("value", ex.ParamName);
+    }
+
+    [Theory]
+    [InlineData(QueryOperator.GreaterThan)]
+    [InlineData(QueryOperator.GreaterThanOrEqual)]
+    [InlineData(QueryOperator.LessThan)]
+    [InlineData(QueryOperator.LessThanOrEqual)]
+    public void Where_WithARangeOverAnUnspecifiedDateTime_IsAccepted(QueryOperator op)
+    {
+        // No suffix: a trimmed fraction is a prefix of the untrimmed one, so the text sorts right.
+        var query = DocumentQuery<QueryDocument>.Where(Path, op, new DateTime(2026, 1, 1));
+
+        Assert.Equal("2026-01-01T00:00:00", Assert.Single(query.Predicates).Value);
+    }
+
+    [Theory]
+    [InlineData(QueryOperator.Equal)]
+    [InlineData(QueryOperator.NotEqual)]
+    public void Where_WithAnEqualityOverAUtcDateTime_IsAccepted(QueryOperator op)
+    {
+        // Equality never depends on sort order, so the normalized text still matches exactly.
+        var query = DocumentQuery<QueryDocument>.Where(
+            Path, op, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        Assert.Equal("2026-01-01T00:00:00Z", Assert.Single(query.Predicates).Value);
+    }
+
+    [Fact]
+    public void WhereIn_WithUtcDateTimes_IsAccepted()
+    {
+        var query = DocumentQuery<QueryDocument>.WhereIn(
+            Path, [new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)]);
+
+        Assert.Equal(["2026-01-01T00:00:00Z"], Assert.Single(query.Predicates).Values);
+    }
+
     [Fact]
     public void Skip_WithANegativeOffset_ThrowsArgumentOutOfRangeException()
     {

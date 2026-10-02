@@ -25,19 +25,27 @@ public sealed class SqliteConnectionPoolTests
         return new SqliteConnectionPool(options, new DefaultConnectionFactory(), NullLogger.Instance);
     }
 
-    private static SqliteConnectionPool CreatePoolWithAThrowingLogger(int maxPoolSize = 1)
+    private static SqliteConnectionPool CreatePoolWithAThrowingLogger(int maxPoolSize = 1) =>
+        CreatePoolWithAThrowingLogger(new ThrowingLogger(), maxPoolSize);
+
+    private static SqliteConnectionPool CreatePoolWithAThrowingLogger(ThrowingLogger logger, int maxPoolSize = 1)
     {
         var options = DocumentStoreOptions.ForInMemory();
         options.MaxPoolSize = maxPoolSize;
 
-        return new SqliteConnectionPool(options, new DefaultConnectionFactory(), new ThrowingLogger());
+        return new SqliteConnectionPool(options, new DefaultConnectionFactory(), logger);
     }
 
     /// <summary>
-    /// A consumer logger that fails on exactly the level the pool's cleanup paths use.
+    /// A consumer logger that fails on the levels the pool's cleanup paths use: Warning for a
+    /// broken or dirty connection, and — once <see cref="FailDebug"/> is set — Debug for a
+    /// raw-access retirement. Debug is opt-in because the rent path logs at Debug too, and a
+    /// throw there is loud by design.
     /// </summary>
     private sealed class ThrowingLogger : ILogger
     {
+        public bool FailDebug { get; set; }
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
@@ -49,11 +57,28 @@ public sealed class SqliteConnectionPoolTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (logLevel == LogLevel.Warning)
+            if (logLevel == LogLevel.Warning || (FailDebug && logLevel == LogLevel.Debug))
             {
                 throw new InvalidOperationException("logger failed");
             }
         }
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 
     private static void Execute(SqliteConnection connection, string sql)
@@ -235,6 +260,40 @@ public sealed class SqliteConnectionPoolTests
     }
 
     [Fact]
+    public async Task ReturnAfterExternalAccess_LogsTheRetirementAtDebugNotWarning()
+    {
+        // The retirement is the documented outcome of every raw call, not a fault, so a store
+        // that uses ExecuteRawAsync routinely must not emit a warning per call.
+        var logger = new RecordingLogger();
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 1;
+        using var pool = new SqliteConnectionPool(options, new DefaultConnectionFactory(), logger);
+
+        var lease = await pool.RentAsync();
+        lease.ReturnAfterExternalAccess();
+
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Debug && e.Message.Contains("Retiring"));
+        Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task ReturnAfterExternalAccess_WhenTheCallerClosedTheConnection_WarnsAsBroken()
+    {
+        var logger = new RecordingLogger();
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 1;
+        using var pool = new SqliteConnectionPool(options, new DefaultConnectionFactory(), logger);
+
+        var lease = await pool.RentAsync();
+        lease.Connection.Close();
+        lease.ReturnAfterExternalAccess();
+
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("state Closed"));
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("Retiring"));
+        Assert.Equal(0, pool.ConnectionCount);
+    }
+
+    [Fact]
     public async Task ReturnAfterExternalAccess_Repeatedly_KeepsConnectionCountHonestAndDoesNotStarve()
     {
         // Each raw return uncounts its connection and hands the slot back, so the count tracks
@@ -325,13 +384,16 @@ public sealed class SqliteConnectionPoolTests
         // from a lease disposal, so it replaced whatever the caller's operation had produced —
         // and leave the connection open, untracked and holding its transaction, while
         // ConnectionCount was decremented twice for one connection.
-        using var pool = CreatePoolWithAThrowingLogger();
+        var logger = new ThrowingLogger();
+        using var pool = CreatePoolWithAThrowingLogger(logger);
 
         var lease = await pool.RentAsync();
+        logger.FailDebug = true;
         var poisoned = lease.Connection;
         Execute(poisoned, "BEGIN");
 
         Assert.Null(Record.Exception(lease.ReturnAfterExternalAccess));
+        logger.FailDebug = false;
 
         Assert.Equal(ConnectionState.Closed, poisoned.State);
         Assert.Equal(0, pool.ConnectionCount);
@@ -345,9 +407,11 @@ public sealed class SqliteConnectionPoolTests
     {
         // Both halves of the cleanup fail at once: the discard log throws, and closing a
         // connection whose transaction object survived a raw COMMIT throws too.
-        using var pool = CreatePoolWithAThrowingLogger();
+        var logger = new ThrowingLogger();
+        using var pool = CreatePoolWithAThrowingLogger(logger);
 
         var lease = await pool.RentAsync();
+        logger.FailDebug = true;
         var stale = lease.Connection.BeginTransaction();
         Execute(lease.Connection, "COMMIT");
 

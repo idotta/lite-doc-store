@@ -1002,6 +1002,55 @@ internal static class SqlGenerator
     }
 
     /// <summary>
+    /// Generates the DELETE for a structured <see cref="DocumentQuery{T}"/>: a plain filtered
+    /// delete when unpaged, and an <c>id IN (...)</c> over the ordered page when paged.
+    /// </summary>
+    /// <param name="tableName">The table name</param>
+    /// <param name="predicates">The filters to combine with <c>AND</c></param>
+    /// <param name="orderings">The <c>ORDER BY</c> terms the page is cut from</param>
+    /// <param name="skip">The <c>OFFSET</c>, or null for none</param>
+    /// <param name="take">The <c>LIMIT</c>, or null for none</param>
+    /// <remarks>
+    /// The paged shape is a subquery because SQLite's own <c>DELETE ... LIMIT</c> needs
+    /// <c>SQLITE_ENABLE_UPDATE_DELETE_LIMIT</c>, which the bundled build is not compiled with.
+    /// Unpaged, the ordering decides nothing and is left out — but still validated, so a bad
+    /// path fails the same way whether or not the query is paged.
+    /// </remarks>
+    public static GeneratedQuery GenerateFilteredDeleteSql(
+        string tableName,
+        IReadOnlyList<QueryPredicate> predicates,
+        IReadOnlyList<QueryOrdering> orderings,
+        int? skip,
+        int? take)
+    {
+        ValidateIdentifier(tableName, nameof(tableName));
+        ArgumentNullException.ThrowIfNull(predicates);
+        ArgumentNullException.ThrowIfNull(orderings);
+
+        var sb = new StringBuilder(128);
+        sb.Append("DELETE FROM [").Append(tableName).Append(']');
+
+        if (!skip.HasValue && !take.HasValue)
+        {
+            foreach (var ordering in orderings)
+            {
+                ValidateJsonPath(ordering.JsonPath, nameof(orderings));
+            }
+
+            var filter = AppendWhere(sb, predicates);
+            return new GeneratedQuery(sb.ToString(), filter);
+        }
+
+        sb.Append(" WHERE id IN (SELECT id FROM [").Append(tableName).Append(']');
+        var values = AppendWhere(sb, predicates);
+        AppendOrderBy(sb, orderings);
+        AppendLimitOffset(sb, skip, take);
+        sb.Append(')');
+
+        return new GeneratedQuery(sb.ToString(), values);
+    }
+
+    /// <summary>
     /// Generates the existence test for a structured <see cref="DocumentQuery{T}"/>'s predicates.
     /// </summary>
     /// <remarks>
@@ -1305,9 +1354,33 @@ internal static class SqlGenerator
                 sb.Append(", ");
             }
 
-            AppendExtract(sb, ValidateJsonPath(orderings[i].JsonPath, nameof(orderings)))
-                .Append(orderings[i].Descending ? " DESC" : " ASC");
+            var path = ValidateJsonPath(orderings[i].JsonPath, nameof(orderings));
+            var direction = orderings[i].Descending ? " DESC" : " ASC";
+            if (orderings[i].Chronological)
+            {
+                AppendChronologicalKey(sb, path, direction);
+            }
+            else
+            {
+                AppendExtract(sb, path).Append(direction);
+            }
         }
+    }
+
+    // STJ trims a zero fraction and appends 'Z' or an offset, so "...00Z" sorts after "...00.5Z"
+    // as text. The key is whole seconds from unixepoch over the text with its fraction cut out —
+    // offset applied, nothing rounded (the date functions keep only milliseconds) — then the
+    // fraction as a number. The text is fixed-width up to the fraction: 19 characters, since a
+    // DateTime year has four digits. It cannot use an expression index; correctness wins.
+    private static void AppendChronologicalKey(StringBuilder sb, string path, string direction)
+    {
+        sb.Append("unixepoch(substr(");
+        AppendExtract(sb, path).Append(", 1, 19) || CASE WHEN substr(");
+        AppendExtract(sb, path).Append(", 20, 1) = '.' THEN ltrim(substr(");
+        AppendExtract(sb, path).Append(", 21), '0123456789') ELSE substr(");
+        AppendExtract(sb, path).Append(", 20) END)").Append(direction).Append(", CASE WHEN substr(");
+        AppendExtract(sb, path).Append(", 20, 1) = '.' THEN CAST('0.' || substr(");
+        AppendExtract(sb, path).Append(", 21, 7) AS REAL) ELSE 0 END").Append(direction);
     }
 
     // SQLite only accepts OFFSET after a LIMIT, so a skip without a take emits LIMIT -1
@@ -1510,6 +1583,31 @@ internal static class SqlGenerator
         }
 
         return canonical?.ToString() ?? jsonPath;
+    }
+
+    // The segments of a path in document order: a member's unquoted name, or null for an indexer.
+    // Same tokenizer and member rule as ValidateJsonPath, so the two cannot read a path differently.
+    internal static List<string?> SplitJsonPath(string jsonPath, string paramName)
+    {
+        ValidateJsonPath(jsonPath, paramName);
+
+        var segments = new List<string?>();
+        var i = 1;
+        while (i < jsonPath.Length)
+        {
+            if (jsonPath[i] == '.')
+            {
+                i++;
+                segments.Add(ReadMember(jsonPath, ref i, paramName, out _).ToString());
+            }
+            else
+            {
+                ReadIndexer(jsonPath, ref i, paramName);
+                segments.Add(null);
+            }
+        }
+
+        return segments;
     }
 
     // Reads the member that follows a '.', in either spelling, and applies the member rule to it.

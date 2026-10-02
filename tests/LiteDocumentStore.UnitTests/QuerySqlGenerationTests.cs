@@ -306,6 +306,168 @@ public class QuerySqlGenerationTests
             () => SqlGenerator.GenerateFilteredExistsSql(Table, [InPredicate("$.Id", tooMany)]));
     }
 
+    // --- Chronological ordering -----------------------------------------------------------
+
+    // Whole seconds from unixepoch over the text with its fraction cut out (so the offset is
+    // applied and nothing is rounded), then the fraction as a number to break the tie.
+    private static string ChronologicalKey(string path, string direction)
+    {
+        var e = $"json_extract(data, '{path}')";
+        return
+            $"unixepoch(substr({e}, 1, 19) || CASE WHEN substr({e}, 20, 1) = '.'" +
+            $" THEN ltrim(substr({e}, 21), '0123456789') ELSE substr({e}, 20) END) {direction}, " +
+            $"CASE WHEN substr({e}, 20, 1) = '.' THEN CAST('0.' || substr({e}, 21, 7) AS REAL)" +
+            $" ELSE 0 END {direction}";
+    }
+
+    [Fact]
+    public void GenerateQuerySql_WithAChronologicalOrdering_SortsByEpochSecondsThenTheFraction()
+    {
+        var orderings = new[] { new QueryOrdering("$.At", false, Chronological: true) };
+
+        var query = SqlGenerator.GenerateQuerySql(Table, NoPredicates, orderings, null, null);
+
+        Assert.Equal($"{SelectPrefix} ORDER BY {ChronologicalKey("$.At", "ASC")}", query.Sql);
+    }
+
+    [Fact]
+    public void GenerateQuerySql_WithADescendingChronologicalOrderingThenAPlainOne_DirectsEveryKeyTerm()
+    {
+        var orderings = new[]
+        {
+            new QueryOrdering("$.At", true, Chronological: true),
+            new QueryOrdering("$.Name", false)
+        };
+
+        var query = SqlGenerator.GenerateQuerySql(Table, NoPredicates, orderings, null, 10);
+
+        Assert.Equal(
+            $"{SelectPrefix} ORDER BY {ChronologicalKey("$.At", "DESC")}, json_extract(data, '$.Name') ASC LIMIT 10",
+            query.Sql);
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithAChronologicalOrderingAndAPage_CutsThePageChronologically()
+    {
+        var orderings = new[] { new QueryOrdering("$.At", false, Chronological: true) };
+
+        var query = SqlGenerator.GenerateFilteredDeleteSql(Table, NoPredicates, orderings, null, 100);
+
+        Assert.Equal(
+            $"DELETE FROM [Person] WHERE id IN (SELECT id FROM [Person] ORDER BY {ChronologicalKey("$.At", "ASC")} LIMIT 100)",
+            query.Sql);
+    }
+
+    // --- Filtered delete ------------------------------------------------------------------
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithNoPredicates_DeletesEveryRow()
+    {
+        var query = SqlGenerator.GenerateFilteredDeleteSql(Table, NoPredicates, NoOrderings, null, null);
+
+        Assert.Equal("DELETE FROM [Person]", query.Sql);
+        Assert.Empty(query.ParameterValues);
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithPredicates_EmitsAPlainFilteredDelete()
+    {
+        var predicates = new[]
+        {
+            Predicate("$.Status", QueryOperator.Equal, "open"),
+            InPredicate("$.Region", "eu", "us")
+        };
+
+        var query = SqlGenerator.GenerateFilteredDeleteSql(Table, predicates, NoOrderings, null, null);
+
+        Assert.Equal(
+            "DELETE FROM [Person] WHERE json_extract(data, '$.Status') = @p0" +
+            " AND json_extract(data, '$.Region') IN (@p1, @p2)",
+            query.Sql);
+        Assert.Equal(["open", "eu", "us"], query.ParameterValues);
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithAnOrderingButNoPaging_IgnoresTheOrdering()
+    {
+        // Order only decides which rows a page holds; with no page, every match goes anyway.
+        var orderings = new[] { new QueryOrdering("$.CreatedAt", false) };
+
+        var query = SqlGenerator.GenerateFilteredDeleteSql(
+            Table, [Predicate("$.Status", QueryOperator.Equal, "open")], orderings, null, null);
+
+        Assert.Equal("DELETE FROM [Person] WHERE json_extract(data, '$.Status') = @p0", query.Sql);
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithTake_DeletesTheOrderedPageThroughAnIdSubquery()
+    {
+        // SQLite's own DELETE ... LIMIT needs a compile-time option the bundled build lacks.
+        var orderings = new[] { new QueryOrdering("$.CreatedAt", false) };
+
+        var query = SqlGenerator.GenerateFilteredDeleteSql(
+            Table, [Predicate("$.Status", QueryOperator.Equal, "open")], orderings, null, 1000);
+
+        Assert.Equal(
+            "DELETE FROM [Person] WHERE id IN (SELECT id FROM [Person]" +
+            " WHERE json_extract(data, '$.Status') = @p0" +
+            " ORDER BY json_extract(data, '$.CreatedAt') ASC LIMIT 1000)",
+            query.Sql);
+        Assert.Equal(["open"], query.ParameterValues);
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithSkipAndNoTake_EmitsTheUnboundedLimit()
+    {
+        var orderings = new[] { new QueryOrdering("$.CreatedAt", true) };
+
+        var query = SqlGenerator.GenerateFilteredDeleteSql(Table, NoPredicates, orderings, 5, null);
+
+        Assert.Equal(
+            "DELETE FROM [Person] WHERE id IN (SELECT id FROM [Person]" +
+            " ORDER BY json_extract(data, '$.CreatedAt') DESC LIMIT -1 OFFSET 5)",
+            query.Sql);
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithAnInvalidTableName_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredDeleteSql(
+                "Person]; DROP TABLE Person; --", NoPredicates, NoOrderings, null, null));
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithAMalformedPredicatePath_ThrowsArgumentException()
+    {
+        var predicates = new[] { Predicate("$.a' --", QueryOperator.Equal, 1) };
+
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredDeleteSql(Table, predicates, NoOrderings, null, null));
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_WithAMalformedOrderingPathAndNoPaging_StillThrows()
+    {
+        // The ordering is dropped from the unpaged statement, but not from validation.
+        var orderings = new[] { new QueryOrdering("$.a' --", false) };
+
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredDeleteSql(Table, NoPredicates, orderings, null, null));
+    }
+
+    [Fact]
+    public void GenerateFilteredDeleteSql_BeyondTheParameterCap_ThrowsArgumentException()
+    {
+        var tooMany = Enumerable.Range(0, SqlGenerator.MaxBoundParameters + 1)
+            .Select(i => (object?)i)
+            .ToArray();
+
+        Assert.Throws<ArgumentException>(
+            () => SqlGenerator.GenerateFilteredDeleteSql(
+                Table, [InPredicate("$.Id", tooMany)], NoOrderings, null, null));
+    }
+
     // --- Validation at generation time ------------------------------------------------------
 
     [Fact]

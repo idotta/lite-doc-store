@@ -203,6 +203,13 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
     }
 
     /// <inheritdoc />
+    public Task<int> DeleteAsync<T>(DocumentQuery<T> query, CancellationToken cancellationToken = default)
+    {
+        ActiveTransaction();
+        return _operations.DeleteAsync(query, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<int> DeleteAllAsync<T>(CancellationToken cancellationToken = default)
     {
         ActiveTransaction();
@@ -748,9 +755,13 @@ internal sealed class DocumentStoreTransaction : IDocumentTransaction
         }
         finally
         {
-            if (_connectionCompromised || _rawAccessed)
+            if (_connectionCompromised)
             {
                 _lease.Discard();
+            }
+            else if (_rawAccessed)
+            {
+                _lease.ReturnAfterExternalAccess();
             }
             else
             {

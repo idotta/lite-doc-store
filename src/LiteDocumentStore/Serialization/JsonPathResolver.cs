@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 
 namespace LiteDocumentStore;
@@ -84,6 +85,87 @@ internal static class JsonPathResolver
 
         return path.ToString();
     }
+
+    /// <summary>
+    /// Resolves the declared CLR type a validated JSON path reaches in <paramref name="root"/>'s
+    /// serialized shape, or null when the metadata does not describe it or a custom converter
+    /// writes any part of it.
+    /// </summary>
+    /// <remarks>
+    /// Walks the same <see cref="JsonTypeInfo"/> the serializer writes through, matching each
+    /// member on its serialized name. Declared types only: a polymorphic member resolves to its
+    /// declared type, and a key only a derived type writes resolves to null. A custom converter —
+    /// on the property, on the type, or in the options — decides the stored shape itself, so the
+    /// declared type says nothing about it: a <see cref="DateTime"/> written as epoch millis is a
+    /// JSON number, and treating it as a date would order it arbitrarily.
+    /// </remarks>
+    internal static Type? ResolvePathType(Type root, string jsonPath, JsonSerializerOptions serializerOptions)
+    {
+        var current = root;
+        foreach (var member in SqlGenerator.SplitJsonPath(jsonPath, nameof(jsonPath)))
+        {
+            JsonTypeInfo typeInfo;
+            try
+            {
+                typeInfo = serializerOptions.GetTypeInfo(current);
+            }
+            catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+            {
+                return null;
+            }
+
+            if (!IsBuiltIn(typeInfo.Converter))
+            {
+                return null;
+            }
+
+            Type? next;
+            switch (typeInfo.Kind, member)
+            {
+                case (JsonTypeInfoKind.Enumerable, null):
+                case (JsonTypeInfoKind.Dictionary, not null):
+                    next = typeInfo.ElementType;
+                    break;
+                case (JsonTypeInfoKind.Object, not null):
+                    var property = typeInfo.Properties
+                        .FirstOrDefault(p => string.Equals(p.Name, member, StringComparison.Ordinal));
+                    next = property is { CustomConverter: null } ? property.PropertyType : null;
+                    break;
+                default:
+                    next = null;
+                    break;
+            }
+
+            if (next is null)
+            {
+                return null;
+            }
+
+            current = next;
+        }
+
+        // The built-in Nullable<T> converter wraps whatever converter the options hold for T.
+        var underlying = Nullable.GetUnderlyingType(current);
+        return HasBuiltInConverter(current, serializerOptions)
+            && (underlying is null || HasBuiltInConverter(underlying, serializerOptions))
+            ? current
+            : null;
+    }
+
+    private static bool HasBuiltInConverter(Type type, JsonSerializerOptions serializerOptions)
+    {
+        try
+        {
+            return IsBuiltIn(serializerOptions.GetTypeInfo(type).Converter);
+        }
+        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsBuiltIn(JsonConverter converter) =>
+        converter.GetType().Assembly == typeof(JsonSerializer).Assembly;
 
     /// <summary>
     /// Strips the <c>Convert</c> the compiler inserts to box a value type into <c>object</c>, and
