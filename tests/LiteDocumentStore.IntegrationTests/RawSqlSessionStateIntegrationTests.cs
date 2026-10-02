@@ -399,6 +399,25 @@ public sealed class RawSqlSessionStateIntegrationTests : IDisposable
         Assert.DoesNotContain(loggerFactory.Entries, e => e.Level >= LogLevel.Warning);
     }
 
+    [Fact]
+    public async Task ExecuteRawAsync_WhenTheCallbackClosesTheConnection_WarnsAsBroken()
+    {
+        var loggerFactory = new CapturingLoggerFactory();
+        var options = DocumentStoreOptions.ForFile(NewDatabasePath());
+        options.MaxPoolSize = 1;
+        await using var store = await new DocumentStoreFactory(new DefaultConnectionFactory(), null, loggerFactory)
+            .CreateAsync(options);
+
+        await store.ExecuteRawAsync((connection, _) =>
+        {
+            connection.Close();
+            return Task.FromResult(0);
+        });
+
+        Assert.Contains(loggerFactory.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("state Closed"));
+        Assert.DoesNotContain(loggerFactory.Entries, e => e.Message.Contains("Retiring"));
+    }
+
     private sealed class CapturingLoggerFactory : ILoggerFactory
     {
         public ConcurrentBag<(LogLevel Level, string Message)> Entries { get; } = [];

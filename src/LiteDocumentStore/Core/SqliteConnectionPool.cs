@@ -492,13 +492,15 @@ internal sealed class SqliteConnectionPool : IDisposable, IAsyncDisposable
                 return;
             }
 
-            if (expected)
+            // A raw callback that closed or broke the connection is a fault, not the expected
+            // retirement, and keeps the warning ReturnCore would give it.
+            if (expected && connection.State == ConnectionState.Open)
             {
                 RetireConnection(connection, reason);
             }
             else
             {
-                DiscardBrokenConnection(connection, reason);
+                DiscardBrokenConnection(connection, expected ? $"state {connection.State}" : reason);
             }
         }
         finally

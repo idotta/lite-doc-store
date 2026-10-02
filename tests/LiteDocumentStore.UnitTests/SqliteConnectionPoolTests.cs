@@ -277,6 +277,23 @@ public sealed class SqliteConnectionPoolTests
     }
 
     [Fact]
+    public async Task ReturnAfterExternalAccess_WhenTheCallerClosedTheConnection_WarnsAsBroken()
+    {
+        var logger = new RecordingLogger();
+        var options = DocumentStoreOptions.ForInMemory();
+        options.MaxPoolSize = 1;
+        using var pool = new SqliteConnectionPool(options, new DefaultConnectionFactory(), logger);
+
+        var lease = await pool.RentAsync();
+        lease.Connection.Close();
+        lease.ReturnAfterExternalAccess();
+
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("state Closed"));
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("Retiring"));
+        Assert.Equal(0, pool.ConnectionCount);
+    }
+
+    [Fact]
     public async Task ReturnAfterExternalAccess_Repeatedly_KeepsConnectionCountHonestAndDoesNotStarve()
     {
         // Each raw return uncounts its connection and hands the slot back, so the count tracks
