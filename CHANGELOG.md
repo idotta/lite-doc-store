@@ -7,7 +7,11 @@ All notable changes to LiteDocumentStore are documented here. The format follows
 **This file starts at 0.5.0.** Releases 0.1.0 through 0.4.0 shipped before it existed; that history
 is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag` for the list.
 
-## [Unreleased]
+## [0.6.0] - 2026-10-02
+
+0.6.0 adds a filtered, page-aware `DeleteAsync` and makes date ordering chronological. Two of its
+breaks are compile-time; the date-range refusal is a runtime throw where the query used to return
+the wrong rows silently.
 
 ### Breaking changes
 
