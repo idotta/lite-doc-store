@@ -9,8 +9,9 @@ is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag
 
 ## [0.7.0] - 2026-10-02
 
-0.7.0 removes the library's runtime dependency on OpenSSL. Its one break renames auto-derived
-indexes a second time; read **Breaking changes** before upgrading a 0.5.0 or 0.6.0 database.
+0.7.0 removes the library's runtime dependency on OpenSSL. It breaks twice: auto-derived index
+names change a second time, and stored migration checksums are rewritten once instead of verified.
+Read **Breaking changes** before upgrading a 0.5.0 or 0.6.0 database.
 
 ### Breaking changes
 
