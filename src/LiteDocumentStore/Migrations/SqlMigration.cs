@@ -1,5 +1,4 @@
-using System.Security.Cryptography;
-using System.Text;
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 
 namespace LiteDocumentStore;
@@ -35,7 +34,8 @@ public class SqlMigration : IMigration
         Name = name;
         _upSql = upSql;
         _downSql = downSql;
-        Checksum = ComputeChecksum(upSql);
+        UpSqlChecksum = ComputeChecksum(upSql);
+        Checksum = UpSqlChecksum;
     }
 
     /// <inheritdoc />
@@ -45,7 +45,7 @@ public class SqlMigration : IMigration
     public string Name { get; }
 
     /// <summary>
-    /// Gets the uppercase SHA-256 hex digest of this migration's UTF-8 up SQL. The down SQL is
+    /// Gets the CRC-32C of this migration's UTF-8 up SQL, as eight uppercase hex characters. The down SQL is
     /// deliberately excluded: it is not part of what was applied, so editing it does not fail a
     /// later run.
     /// </summary>
@@ -107,6 +107,10 @@ public class SqlMigration : IMigration
         await connection.ExecuteAsync(_downSql, cancellationToken).ConfigureAwait(false);
     }
 
+    // The base digest, whatever a subclass's Checksum override returns. The runner uses it to
+    // tell this class's own pre-0.7.0 SHA-256 rows from a format a subclass chose.
+    internal string UpSqlChecksum { get; }
+
     private static string ComputeChecksum(string upSql) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(upSql)));
+        Crc32C.Compute(upSql).ToString("X8", CultureInfo.InvariantCulture);
 }

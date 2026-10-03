@@ -4,7 +4,6 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using LiteDocumentStore.Exceptions;
@@ -2032,10 +2031,10 @@ internal readonly struct DocumentOperations
     /// <c>B</c> read alike and would digest alike if the fields ran together.
     /// </para>
     /// <para>
-    /// Three bytes of SHA-256 as six lowercase hex characters: collision-resistant, not injective —
-    /// 24 bits is not a proof, the same wording the table-name fold earns. Hex is always
-    /// identifier-safe, so the suffix can never be what makes a derived name fail
-    /// <see cref="RequireDerivableName"/>'s screen.
+    /// The low 24 bits of CRC-32C (see <see cref="Crc32C"/>) as six lowercase hex characters:
+    /// collision-resistant, not injective — 24 bits is not a proof, the same wording the
+    /// table-name fold earns. Hex is always identifier-safe, so the suffix can never be what makes
+    /// a derived name fail <see cref="RequireDerivableName"/>'s screen.
     /// </para>
     /// </remarks>
     private static string IndexNameDigest(string kind, string tableName, IReadOnlyList<string> paths)
@@ -2046,9 +2045,7 @@ internal readonly struct DocumentOperations
             input.Append('\0').Append(path);
         }
 
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(Encoding.UTF8.GetBytes(input.ToString()), hash);
-        return Convert.ToHexStringLower(hash[..3]);
+        return (Crc32C.Compute(input.ToString()) & 0xFFFFFF).ToString("x6", CultureInfo.InvariantCulture);
     }
 
     /// <summary>

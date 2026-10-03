@@ -170,7 +170,14 @@ internal sealed class MigrationRunner
             {
                 if (options.VerifyChecksums)
                 {
-                    VerifyChecksum(migration, applied.Checksum);
+                    if (IsLegacySqlMigrationChecksum(migration, applied.Checksum))
+                    {
+                        await RewriteChecksumAsync(migration, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        VerifyChecksum(migration, applied.Checksum);
+                    }
                 }
 
                 _logger.LogDebug("Migration {Version} ({Name}) already applied, skipping",
@@ -394,6 +401,38 @@ internal sealed class MigrationRunner
         }
 
         throw new MigrationChecksumMismatchException(migration.Version, migration.Name, storedChecksum, current);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="storedChecksum"/> is the SHA-256 digest <see cref="SqlMigration"/>
+    /// recorded before 0.7.0, while the migration now reports its own CRC-32C one.
+    /// </summary>
+    /// <remarks>
+    /// The two cannot be compared, and verifying the old one would need SHA-256 — the OpenSSL
+    /// dependency the switch exists to drop. So the row is trusted once and rewritten: drift
+    /// introduced before the upgrade goes unreported, drift after it does not. A custom
+    /// <see cref="IMigration"/>, or a subclass whose <see cref="SqlMigration.Checksum"/> override
+    /// returns anything but the base digest, keeps whatever format it chose and is never rewritten.
+    /// </remarks>
+    private static bool IsLegacySqlMigrationChecksum(IMigration migration, string? storedChecksum) =>
+        migration is SqlMigration sqlMigration
+        && string.Equals(migration.Checksum, sqlMigration.UpSqlChecksum, StringComparison.Ordinal)
+        && storedChecksum is { Length: 64 }
+        && storedChecksum.All(char.IsAsciiHexDigitUpper);
+
+    private async Task RewriteChecksumAsync(IMigration migration, CancellationToken cancellationToken)
+    {
+        await _connection.ExecuteAsync(
+            $"UPDATE [{MigrationTableName}] SET checksum = @Checksum WHERE version = @Version",
+            cancellationToken,
+            ("Checksum", migration.Checksum),
+            ("Version", migration.Version))
+            .ConfigureAwait(false);
+
+        _logger.LogInformation(
+            "Migration {Version} ({Name}): replaced its pre-0.7.0 SHA-256 checksum with CRC-32C; " +
+            "an edit made before this upgrade is not detected",
+            migration.Version, migration.Name);
     }
 
     private async Task<(bool Found, string? Checksum)> TryReadHistoryAsync(

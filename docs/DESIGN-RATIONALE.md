@@ -1672,7 +1672,12 @@ one of the two creations was silently skipped. That was the loud half. The drop 
 
 **The input encoding.** `DocumentOperations.IndexNameDigest` is the one owner — all three derivations call
 it and no site builds a name inline — and digests `kind \0 table \0 path[ \0 path…]` as UTF-8, taking the
-first three bytes of SHA-256 as six lowercase hex characters. `U+0000` is the delimiter because it is the
+low 24 bits of CRC-32C as six lowercase hex characters. It was the first three bytes of SHA-256 in
+0.5.0–0.6.0; that routed through OpenSSL on Linux (`strace` on the AOT sample showed `libssl.so.3`
+and `libcrypto.so.3` opened by the first `CreateIndexAsync`), so an image without `libssl` failed on
+the first index creation. Nothing here needs a cryptographic hash — the digest separates names, it
+defends against no adversary — so `BitOperations.Crc32C` replaced it, at the cost of renaming every
+auto-derived index a second time. `U+0000` is the delimiter because it is the
 one character no field can carry: `SqlGenerator.MemberFault` refuses it in a path permanently, and
 `ValidateIdentifier` admits only `[A-Za-z0-9_]` in a name. So no input can forge a field boundary. The
 boundary it actually buys is a column index's: a path carries its own leading `$.` and a table name can

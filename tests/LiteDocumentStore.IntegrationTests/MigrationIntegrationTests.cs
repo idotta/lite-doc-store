@@ -145,6 +145,72 @@ public class MigrationIntegrationTests : IAsyncLifetime
         Assert.Equal(0, applied);
     }
 
+    // --- Pre-0.7.0 SHA-256 checksums ------------------------------------------------------
+
+    // SHA-256 of "SELECT 1", the shape SqlMigration recorded before CRC-32C.
+    private const string LegacyChecksum = "E004EBD5B5532A4B85984A62F8AD48A81AA3460C1CA07701F386135D72CDECF5";
+
+    private Task<int> StoreChecksumAsync(long version, string checksum) =>
+        _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE __store_migrations SET checksum = @Checksum WHERE version = @Version";
+            command.Parameters.AddWithValue("@Checksum", checksum);
+            command.Parameters.AddWithValue("@Version", version);
+            return await command.ExecuteNonQueryAsync(ct);
+        });
+
+    private async Task<string?> StoredChecksumAsync(long version) =>
+        (await _store.GetAppliedMigrationsAsync()).Single(m => m.Version == version).Checksum;
+
+    [Fact]
+    public async Task MigrateAsync_OverALegacySha256Checksum_RewritesItOnceThenVerifiesAgain()
+    {
+        var migration = new SqlMigration(1, "Seed", "SELECT 1", "SELECT 1");
+        await _store.MigrateAsync([migration]);
+        await StoreChecksumAsync(1, LegacyChecksum);
+
+        Assert.Equal(0, await _store.MigrateAsync([migration]));
+        Assert.Equal(migration.Checksum, await StoredChecksumAsync(1));
+
+        // Verification resumes against the rewritten value.
+        await Assert.ThrowsAsync<MigrationChecksumMismatchException>(() =>
+            _store.MigrateAsync([new SqlMigration(1, "Seed", "SELECT 2", "SELECT 1")]));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_OverALegacySha256Checksum_WithVerificationDisabled_LeavesItAlone()
+    {
+        var migration = new SqlMigration(1, "Seed", "SELECT 1", "SELECT 1");
+        await _store.MigrateAsync([migration]);
+        await StoreChecksumAsync(1, LegacyChecksum);
+
+        await _store.MigrateAsync([migration], new MigrationOptions { VerifyChecksums = false });
+
+        Assert.Equal(LegacyChecksum, await StoredChecksumAsync(1));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_WhenASubclassOverrideReportsItsOwnChecksum_DoesNotTreatTheRowAsLegacy()
+    {
+        // The rewrite is for SqlMigration's own digest only; an override chose its own format.
+        await _store.MigrateAsync([new ChecksummedMigration(1, "T1", "ABCDEF12")]);
+        await StoreChecksumAsync(1, LegacyChecksum);
+
+        await Assert.ThrowsAsync<MigrationChecksumMismatchException>(() =>
+            _store.MigrateAsync([new ChecksummedMigration(1, "T1", "ABCDEF12")]));
+    }
+
+    [Fact]
+    public async Task MigrateAsync_OverA64CharacterChecksumThatIsNotUppercaseHex_DoesNotTreatTheRowAsLegacy()
+    {
+        var migration = new SqlMigration(1, "Seed", "SELECT 1", "SELECT 1");
+        await _store.MigrateAsync([migration]);
+        await StoreChecksumAsync(1, LegacyChecksum.ToLowerInvariant());
+
+        await Assert.ThrowsAsync<MigrationChecksumMismatchException>(() => _store.MigrateAsync([migration]));
+    }
+
     [Fact]
     public async Task GetAppliedMigrationsAsync_ExposesTheRecordedChecksum()
     {
