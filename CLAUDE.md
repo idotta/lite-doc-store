@@ -58,6 +58,7 @@ src/
                      SqliteCommandExtensions (raw ADO helpers), DocumentStoreOptions(+Builder),
                      VersionedDocument, SqliteSessionState (the pool's dirty-connection probes),
                      QuietLog (logging that cannot throw, for the release paths),
+                     Crc32C (the index-name digest and migration checksum hash),
                      and the three guards the options and pool run:
                      SqliteConnectionStringGuard, SqlitePageSizeGuard, SqliteVersionGuard
     Blobs/           BlobMetadata, BlobWriteOptions, BlobLimits, BlobIdPrefix (the prefix key
@@ -995,8 +996,8 @@ as `["$.A.B"]`, a generated column's index onto the expression index for the sam
 check at a creation site can close that half. Distinct names can.
 `DocumentOperations.IndexNameDigest` is the single owner, called by all three derivations
 (`GenerateIndexName`, `GenerateCompositeIndexName`, `GenerateColumnIndexName`) and by no inline site:
-the first three bytes of SHA-256 over `kind \0 table \0 path[ \0 path…]` in UTF-8, rendered as six
-lowercase hex characters. `U+0000` is the delimiter because it is the one character neither a
+the low 24 bits of CRC-32C over `kind \0 table \0 path[ \0 path…]` in UTF-8, rendered as six
+lowercase hex characters. **Not SHA-256, deliberately** — see "No OpenSSL" below. `U+0000` is the delimiter because it is the one character neither a
 validated path nor an identifier can carry, so no input can forge a field boundary; `kind` is
 belt-and-braces rather than load-bearing, and the source remark says so — measured, folding all three
 kind literals to one leaves both suites green, because a validated path always carries `$.` and an
@@ -1397,14 +1398,23 @@ decouple the work from the history-row `INSERT`, and "half-applied" there is pre
 connection instance across every migration, and the bare `COMMIT`. → rationale#migrations
 
 **Checksums.** `IMigration.Checksum` is a default interface member returning null (so existing
-implementations still compile); `SqlMigration.Checksum` is **`virtual`** and returns the uppercase
-SHA-256 hex of its **up** SQL only — the down SQL is not part of what was applied, and rollback
+implementations still compile); `SqlMigration.Checksum` is **`virtual`** and returns the CRC-32C of
+its **up** SQL only, as eight uppercase hex characters — the down SQL is not part of what was applied, and rollback
 never verifies checksums at all. The checksum is stored with the history row and compared on later
 runs, throwing `MigrationChecksumMismatchException` (`ExpectedChecksum` = stored, `ActualChecksum` =
 supplied) unless `MigrationOptions.VerifyChecksums` is false. Either side null skips the check,
 which keeps pre-checksum history usable: a legacy three-column table is `ALTER TABLE`-ed on first
 use, re-checking `pragma_table_info` under an immediate transaction so two starting processes cannot
 both issue the ALTER.
+
+**A pre-0.7.0 checksum is rewritten once, not verified.** `SqlMigration` stored 64-character SHA-256
+hex before 0.7.0, which cannot be compared with CRC-32C, and checking it would need SHA-256 back. So
+`MigrationRunner.IsLegacySqlMigrationChecksum` — a `SqlMigration` whose `Checksum` is still the base
+digest (`UpSqlChecksum`), a stored value of 64 uppercase hex characters, verification on — trusts the
+row and `UPDATE`s it to the new value inside the apply transaction, logging at Information. Drift made
+before the upgrade goes unreported; drift after it does not. A subclass override that returns its own
+value and a custom `IMigration` are never rewritten, and with `VerifyChecksums = false` the row is
+left alone until verification is turned on.
 
 **Input is validated before anything runs**: a null element throws `ArgumentException` naming its
 index, a duplicate version one naming the version and **both** indices, a negative rollback target throws
@@ -1452,6 +1462,15 @@ was handled:
 `examples/AotVerification` is the only gate for the AOT-null branch, since the xUnit runner is JIT. Its
 three shapes and what each now asserts (they changed when the factory began snapshotting options) are
 in → rationale#options-snapshot.
+
+**No OpenSSL.** On Linux every `System.Security.Cryptography` hash goes through OpenSSL, which .NET
+`dlopen`s on first use — `ldd` shows nothing, but an image without `libssl` (distroless, chiseled, a
+bare Alpine) fails on the first call. Neither of the library's digests is a security boundary, so both
+use `Core/Crc32C.cs` over `BitOperations.Crc32C` (BCL, SSE4.2/Arm64 CRC instruction, managed fallback).
+Measured with `strace` on the AOT sample: 0.6.0 opened `libssl.so.3`/`libcrypto.so.3`, CRC-32C opens
+neither. **Do not reintroduce a `System.Security.Cryptography` call.** One reference remains in the
+AOT image and is not ours: System.Text.Json's `Marvin` seeds itself from `RandomNumberGenerator` when
+`JsonDocument` validates duplicate property names; it is lazy and the AOT sample does not reach it.
 
 When adding features, keep them AOT-clean: no reflection-based serialization (route through `JsonHelper`
 + `JsonTypeInfo<T>`), no `Expression.Compile`, no `dynamic`. A `dotnet build` must stay free of

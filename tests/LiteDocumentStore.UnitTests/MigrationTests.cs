@@ -68,14 +68,13 @@ public class MigrationTests
     }
 
     [Fact]
-    public void Migration_Checksum_IsAStableUppercaseSha256OfTheUpSql()
+    public void Migration_Checksum_IsAStableUppercaseCrc32COfTheUpSql()
     {
         var first = new SqlMigration(1, "Test", "CREATE TABLE T (id TEXT)", "DROP TABLE T");
         var second = new SqlMigration(9, "Other", "CREATE TABLE T (id TEXT)", "SELECT 1");
 
-        // 64 uppercase hex characters, and independent of version, name and down SQL.
-        Assert.Equal(64, first.Checksum.Length);
-        Assert.Equal(first.Checksum.ToUpperInvariant(), first.Checksum);
+        // Computed by an independent bitwise CRC-32C; independent of version, name and down SQL.
+        Assert.Equal("1369FD01", first.Checksum);
         Assert.Equal(first.Checksum, second.Checksum);
     }
 

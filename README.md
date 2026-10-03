@@ -242,23 +242,25 @@ write workloads.
   implementations, and to auto-derived index names, which embed the table name (next bullet).
 - **Index names.** An index created without an explicit `indexName` is called
   `idx_{table}_{path}_{digest}`: the path with its leading `$.` dropped and its remaining `.`
-  separators folded to `_`, then six lowercase hex characters — the first three bytes of a SHA-256
+  separators folded to `_`, then six lowercase hex characters — the low 24 bits of a CRC-32C
   over the derivation kind, the table name and the paths, `U+0000`-delimited. So
-  `CreateIndexAsync<Customer>(x => x.Email)` derives `idx_Customer_Email_3cf60a`, while the index
+  `CreateIndexAsync<Customer>(x => x.Email)` derives `idx_Customer_Email_223fe7`, while the index
   `AddVirtualColumnAsync<Customer>("$.Email", "Email", …)` puts on its generated column is
-  `idx_Customer_Email_4ee840`: the readable halves are one name and only the digest tells the two
+  `idx_Customer_Email_e4caa3`: the readable halves are one name and only the digest tells the two
   apart — which matters, because an index on the generated column does not serve a query on the
   raw expression. The digest is collision-resistant rather than injective (24 bits is not a proof),
   so a name already held by a *different* definition is still refused rather than silently adopted.
   A path whose readable half is no SQL identifier — `$.Tags[0]`, `$.full-name`, `$."a.b"` — has no
   derived name at all and needs an explicit one.
 
-  The digest is new in 0.5.0, so **every auto-derived index name changes** on an existing database:
-  `idx_Customer_Email` is now `idx_Customer_Email_3cf60a`. Two consequences, both silent:
+  The digest arrived in 0.5.0 and its hash changed in 0.7.0 (SHA-256 to CRC-32C, dropping the
+  OpenSSL dependency), so on a database created by an earlier release **every auto-derived index
+  name changes**: `idx_Customer_Email` (before 0.5.0) and `idx_Customer_Email_3cf60a` (0.5.0–0.6.0)
+  are both `idx_Customer_Email_223fe7` now. Two consequences, both silent:
 
   - `DropIndexAsync<T>(x => x.Email)` derives the *new* name, which nothing in an upgraded database
     holds. Both drop overloads are `IF EXISTS`, so the call **succeeds without dropping anything**.
-    Drop the old index through the string overload instead: `DropIndexAsync("idx_Customer_Email")`.
+    Drop the old index through the string overload instead: `DropIndexAsync("idx_Customer_Email_3cf60a")`.
   - `CreateIndexAsync<T>(x => x.Email)` also derives the new name, and the `sqlite_master`
     definition pre-check compares *per name*, so it neither finds nor refuses the old-named index
     over the same expression. The new index is created beside it and the database ends up carrying

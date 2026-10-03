@@ -36,7 +36,7 @@ public interface IMigration
     /// <remarks>
     /// Only the <em>up</em> definition should be covered: the down definition is not part of
     /// what was applied, so editing it must not fail a startup migration. <see cref="SqlMigration"/>
-    /// returns an uppercase SHA-256 hex digest of its UTF-8 up SQL. An implementation that
+    /// returns the CRC-32C of its UTF-8 up SQL as eight uppercase hex characters. An implementation that
     /// returns null is never verified, which is what keeps history written before checksums
     /// existed usable.
     /// </remarks>

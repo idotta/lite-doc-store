@@ -7,6 +7,35 @@ All notable changes to LiteDocumentStore are documented here. The format follows
 **This file starts at 0.5.0.** Releases 0.1.0 through 0.4.0 shipped before it existed; that history
 is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag` for the list.
 
+## [0.7.0] - 2026-10-02
+
+0.7.0 removes the library's runtime dependency on OpenSSL. Its one break renames auto-derived
+indexes a second time; read **Breaking changes** before upgrading a 0.5.0 or 0.6.0 database.
+
+### Breaking changes
+
+- **Every auto-derived index name changes again.** The six-hex digest is now the low 24 bits of a
+  CRC-32C rather than the first three bytes of a SHA-256, so `idx_Customer_Email_3cf60a` is now
+  `idx_Customer_Email_223fe7`. The consequences are the 0.5.0 ones and just as silent: a
+  `DropIndexAsync<T>(x => x.Email)` that drops nothing, and a `CreateIndexAsync<T>(x => x.Email)`
+  that leaves two indexes over one path. *Remedy:* list the old names with the README's
+  `sqlite_master` query and drop each through `DropIndexAsync(string)` before re-creating.
+- **`SqlMigration.Checksum` is now eight uppercase hex characters** (CRC-32C of the up SQL) instead
+  of 64 (SHA-256). A history row holding the old 64-character value is **rewritten on the next
+  `MigrateAsync` instead of verified**, and the rewrite is logged at Information — so an edit made
+  to an applied migration *before* upgrading is not reported; one made after is. A subclass that
+  overrides `Checksum`, a custom `IMigration`, and a run with `VerifyChecksums = false` are left
+  alone. Code that compared `Checksum` against a stored SHA-256 of its own needs updating.
+
+### Fixed
+
+- **No OpenSSL at runtime.** On Linux, .NET hashes through OpenSSL, loaded with `dlopen` on first
+  use, so `ldd` showed nothing while the first index creation or migration failed on an image
+  without `libssl` (distroless, chiseled, a bare Alpine). Both digests now use
+  `BitOperations.Crc32C`, which is in the BCL, hardware-accelerated on x64 and Arm64, and needs no
+  native library. Verified with `strace` on the Native AOT sample: 0.6.0 opened `libssl.so.3` and
+  `libcrypto.so.3`, 0.7.0 opens neither.
+
 ## [0.6.0] - 2026-10-02
 
 0.6.0 adds a filtered, page-aware `DeleteAsync` and makes date ordering chronological. Two of its

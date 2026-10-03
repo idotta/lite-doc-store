@@ -108,21 +108,22 @@ public class IndexNameDerivationTests
     public void EveryDerivation_MatchesItsGoldenName()
     {
         // The algorithm itself is pinned by nothing else here: every other test asserts shape,
-        // determinism or distinctness, all of which survive swapping SHA-256 for another hash or
-        // taking hash[3..6] instead of hash[..3]. The names are a contract now - README documents
+        // determinism or distinctness, all of which survive swapping CRC-32C for another hash or
+        // taking other bits of it. The names are a contract now - README documents
         // the scheme and prints the Customer pair below, and a change to the algorithm silently
         // renames every auto-derived index on every existing database. So these literals are
-        // computed from the spec (SHA-256 over kind \0 table \0 path[ \0 path...], first three
-        // bytes as lowercase hex) rather than read back from the derivation.
-        Assert.Equal("idx_Member_A_B_45f9b8", DocumentOperations.GenerateIndexName(Table, "$.A.B"));
-        Assert.Equal("idx_Member_Email_17a3b8", DocumentOperations.GenerateColumnIndexName(Table, "Email"));
+        // computed from the spec (CRC-32C over kind \0 table \0 path[ \0 path...], low 24 bits
+        // as lowercase hex) by an independent bitwise implementation, rather than read back from
+        // the derivation.
+        Assert.Equal("idx_Member_A_B_b94936", DocumentOperations.GenerateIndexName(Table, "$.A.B"));
+        Assert.Equal("idx_Member_Email_c5bc15", DocumentOperations.GenerateColumnIndexName(Table, "Email"));
         Assert.Equal(
-            "idx_Member_composite_A_B_07549d",
+            "idx_Member_composite_A_B_f56f80",
             DocumentOperations.GenerateCompositeIndexName(Table, ["$.A", "$.B"]));
 
         // The pair README prints, whose readable halves coincide.
-        Assert.Equal("idx_Customer_Email_3cf60a", DocumentOperations.GenerateIndexName("Customer", "$.Email"));
-        Assert.Equal("idx_Customer_Email_4ee840", DocumentOperations.GenerateColumnIndexName("Customer", "Email"));
+        Assert.Equal("idx_Customer_Email_223fe7", DocumentOperations.GenerateIndexName("Customer", "$.Email"));
+        Assert.Equal("idx_Customer_Email_e4caa3", DocumentOperations.GenerateColumnIndexName("Customer", "Email"));
     }
 
     [Theory]
