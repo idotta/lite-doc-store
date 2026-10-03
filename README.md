@@ -266,11 +266,17 @@ write workloads.
     over the same expression. The new index is created beside it and the database ends up carrying
     **two indexes over one path**, paying the write cost of both on every insert and update.
 
-  So list the old names once and drop each explicitly before re-creating anything:
+  So list the candidates once, before re-creating anything:
 
   ```sql
-  SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx\_%' ESCAPE '\';
+  SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx\_%' ESCAPE '\';
   ```
+
+  The query returns **every** index whose name starts with `idx_`, including any you created with
+  an explicit `indexName` or through your own SQL. Drop only the ones your code creates *without* a
+  name — the `sql` column shows each one's path — through `DropIndexAsync(string)`. An explicitly
+  named index is not re-created under a derived name, so dropping it loses it, and a unique one
+  takes its constraint with it.
 - **Safety.** All *values* are parameterized. SQL identifiers and JSON paths cannot be bound, so
   they are interpolated — and validated first, in one place: table/index/column names must match
   `[A-Za-z_][A-Za-z0-9_]*`, JSON paths must match `$(.member|[index])*`, and column types come from

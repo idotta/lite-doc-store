@@ -18,8 +18,10 @@ indexes a second time; read **Breaking changes** before upgrading a 0.5.0 or 0.6
   CRC-32C rather than the first three bytes of a SHA-256, so `idx_Customer_Email_3cf60a` is now
   `idx_Customer_Email_223fe7`. The consequences are the 0.5.0 ones and just as silent: a
   `DropIndexAsync<T>(x => x.Email)` that drops nothing, and a `CreateIndexAsync<T>(x => x.Email)`
-  that leaves two indexes over one path. *Remedy:* list the old names with the README's
-  `sqlite_master` query and drop each through `DropIndexAsync(string)` before re-creating.
+  that leaves two indexes over one path. *Remedy:* before re-creating, list the candidates with
+  the README's "Index names" query and drop, through `DropIndexAsync(string)`, only those your code
+  creates without an explicit `indexName` — the query also returns explicitly named `idx_` indexes,
+  which nothing re-creates.
 - **`SqlMigration.Checksum` is now eight uppercase hex characters** (CRC-32C of the up SQL) instead
   of 64 (SHA-256). A history row holding the old 64-character value is **rewritten on the next
   `MigrateAsync` instead of verified**, and the rewrite is logged at Information — so an edit made
