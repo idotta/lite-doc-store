@@ -493,6 +493,23 @@ public sealed class ArgumentValidationTests
         AssertOutOfRangeRejected(operationName, "disposed store", exception);
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public async Task QueryAsync_WithANonFiniteValueOnADisposedStore_ThrowsArgumentNotObjectDisposed(double value)
+    {
+        // The operations repeat the check, but only after a rent, which a disposed store refuses,
+        // so only the store's own early check can produce this exception.
+        var store = await CreateStoreAsync();
+        await store.DisposeAsync();
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => store.QueryAsync<Doc, double>("$.Value", value));
+
+        Assert.Equal("value", exception.ParamName);
+    }
+
     /// <summary>
     /// The one public member outside the <c>RunAsync</c> surface that had the opposite order.
     /// </summary>

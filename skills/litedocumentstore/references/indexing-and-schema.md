@@ -48,8 +48,9 @@ An index is `json_extract(data, '<path>')` on T's table.
   - The expression must be a member chain rooted at the lambda parameter. Value-type members
     are fine (the boxing is unwrapped). Use `x => x.Email!` for nullable reference members.
 - **String overloads** use the path verbatim and are never checked against the documents. A
-  wrong path creates a useless index, and a `Unique` one then accepts every duplicate, because
-  NULLs are distinct. Use them for array elements (`$.Tags[0]`), quoted keys (`$."a.b"`), or
+  path absent from the rows indexes NULL everywhere, and a `Unique` one then accepts every
+  duplicate, because NULLs are distinct (a wrong path that hits another key constrains that key
+  instead). Use them for array elements (`$.Tags[0]`), quoted keys (`$."a.b"`), or
   keys not written by T's serializer.
 - The root `$` is refused by all index and virtual-column DDL.
 

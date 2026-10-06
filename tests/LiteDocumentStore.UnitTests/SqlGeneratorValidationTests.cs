@@ -196,11 +196,26 @@ public class SqlGeneratorValidationTests
     [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL NOT NULL)", false)]
     [InlineData("CREATE TABLE t (id TEXT, [c] TEXT)", false)]
     [InlineData(null, false)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT /* [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL, */)", false)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT -- [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL,\n)", false)]
+    [InlineData("CREATE TABLE t (id TEXT /* note */, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL)", true)]
     public void ContainsColumnDefinition_RequiresTheDefinitionToEndTheColumn(string? tableSql, bool expected)
     {
         const string definition = "[c] TEXT GENERATED ALWAYS AS (x) VIRTUAL";
 
         Assert.Equal(expected, DocumentOperations.ContainsColumnDefinition(tableSql, definition));
+    }
+
+    [Theory]
+    [InlineData("a /* b */ c", "a   c")]
+    [InlineData("a -- b\nc", "a  \nc")]
+    [InlineData("a /* unterminated", "a  ")]
+    [InlineData("'x /* y */ z' w", "'x /* y */ z' w")]
+    [InlineData("'it''s -- not' w", "'it''s -- not' w")]
+    [InlineData("\"q /*\" [r -- ] `s */` t", "\"q /*\" [r -- ] `s */` t")]
+    public void StripSqlComments_RemovesOnlyCommentsOutsideQuotes(string sql, string expected)
+    {
+        Assert.Equal(expected, DocumentOperations.StripSqlComments(sql));
     }
 
     [Fact]

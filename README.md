@@ -105,7 +105,8 @@ Predicates combine with AND only.
 through the configured `SerializerOptions` metadata and serializes the value through it, so a string
 enum (`JsonStringEnumConverter`, `UseStringEnumConverter`, or a `[JsonConverter]` on the property),
 a naming policy or a custom scalar converter needs nothing special: `Where("$.Status",
-QueryOperator.Equal, Status.Active)` matches documents that store `"Active"`. An enum on a path the
+QueryOperator.Equal, Status.Active)` matches documents that store `"Active"`. Paths name the
+*serialized* key, so under a camelCase policy that is `$.status`. An enum on a path the
 metadata cannot describe (a key only a derived type writes, a `Dictionary<string, object>` entry) is
 refused rather than guessed — bind the stored form instead. A range over an enum stored as its name is
 refused too, since names do not sort by value.

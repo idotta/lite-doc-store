@@ -188,6 +188,7 @@ public sealed class DocumentPatch<T>
                 path,
                 PatchOperationKind.Set,
                 DocumentQuery<T>.ValidateValue(value, nameof(value)),
-                AsJson: false) { RawValue = value };
+                AsJson: false)
+            { RawValue = value };
     }
 }

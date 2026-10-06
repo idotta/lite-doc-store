@@ -2234,13 +2234,17 @@ internal readonly struct DocumentOperations
 
     // The definition must stand as a whole column: followed by the next column's comma or the
     // closing parenthesis, so a column carrying further constraints after the same text is not
-    // mistaken for it.
+    // mistaken for it. Comments are removed first, so a definition quoted in a comment is not
+    // mistaken for a column either; a string literal cannot be, since inside one the
+    // definition's own quotes would have to be doubled.
     internal static bool ContainsColumnDefinition(string? tableSql, string definition)
     {
         if (tableSql is null)
         {
             return false;
         }
+
+        tableSql = StripSqlComments(tableSql);
 
         var start = 0;
         while ((start = tableSql.IndexOf(definition, start, StringComparison.Ordinal)) >= 0)
@@ -2260,6 +2264,62 @@ internal readonly struct DocumentOperations
         }
 
         return false;
+    }
+
+    // Replaces each -- and /* */ comment outside a quoted literal or identifier with one space.
+    // An unterminated block comment runs to the end, as SQLite reads it.
+    internal static string StripSqlComments(string sql)
+    {
+        var result = new StringBuilder(sql.Length);
+        var i = 0;
+        while (i < sql.Length)
+        {
+            var c = sql[i];
+            var close = c switch { '\'' => '\'', '"' => '"', '`' => '`', '[' => ']', _ => '\0' };
+            if (close != '\0')
+            {
+                var end = i + 1;
+                while (end < sql.Length)
+                {
+                    if (sql[end] != close)
+                    {
+                        end++;
+                    }
+                    else if (close != ']' && end + 1 < sql.Length && sql[end + 1] == close)
+                    {
+                        // Inside '...', "..." and `...` a doubled quote is an escaped one.
+                        end += 2;
+                    }
+                    else
+                    {
+                        end++;
+                        break;
+                    }
+                }
+
+                result.Append(sql, i, end - i);
+                i = end;
+            }
+            else if (c == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
+            {
+                var end = sql.IndexOf('\n', i);
+                i = end < 0 ? sql.Length : end;
+                result.Append(' ');
+            }
+            else if (c == '/' && i + 1 < sql.Length && sql[i + 1] == '*')
+            {
+                var end = sql.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                i = end < 0 ? sql.Length : end + 2;
+                result.Append(' ');
+            }
+            else
+            {
+                result.Append(c);
+                i++;
+            }
+        }
+
+        return result.ToString();
     }
 
     /// <summary>

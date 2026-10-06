@@ -480,6 +480,36 @@ public class VirtualColumnIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task AddVirtualColumnAsync_WhenAPlainColumnHasTheDefinitionInAComment_Throws()
+    {
+        // A table a migration created by hand, quoting the generated definition in a comment.
+        var table = $"{ProductTable}_commented";
+        var definition = SqlGenerator.GenerateVirtualColumnDefinition("category", "$.Category", "TEXT");
+        await _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                $"CREATE TABLE [{table}] (id TEXT PRIMARY KEY, data BLOB NOT NULL, " +
+                $"version INTEGER NOT NULL DEFAULT 1, [category] TEXT /* {definition}, */)";
+            await command.ExecuteNonQueryAsync(ct);
+        });
+
+        var options = DocumentStoreOptions.ForFile(_testDbPath);
+        options.TableNamingConvention = new FixedTableName(table);
+        await using var store = await new DocumentStoreFactory().CreateAsync(options);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.AddVirtualColumnAsync<Product>(p => p.Category, "category"));
+    }
+
+    private sealed class FixedTableName(string name) : ITableNamingConvention
+    {
+        public string GetTableName<T>() => name;
+
+        public string GetTableName(Type type) => name;
+    }
+
+    [Fact]
     public async Task AddVirtualColumnAsync_WhenRefused_CreatesNoIndex()
     {
         await _store.CreateTableAsync<Product>();

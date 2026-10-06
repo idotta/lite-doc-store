@@ -51,10 +51,10 @@ internal static class ValueBinder
     private const int RetainedBufferLimit = 4096;
 
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_buffer;
+    private static ArrayBufferWriter<byte>? _buffer;
 
     [ThreadStatic]
-    private static Utf8JsonWriter? t_writer;
+    private static Utf8JsonWriter? _writer;
 
     private readonly record struct BindingKey(Type Root, string JsonPath, bool Element);
 
@@ -183,9 +183,9 @@ internal static class ValueBinder
             return false;
         }
 
-        var buffer = t_buffer ??= new ArrayBufferWriter<byte>(64);
+        var buffer = _buffer ??= new ArrayBufferWriter<byte>(64);
         buffer.ResetWrittenCount();
-        var writer = t_writer ??= new Utf8JsonWriter(buffer);
+        var writer = _writer ??= new Utf8JsonWriter(buffer);
         writer.Reset(buffer);
         try
         {
@@ -202,8 +202,8 @@ internal static class ValueBinder
         {
             // The span stays valid: the dropped buffer is still referenced through it until the
             // caller is done, and only the next bind on this thread would have reused it.
-            t_buffer = null;
-            t_writer = null;
+            _buffer = null;
+            _writer = null;
         }
 
         return true;

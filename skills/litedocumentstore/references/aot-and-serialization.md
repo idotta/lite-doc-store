@@ -82,7 +82,9 @@ await store.CreateIndexAsync<Person>(p => p.Email);                         // r
   Their indexes and queries stop matching. Treat a policy change as a data migration.
 - Query and patch values are bound through the same metadata the documents were written with,
   so converters (string enums, custom date formats) are honoured on any path the metadata
-  resolves. Only an unresolvable path falls back to STJ's default formats (and refuses enums).
+  resolves. Two cases fall back to STJ's default formats: a path the metadata cannot resolve,
+  and a value whose type differs from the member's (an `int` for a `long` member). An enum on
+  that fallback is refused.
 - Enums are stored as numbers by default. Add `JsonStringEnumConverter<T>` (AOT-safe), or
   `UseStringEnumConverter = true` on the source-generated context, to store names; query with the
   enum value itself either way.
