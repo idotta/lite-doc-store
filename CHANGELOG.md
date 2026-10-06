@@ -9,7 +9,9 @@ is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag
 
 ## [Unreleased]
 
-Query and patch values are now bound the way the store's serializer writes them, so string enums
+## [0.8.0] - 2026-10-06
+
+0.8.0 binds query and patch values the way the store's serializer writes them, so string enums
 and custom scalar converters work in queries and patches. Read **Breaking changes**: an enum the
 serializer metadata cannot place is now refused, and four other behaviours became loud.
 
