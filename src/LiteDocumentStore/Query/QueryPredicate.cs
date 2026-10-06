@@ -21,4 +21,14 @@ internal sealed record QueryPredicate(
     string JsonPath,
     QueryOperator Operator,
     object? Value,
-    IReadOnlyList<object?> Values);
+    IReadOnlyList<object?> Values)
+{
+    /// <summary>
+    /// The caller's value before normalization, so execution can rebind it through the
+    /// serializer's metadata for the path (<see cref="ValueBinder"/>); null when there is none.
+    /// </summary>
+    public object? RawValue { get; init; }
+
+    /// <summary>The caller's <see cref="QueryOperator.In"/> values before normalization.</summary>
+    public IReadOnlyList<object?>? RawValues { get; init; }
+}

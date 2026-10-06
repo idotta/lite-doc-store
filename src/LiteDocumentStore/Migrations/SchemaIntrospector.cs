@@ -53,6 +53,10 @@ public sealed class SchemaIntrospector
     /// <summary>
     /// Checks if a table exists in the database.
     /// </summary>
+    /// <remarks>
+    /// The name is compared ignoring ASCII case, the way SQLite resolves identifiers, so
+    /// <c>myapp_customer</c> finds <c>MyApp_Customer</c>.
+    /// </remarks>
     /// <param name="tableName">The name of the table to check</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the table exists, false otherwise</returns>
@@ -66,7 +70,7 @@ public sealed class SchemaIntrospector
             SELECT COUNT(*)
             FROM sqlite_master
             WHERE type = 'table'
-            AND name = @TableName";
+            AND name = @TableName COLLATE NOCASE";
 
         var count = await _connection.ExecuteScalarAsync<int>(sql, cancellationToken, ("TableName", tableName))
             .ConfigureAwait(false);
@@ -126,6 +130,9 @@ public sealed class SchemaIntrospector
     /// <summary>
     /// Gets information about all indexes in the database or for a specific table.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="tableName"/> is compared ignoring ASCII case, the way SQLite resolves identifiers.
+    /// </remarks>
     /// <param name="tableName">Optional table name to filter indexes</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>An enumerable of index information records</returns>
@@ -142,7 +149,7 @@ public sealed class SchemaIntrospector
         var filterByTable = !string.IsNullOrEmpty(tableName);
         if (filterByTable)
         {
-            sql += " AND tbl_name = @TableName";
+            sql += " AND tbl_name = @TableName COLLATE NOCASE";
         }
 
         sql += " ORDER BY name";
@@ -173,6 +180,9 @@ public sealed class SchemaIntrospector
     /// <summary>
     /// Checks if an index exists in the database.
     /// </summary>
+    /// <remarks>
+    /// The name is compared ignoring ASCII case, the way SQLite resolves identifiers.
+    /// </remarks>
     /// <param name="indexName">The name of the index to check</param>
     /// <param name="cancellationToken">A token to cancel the operation</param>
     /// <returns>True if the index exists, false otherwise</returns>
@@ -186,7 +196,7 @@ public sealed class SchemaIntrospector
             SELECT COUNT(*)
             FROM sqlite_master
             WHERE type = 'index'
-            AND name = @IndexName";
+            AND name = @IndexName COLLATE NOCASE";
 
         var count = await _connection.ExecuteScalarAsync<int>(sql, cancellationToken, ("IndexName", indexName))
             .ConfigureAwait(false);

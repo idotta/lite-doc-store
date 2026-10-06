@@ -335,6 +335,22 @@ public class SchemaIntrospectionIntegrationTests : IAsyncLifetime
         Assert.True(byName["qty_thrice"].IsHidden);
     }
 
+    [Fact]
+    public async Task NameLookups_IgnoreAsciiCase_LikeSqlite()
+    {
+        await _store.CreateTableAsync<Customer>();
+        await _store.CreateIndexAsync<Customer>(c => c.Email, "Idx_Customer_Email");
+
+        var (tableExists, indexExists, indexes) = await IntrospectAsync(async introspector => (
+            await introspector.TableExistsAsync(CustomerTable.ToUpperInvariant()),
+            await introspector.IndexExistsAsync("idx_customer_email"),
+            (await introspector.GetIndexesAsync(CustomerTable.ToLowerInvariant())).ToList()));
+
+        Assert.True(tableExists);
+        Assert.True(indexExists);
+        Assert.Contains(indexes, i => i.Name == "Idx_Customer_Email");
+    }
+
     // Test models
     private sealed class Customer
     {

@@ -70,7 +70,8 @@ src/
     Extensions/      ServiceCollectionExtensions (AddLiteDocumentStore, keyed variant)
     Migrations/      MigrationRunner (internal), IMigration/SqlMigration, MigrationOptions,
                      MigrationHistoryRecord, SchemaIntrospector
-    Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>), JsonPathResolver (expression -> serialized path)
+    Serialization/   JsonHelper (STJ, via JsonTypeInfo<T>), JsonPathResolver (expression -> serialized path),
+                     ValueBinder (query/patch values bound in the serializer's shape for their path)
     Exceptions/      LiteDocumentStoreException + Concurrency/CorruptData/DocumentSerialization/
                      TableNotFound/UnsupportedSqliteVersion/IncompatiblePageSize
 tests/
@@ -536,6 +537,9 @@ the introspector is async-only. It lives in the pool, not in `DefaultConnectionF
 `IConnectionFactory` is public — a consumer-supplied factory would otherwise open unguarded
 connections. Same reason for `SqlitePageSizeGuard`. The result is deliberately **not cached**.
 `IsHealthyAsync` re-checks through the same guard and maps the exception to `false` at warning level.
+Every failure answers `false` **except a cancelled caller token**, which rethrows
+`OperationCanceledException`: cancellation is the caller's decision, not a verdict on the store.
+**Breaking**, pre-1.0 — `CancellationTests` pinned the old `false`.
 
 ### Options validation and the snapshot
 
@@ -763,12 +767,22 @@ on `string id` and `DocumentQuery<T>`, so a bare `ExistsAsync<T>(null!)` no long
 parameter order cannot drift. A query binding more than `SqlGenerator.MaxBoundParameters` (900) throws
 rather than hitting `SQLITE_MAX_VARIABLE_NUMBER`. Arguments are validated at *build* time.
 
-**Bound values are normalized to what STJ wrote into the document**
-(`DocumentQuery<T>.NormalizeBoundValue`, shared with the older overload). ADO otherwise binds a shape
-that matches nothing *silently* — `DateTime`, `byte[]`, `decimal`, `float` and wide `ulong` each
-measured against real SQLite. This assumes default serialization; a custom converter for one of those
-types breaks the alignment. `ValidateValue` also rejects a non-finite `float`/`double`.
-→ rationale#querying
+**Bound values are bound in the shape the store's serializer wrote at the path**
+(`Serialization/ValueBinder.cs`). The builders keep the caller's value (`RawValue`/`RawValues` on
+`QueryPredicate`, `RawValue` on `PatchOperation`) beside their normalization; at execution
+`DocumentOperations.ResolvePredicates<T>` — and the patch and `QueryAsync<T, TValue>` paths — resolve
+the path through `JsonPathResolver.ResolvePathLeaf` and serialize a value **of the leaf's own type**
+through its metadata, so a converter on the property (placed into a cached *copy* of the options), on
+the type or in the options decides the bound shape: a string enum binds its name, an epoch-millis
+`DateTime` its number. The JSON is classified into what `json_extract` yields — text, `long`/`double`,
+1/0 for a boolean; an object, array or null is refused. **The fallback is the old normalization**
+(`DocumentQuery<T>.NormalizeBoundValue`) for an unresolvable path or a value of another type — except an
+**enum, which is refused** there (`ArgumentException` against `query`/`value`/`patch`), since only the
+metadata knows whether it is stored as a number or a name. A range over a name-stored enum is refused at
+execution too. Resolution is cached per options instance (`ConditionalWeakTable`) and `(T, path,
+element)`, failures included, and the writer is reused per thread. `ValidateValue` accepts enums and
+still rejects a non-finite `float`/`double`; `QueryAsync<T, TValue>` gained the same finite check
+(`ValidateQueryValue`, at both boundaries). Measured cost and the AOT reasoning → rationale#querying
 
 **A range operator refuses a UTC/Local `DateTime` or any `DateTimeOffset`** (`CreatePredicate`,
 `ArgumentException` on `value`, pointing at `Ticks`). Normalization makes the bound text *equal* to
@@ -893,12 +907,13 @@ own `operations`. Same rule one level up: the duplicate-path check lives in the 
 `operation`. Threading the name, not duplicating the check, is the pattern — the cap and the identifier
 and path rules each keep one owner. → rationale#patching
 
-Values are scalars only — so a patch needs no `JsonTypeInfo<TValue>`, which a consumer's
-source-generated context has no reason to include for an `int` — and are normalized through
-`DocumentQuery<T>.ValidateValue`/`NormalizeBoundValue` (both `internal` for this), so a patched field
-still matches a query over it. Three types travel as JSON *text* wrapped in `json(@pN)` — the `AsJson`
-flag on `PatchOperation`: `bool`, `decimal`, and a `ulong`
-above `long.MaxValue`. `Set(path, null)` binds SQL NULL, which `jsonb_set` writes as JSON null — the
+Values are scalars, validated by `DocumentQuery<T>.ValidateValue`, and **bound through the same
+`ValueBinder` as a query** (`BindPatchValue`), so a patched field is written the way the serializer
+writes it and still matches a query over it — a string enum is patched as its name. The binder needs
+only the metadata the context already has for the *document*, not a `JsonTypeInfo<TValue>` of its own.
+A string or an integer that fits a `long` is bound as itself; anything else the serializer produced
+travels as JSON *text* wrapped in `json(@pN)` (the `AsJson` flag on `PatchOperation`). On the fallback,
+the builder's three carve-outs still apply: `bool`, `decimal`, and a `ulong` above `long.MaxValue`. `Set(path, null)` binds SQL NULL, which `jsonb_set` writes as JSON null — the
 field stays present, unlike `Remove`. Nested objects stay an `ExecuteRawAsync` job.
 
 A patch carries no full document, so it **cannot insert**: a missing id is a `ConcurrencyException` with
@@ -984,6 +999,17 @@ a bad collation or path throws whether or not the index exists. → rationale#in
 column-exists check rather than between it and the `ALTER`, so "refuse before any work" holds by
 construction. The post-create check still runs.
 
+**An existing column is compared, not trusted by name.** It is found ignoring ASCII case (SQLite's
+identifier rule), then the table's stored `CREATE TABLE` text must contain
+`SqlGenerator.GenerateVirtualColumnDefinition` — rendered under the column's *stored* spelling — as a
+whole column, ended by `,` or `)`. `ADD COLUMN` appends that text verbatim, and the same generator
+builds the `ALTER`, so one generator produces both sides as with indexes. A different path, type, a
+plain column, or a migration's differently-spelled equivalent throws `InvalidOperationException` naming
+the column, the requested definition and the stored table, **before** the `ALTER` and the index.
+**Breaking**, pre-1.0: the name-only skip reported success while keeping whatever column was there.
+`SchemaIntrospector`'s `TableExistsAsync`/`IndexExistsAsync`/`GetIndexesAsync(tableName)` compare
+`COLLATE NOCASE` for the same identifier rule; they compared BINARY and reported existing objects absent.
+
 **Deliberate break:** re-creating an index under a name that already exists with *different*
 `IndexOptions` used to no-op, and `IndexOptionsIntegrationTests` pinned that no-op; it now throws, and
 that test asserts the throw instead. `DropIndexAsync` first is still how an index's options are
@@ -1034,8 +1060,8 @@ same reason: an existing column short-circuits past `GenerateAddVirtualColumnSql
 state*. Measured, the identical call threw `ArgumentException` on a fresh database and was a silent
 no-op on the second run — no injection surface (the bad value never reaches SQL on that branch), but a
 non-idempotent contract.
-`columnName` reaches it because `SchemaIntrospector.ColumnExistsAsync` compares against the table's
-*real* columns, so one added by raw SQL under a name `ValidateIdentifier` rejects is reported present.
+`columnName` reaches it because the existing-column lookup compares against the table's *real*
+columns, so one added by raw SQL under a name `ValidateIdentifier` rejects is reported present.
 `SqlGenerator.ValidateColumnType` and `ValidateIdentifier` are `internal` for this; the rule keeps one
 owner, and the generator's own checks stay. The hoist lives in `DocumentOperations` only — it is
 validation intrinsic to SQL generation, not a plain argument guard, and the transaction boundary needs
@@ -1077,8 +1103,9 @@ code point, where every id at or after the prefix is in range and `id >= @Prefix
 → rationale#blobs
 
 Content type arrives through a `BlobWriteOptions` **overload** of both write paths, same
-source-compatibility rule as `IndexOptions` — and with the same consequence, `PutBlobAsync(id, data,
-default)` is now ambiguous. An overwrite replaces the content type and leaves `created_at` naming the
+source-compatibility rule as `IndexOptions`. A bare `default` in `PutBlobAsync(id, data, default)` is
+**not** ambiguous: C# prefers the candidate that needs no default-argument substitution, so it binds to
+the token overload and writes no content type. An overwrite replaces the content type and leaves `created_at` naming the
 first write; both timestamps are stamped by SQLite itself
 (`CAST(unixepoch('subsec') * 1000 AS INTEGER)`), so every writer against one file uses one clock.
 
@@ -1218,9 +1245,9 @@ invoked on the store rent their own connection and commit independently. That is
 transaction and were rolled back with it.
 
 **`TransactionMode`.** `BeginTransactionAsync`/`ExecuteInTransactionAsync` default to `Deferred` and
-take `TransactionMode.Immediate` through an **overload**, not an inserted parameter (both
-`BeginTransactionAsync(default)` and `ExecuteInTransactionAsync(action, default)` are now ambiguous, so
-such a call needs a cast). **`Deferred = 0` is load-bearing**: the tokenless overloads delegate with it,
+take `TransactionMode.Immediate` through an **overload**, not an inserted parameter
+(`BeginTransactionAsync(default)` and `ExecuteInTransactionAsync(action, default)` still compile — the
+`default` binds to the token overload, so they run `Deferred`; compile-verified). **`Deferred = 0` is load-bearing**: the tokenless overloads delegate with it,
 so renumbering the enum would silently change what every existing caller gets.
 
 The mode matters for exactly one shape, **read-then-write** — which is the shape the concurrency API
@@ -1430,8 +1457,9 @@ per-element loop, plus `ApplyMigrationAsync`/`RollbackMigrationAsync`, which do 
 **Behaviour break** for such a consumer, and the only outcome that says so. → rationale#migrations
 
 Source breaks accepted: `MigrationRunner` is no longer public, the five members on `IDocumentStore` break
-an external implementation of that interface, and `MigrateAsync(migrations, default)` is ambiguous
-because the `MigrationOptions` overload was added rather than a parameter inserted.
+an external implementation of that interface. `MigrateAsync(migrations, default)` still compiles and
+binds to the token overload, because the `MigrationOptions` overload was added rather than a parameter
+inserted.
 
 ## AOT compatibility
 
@@ -1494,8 +1522,10 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
 - New features need both a unit and an integration test.
 - **New API that takes options takes them through an overload, never an inserted parameter** — every
   caller passing a trailing `CancellationToken` positionally would break. `IndexOptions`,
-  `BlobWriteOptions`, `MigrationOptions` and `TransactionMode` all arrived this way; the cost is that a
-  bare `default` at the call site becomes ambiguous and needs a cast.
+  `BlobWriteOptions`, `MigrationOptions` and `TransactionMode` all arrived this way. A bare `default` at
+  the call site is **not** ambiguous — overload resolution prefers the candidate needing no
+  default-argument substitution, so it binds to the token overload (compile-verified for all four);
+  only a `null!` between two reference-type overloads is (`ExistsAsync<T>(null!)`, CS0121).
 - Don't add AI-attribution trailers (`Co-Authored-By: Claude`, "Generated with Claude Code") to commits
   or PRs.
 - Never auto-commit — stage and commit only when the user explicitly asks.
@@ -1529,6 +1559,8 @@ When adding features, keep them AOT-clean: no reflection-based serialization (ro
   (`JsonTypeInfo<T>` + reflection fallback).
 - `src/LiteDocumentStore/Serialization/JsonPathResolver.cs` — expression-to-JSON-path derivation; where
   an index learns the name the serializer actually writes.
+- `src/LiteDocumentStore/Serialization/ValueBinder.cs` — where a query or patch value learns the shape
+  the serializer actually writes at its path (string enums, converters), with the fallback.
 - `src/LiteDocumentStore/Extensions/ServiceCollectionExtensions.cs` — how consumers wire it up.
 - `examples/AotVerification/` — end-to-end AOT smoke test with a source-generated context; CI publishes
   it Native-AOT with warnings as errors and runs the binary.

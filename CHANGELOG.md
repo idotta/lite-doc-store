@@ -7,6 +7,47 @@ All notable changes to LiteDocumentStore are documented here. The format follows
 **This file starts at 0.5.0.** Releases 0.1.0 through 0.4.0 shipped before it existed; that history
 is not lost, it is in git — `git log v0.3.0..v0.4.0` for one release, `git tag` for the list.
 
+## [Unreleased]
+
+Query and patch values are now bound the way the store's serializer writes them, so string enums
+and custom scalar converters work in queries and patches. Read **Breaking changes**: an enum the
+serializer metadata cannot place is now refused, and four other behaviours became loud.
+
+### Breaking changes
+
+- **An enum on a path the serializer metadata cannot resolve throws `ArgumentException`** when the
+  query or patch runs (`ParamName` `query`, `value` or `patch`) — a typo, a key only a derived type
+  writes, a `Dictionary<string, object>` entry. `QueryAsync<T, TValue>` used to bind it as its
+  integer, which silently matched nothing when enums were stored as names. *Remedy:* bind the stored
+  form (`(int)value` or the name) on such a path.
+- **A range (`>`, `>=`, `<`, `<=`) over an enum stored as its name throws** — names do not sort by
+  value.
+- **A patch writes exactly what the serializer would**: a string enum as its name, a number as `"5"`
+  under `JsonNumberHandling.WriteAsString`.
+- **`AddVirtualColumnAsync` refuses an existing column that is not the identical generated column**
+  (another path or type, a plain column, or an equivalent one a migration spelled differently) with
+  `InvalidOperationException`, before any DDL. It used to skip the `ALTER` and report success.
+- **`IsHealthyAsync` rethrows `OperationCanceledException`** for a cancelled caller token instead of
+  answering `false`; every other failure still answers `false`.
+- **`QueryAsync<T, TValue>` rejects NaN and infinity**, as `DocumentQuery` already did.
+
+### Added
+
+- `DocumentQuery<T>` and `DocumentPatch<T>` accept enum values.
+- Query and patch values resolve their path through the configured `SerializerOptions` and bind
+  through its metadata: converters on the property, the type or the options, naming policies and
+  number handling are honoured. AOT-safe; verified by `examples/AotVerification`.
+- `skills/litedocumentstore/`: an agent skill teaching correct use of the library.
+
+### Fixed
+
+- `SchemaIntrospector.TableExistsAsync`, `IndexExistsAsync` and `GetIndexesAsync(tableName)` compare
+  names ignoring ASCII case, as SQLite does; they reported existing objects absent.
+- The `IndexOptions` remarks said re-creating an index under an existing name is skipped; a
+  different definition throws.
+- Docs claimed a bare `default` in `BeginTransactionAsync(default)`, `PutBlobAsync(id, data,
+  default)` and similar is ambiguous; it compiles and binds to the token overload.
+
 ## [0.7.0] - 2026-10-02
 
 0.7.0 removes the library's runtime dependency on OpenSSL. It breaks twice: auto-derived index

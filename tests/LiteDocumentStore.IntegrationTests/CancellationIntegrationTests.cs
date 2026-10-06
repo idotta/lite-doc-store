@@ -136,6 +136,18 @@ public sealed class CancellationIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task IsHealthyAsync_WithAnAlreadyCancelledToken_ThrowsAndLeavesTheStoreHealthy()
+    {
+        await using var store = await CreateFileStoreAsync();
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.IsHealthyAsync(cts.Token));
+
+        Assert.True(await store.IsHealthyAsync());
+    }
+
+    [Fact]
     public async Task SchemaIntrospector_WithAnAlreadyCancelledToken_Throws()
     {
         await using var store = await CreateFileStoreAsync();

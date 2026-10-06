@@ -1281,13 +1281,48 @@ assumed:
 | `float` | widened | round-tripped |
 | `ulong` above `long.MaxValue` | wrapped negative | the unsigned value |
 
-`DocumentQuery<T>.NormalizeBoundValue` is shared with the older `QueryAsync<T, TValue>` overload. This
-assumes default serialization — a custom converter for one of those types breaks the alignment.
+`DocumentQuery<T>.NormalizeBoundValue` is shared with the older `QueryAsync<T, TValue>` overload. It
+assumes default serialization, which is why it is now only the **fallback** — see the next section.
 
 `ValidateValue` also rejects a non-finite `float`/`double`: STJ refuses to write NaN and infinity, so no
 stored document can hold one; ADO rejected NaN at bind time anyway, and infinity would have stored
 SQLite's `9e999`. That guard is in the shared helper, so a `DocumentQuery` comparison against NaN fails at
 the call site too instead of matching nothing.
+
+### Why bound values are resolved through the serializer
+
+The builders cannot see the serializer, so normalization guessed the stored shape from the value's
+type. Under a converter the guess was silently wrong: a string enum was bound as its integer (the
+documents hold `"Active"`, so nothing matched), an epoch-millis `DateTime` as ISO text. A patch was
+worse — it *wrote* the integer into a document whose serializer writes names.
+
+Removing serializer customization was rejected: the source-generated context AOT requires carries its
+own options (`UseStringEnumConverter`, naming policy), and `[JsonConverter]`/`[JsonPropertyName]` sit on
+the consumer's types whatever the options say. A generic `BoundValue<TValue>` captured by the builders
+was rejected because their public signatures take `object`; the non-generic, AOT-safe
+`JsonSerializer.Serialize(Utf8JsonWriter, object?, JsonTypeInfo)` does the job without changing them.
+
+So the store resolves the path at execution, as it already did for chronological `OrderBy`, and
+serializes a value of the leaf's own type through that metadata. A converter declared on the
+*property* is not in the options, so it is inserted into a copy of them — once per path, cached. The
+fallback for an unresolvable path keeps the old normalization for the types it always handled and
+refuses an enum, the one type with no default shape to fall back to. Verified under Native AOT by
+`examples/AotVerification` (context-wide string enums plus a property-level converter).
+
+Measured (BenchmarkDotNet medium job, **in-process** — a separate-process run rebuilds the benchmark
+project without the caller's `-p:` properties, so comparing two library builds that way silently
+measures the same build twice), 100 documents, shared-cache memory:
+
+| path | before | after | allocated before → after |
+|---|---|---|---|
+| `QueryAsync<T, TValue>` | 52.2 µs | 54.0 µs | 4.96 → 4.99 KB |
+| `DocumentQuery`, range + 5-value `In` | 122.5 µs | 121.1 µs | 15.03 → 15.44 KB |
+| `CountAsync(query)` | 34.4 µs | 35.1 µs | 2.38 → 2.50 KB |
+| `PatchAsync`, two sets | 27.6 µs | 29.0 µs | 3.05 → 3.24 KB |
+
+The first cut cost more — patch +11% and up to +27% allocated — because every set went through
+`json(@p)` and every bind allocated a writer. A patch now binds a string or an integer as itself, and
+the `Utf8JsonWriter` and its buffer are reused per thread (a buffer grown past 4 KB is dropped).
 
 ### Why a range over a UTC `DateTime` is refused
 

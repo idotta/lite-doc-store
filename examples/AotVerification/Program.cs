@@ -156,6 +156,22 @@ Console.WriteLine($"Exists p2          => {await store.ExistsAsync<Person>("p2")
 Console.WriteLine($"Any @example.com   => " +
     $"{await store.ExistsAsync(DocumentQuery<Person>.Where("$.Email", QueryOperator.Like, "%@example.com"))}");
 
+// Enums bind the way the source-generated context writes them: the context stores Role as its
+// name, and Tier through the converter its own property declares - resolved from the context's
+// metadata, with no reflection.
+await store.UpsertAsync("p2", new Person("p2", "Alan Turing", "alan@example.com", 41, Role.Admin, Tier.Pro));
+var admins = (await store.QueryAsync(DocumentQuery<Person>.Where("$.Role", QueryOperator.Equal, Role.Admin))).Count();
+var pro = (await store.QueryAsync<Person, Tier>("$.Tier", Tier.Pro)).Count();
+await store.PatchAsync("p1", DocumentPatch<Person>.Set("$.Role", Role.Admin));
+var adminsAfterPatch = await store.CountAsync(DocumentQuery<Person>.WhereIn("$.Role", [Role.Admin]));
+if (admins != 1 || pro != 1 || adminsAfterPatch != 2)
+{
+    throw new InvalidOperationException(
+        $"Enum binding under AOT: expected 1 admin, 1 pro, 2 admins after the patch; got {admins}, {pro}, {adminsAfterPatch}.");
+}
+
+Console.WriteLine($"Enum query         => {admins} admin, {pro} pro, {adminsAfterPatch} admins after patch");
+
 // A patch binds scalars, so no JsonTypeInfo for the value type is needed - part of what
 // keeps it AOT-safe.
 var patched = await store.PatchAsync("p1", DocumentPatch<Person>.Set("$.Age", 37));
@@ -174,7 +190,17 @@ Console.WriteLine("DropTable          => done");
 
 Console.WriteLine("\nAOT verification completed - all operations ran with source-generated JSON (no reflection).");
 
-sealed record Person(string Id, string Name, string Email, int Age);
+sealed record Person(
+    string Id,
+    string Name,
+    string Email,
+    int Age,
+    Role Role = Role.Member,
+    [property: JsonConverter(typeof(JsonStringEnumConverter<Tier>))] Tier Tier = Tier.Free);
+
+enum Role { Member, Admin }
+
+enum Tier { Free, Pro }
 
 /// <summary>
 /// Stands in for arbitrary caller code running between <c>Validate()</c> and the store's
@@ -211,6 +237,6 @@ internal sealed class OptionsReplacingLoggerFactory(DocumentStoreOptions options
     public void Dispose() { }
 }
 
-[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(Person))]
 internal sealed partial class AppJsonContext : JsonSerializerContext;

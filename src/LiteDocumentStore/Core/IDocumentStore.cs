@@ -203,6 +203,10 @@ public interface IDocumentStore : IDocumentOperations, IAsyncDisposable, IDispos
     /// </summary>
     /// <param name="cancellationToken">A token to cancel the check</param>
     /// <returns>True when the store is usable; false instead of throwing on any failure</returns>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was cancelled. Cancellation is the caller's decision, not
+    /// a verdict on the store, so it propagates rather than being reported as unhealthy.
+    /// </exception>
     Task<bool> IsHealthyAsync(CancellationToken cancellationToken = default);
 
     /// <summary>

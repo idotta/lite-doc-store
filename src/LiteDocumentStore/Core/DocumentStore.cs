@@ -291,7 +291,7 @@ internal sealed class DocumentStore : IDocumentStore
         CancellationToken cancellationToken = default)
     {
         DocumentOperations.ValidateQueryJsonPath(jsonPath);
-        ArgumentNullException.ThrowIfNull(value);
+        DocumentOperations.ValidateQueryValue(value);
 
         return RunAsync(ops => ops.QueryAsync<T, TValue>(jsonPath, value, cancellationToken), cancellationToken);
     }
@@ -868,6 +868,10 @@ internal sealed class DocumentStore : IDocumentStore
             // at warning level rather than as an unexpected exception.
             _logger.LogWarning(ex, "Health check failed: unsupported SQLite version");
             return false;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

@@ -21,6 +21,10 @@ public class PatchSqlTests
     private static PatchOperation Set(string jsonPath, object? value, bool asJson = false) =>
         new(jsonPath, PatchOperationKind.Set, value, asJson);
 
+    // What the builder normalized, without the caller's raw value it also keeps for the
+    // execution-time rebinding (ValueBinder) — these tests pin the normalization alone.
+    private static PatchOperation Bound(PatchOperation operation) => operation with { RawValue = null };
+
     private static PatchOperation Remove(string jsonPath) =>
         new(jsonPath, PatchOperationKind.Remove, null, AsJson: false);
 
@@ -202,7 +206,7 @@ public class PatchSqlTests
 
         Assert.Collection(
             patch.Operations,
-            first => Assert.Equal(Set("$.Email", "a@b.c"), first),
+            first => Assert.Equal(Set("$.Email", "a@b.c"), Bound(first)),
             second => Assert.Equal(Remove("$.Nickname"), second));
     }
 
@@ -263,7 +267,7 @@ public class PatchSqlTests
     {
         var operation = Assert.Single(DocumentPatch<Person>.Set("$.Nickname", null).Operations);
 
-        Assert.Equal(Set("$.Nickname", null), operation);
+        Assert.Equal(Set("$.Nickname", null), Bound(operation));
     }
 
     [Theory]
@@ -273,7 +277,7 @@ public class PatchSqlTests
     {
         var operation = Assert.Single(DocumentPatch<Person>.Set("$.Active", value).Operations);
 
-        Assert.Equal(Set("$.Active", expected, asJson: true), operation);
+        Assert.Equal(Set("$.Active", expected, asJson: true), Bound(operation));
     }
 
     // Both would round through a REAL and lose digits if bound as themselves.
@@ -282,7 +286,7 @@ public class PatchSqlTests
     {
         var operation = Assert.Single(DocumentPatch<Person>.Set("$.Price", 10.05m).Operations);
 
-        Assert.Equal(Set("$.Price", "10.05", asJson: true), operation);
+        Assert.Equal(Set("$.Price", "10.05", asJson: true), Bound(operation));
     }
 
     [Fact]
@@ -291,7 +295,7 @@ public class PatchSqlTests
         var operation = Assert.Single(
             DocumentPatch<Person>.Set("$.Big", ulong.MaxValue).Operations);
 
-        Assert.Equal(Set("$.Big", "18446744073709551615", asJson: true), operation);
+        Assert.Equal(Set("$.Big", "18446744073709551615", asJson: true), Bound(operation));
     }
 
     // Everything else is normalized exactly as DocumentQuery<T> binds it, so a patched field
@@ -313,7 +317,7 @@ public class PatchSqlTests
     {
         var operation = Assert.Single(DocumentPatch<Person>.Set("$.Field", value).Operations);
 
-        Assert.Equal(Set("$.Field", expected), operation);
+        Assert.Equal(Set("$.Field", expected), Bound(operation));
     }
 
     [Theory]

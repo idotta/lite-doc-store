@@ -16,8 +16,10 @@ namespace LiteDocumentStore;
 /// job rather than a per-column options list.
 /// </para>
 /// <para>
-/// Creation skips an index whose name already exists, options and all, so changing the options
-/// of an existing index means dropping it first (<c>DropIndexAsync</c>).
+/// Re-creating an index whose name already exists with an identical definition is a no-op; a
+/// different definition (other options included) throws <see cref="InvalidOperationException"/>
+/// naming both, so changing the options of an existing index means dropping it first
+/// (<c>DropIndexAsync</c>).
 /// </para>
 /// </remarks>
 /// <example>

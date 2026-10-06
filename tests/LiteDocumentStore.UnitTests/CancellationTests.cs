@@ -130,13 +130,14 @@ public sealed class CancellationTests
     }
 
     [Fact]
-    public async Task IsHealthyAsync_WithAnAlreadyCancelledToken_ReturnsFalse()
+    public async Task IsHealthyAsync_WithAnAlreadyCancelledToken_Throws()
     {
-        // It reports failure rather than throwing, so a health endpoint stays a health endpoint.
+        // Every other failure is reported as false, but cancellation is the caller's decision,
+        // not a verdict on the store: answering "unhealthy" would mislabel an aborted probe.
         await using var store = await CreateStoreAsync();
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
 
-        Assert.False(await store.IsHealthyAsync(cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.IsHealthyAsync(cts.Token));
     }
 }

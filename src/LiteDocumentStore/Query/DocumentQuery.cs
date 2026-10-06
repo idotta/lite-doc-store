@@ -23,13 +23,16 @@ namespace LiteDocumentStore;
 /// than at execution time.
 /// </para>
 /// <para>
-/// A bound value is normalized to the representation System.Text.Json wrote into the document
-/// — <see cref="DateTime"/>, <see cref="DateTimeOffset"/>, <see cref="Guid"/> and <c>byte[]</c>
+/// A bound value is written the way the store's serializer wrote it into the document. When
+/// the query runs, its path is resolved through the serializer's metadata for
+/// <typeparamref name="T"/>, and a value of the member's own type is serialized by it — any
+/// converter declared on the property, on the type or in the options included — so a string
+/// enum compares as its name and a custom date format as that format. A path the metadata does
+/// not describe, or a value of another type, falls back to the default serialization's shape:
+/// <see cref="DateTime"/>, <see cref="DateTimeOffset"/>, <see cref="Guid"/> and <c>byte[]</c>
 /// as their JSON text, <see cref="decimal"/>, <see cref="float"/> and a <see cref="ulong"/>
-/// above <see cref="long.MaxValue"/> as the double SQLite parsed — because ADO otherwise binds
-/// a shape that silently matches nothing. This assumes the default serialization: a custom
-/// converter for one of those types changes the stored text and the normalization no longer
-/// lines up.
+/// above <see cref="long.MaxValue"/> as the double SQLite parsed. An enum has no default shape
+/// to fall back to, so on such a path it is refused when the query runs.
 /// </para>
 /// <para>
 /// A path is <c>$</c> followed by <c>.member</c> and <c>[index]</c> segments. A member may hold
@@ -298,7 +301,7 @@ public sealed class DocumentQuery<T>
                 nameof(value));
         }
 
-        return new QueryPredicate(path, op, ValidateValue(value, nameof(value)), NoValues);
+        return new QueryPredicate(path, op, ValidateValue(value, nameof(value)), NoValues) { RawValue = value };
     }
 
     private static string DescribeInstant(object value) =>
@@ -309,18 +312,19 @@ public sealed class DocumentQuery<T>
         var path = NormalizePath(jsonPath);
         ArgumentNullException.ThrowIfNull(values);
 
-        var materialized = values.ToArray();
-        if (materialized.Length == 0)
+        var raw = values.ToArray();
+        if (raw.Length == 0)
         {
             throw new ArgumentException("The 'In' operator requires at least one value.", nameof(values));
         }
 
-        for (var i = 0; i < materialized.Length; i++)
+        var materialized = new object?[raw.Length];
+        for (var i = 0; i < raw.Length; i++)
         {
-            materialized[i] = ValidateValue(materialized[i], nameof(values));
+            materialized[i] = ValidateValue(raw[i], nameof(values));
         }
 
-        return new QueryPredicate(path, QueryOperator.In, null, materialized);
+        return new QueryPredicate(path, QueryOperator.In, null, materialized) { RawValues = raw };
     }
 
     // The path grammar lives in SqlGenerator.ValidateJsonPath, the single boundary guarding
@@ -347,11 +351,11 @@ public sealed class DocumentQuery<T>
 
         if (value is not (string or bool or byte or sbyte or short or ushort or int or uint
             or long or ulong or float or double or decimal or DateTime or DateTimeOffset
-            or Guid or byte[]))
+            or Guid or byte[] or Enum))
         {
             throw new ArgumentException(
                 $"Values of type '{value.GetType()}' cannot be bound. Supported types are string, bool, " +
-                "the integral types, float, double, decimal, DateTime, DateTimeOffset, Guid and byte[].",
+                "the integral types, float, double, decimal, DateTime, DateTimeOffset, Guid, byte[] and enums.",
                 paramName);
         }
 

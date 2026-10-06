@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Data;
+using System.Diagnostics.CodeAnalysis;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq.Expressions;
@@ -110,6 +111,23 @@ internal readonly struct DocumentOperations
         if (string.IsNullOrWhiteSpace(jsonPath))
         {
             throw new ArgumentException("JSON path cannot be null or empty.", nameof(jsonPath));
+        }
+    }
+
+    /// <summary>
+    /// Rejects a null value, and a NaN or infinity no serializer can have written into a
+    /// document, for <c>QueryAsync&lt;T, TValue&gt;</c>.
+    /// </summary>
+    internal static void ValidateQueryValue<TValue>([NotNull] TValue value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        if (value is float or double && !double.IsFinite(Convert.ToDouble(value, CultureInfo.InvariantCulture)))
+        {
+            throw new ArgumentException(
+                $"The value '{value}' is not finite. NaN and infinity have no JSON representation, " +
+                "so no stored document can contain one.",
+                nameof(value));
         }
     }
 
@@ -404,8 +422,14 @@ internal readonly struct DocumentOperations
         ArgumentNullException.ThrowIfNull(patch);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
+        var operations = new PatchOperation[patch.Operations.Count];
+        for (var i = 0; i < operations.Length; i++)
+        {
+            operations[i] = ValueBinder.BindPatchValue(typeof(T), patch.Operations[i], _serializerOptions, nameof(patch));
+        }
+
         var generated = SqlGenerator.GeneratePatchSql(
-            tableName, patch.Operations, expectedVersion.HasValue, nameof(patch));
+            tableName, operations, expectedVersion.HasValue, nameof(patch));
 
         var parameters = expectedVersion.HasValue
             ? BindPositionally(generated, ("Id", id), ("ExpectedVersion", expectedVersion.Value))
@@ -753,7 +777,8 @@ internal readonly struct DocumentOperations
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var generated = SqlGenerator.GenerateFilteredDeleteSql(
-            tableName, query.Predicates, ResolveOrderings<T>(query.Orderings), query.SkipCount, query.TakeCount);
+            tableName, ResolvePredicates<T>(query.Predicates), ResolveOrderings<T>(query.Orderings),
+            query.SkipCount, query.TakeCount);
 
         return await _connection
             .ExecuteAsync(generated.Sql, cancellationToken, BindPositionally(generated))
@@ -797,20 +822,76 @@ internal readonly struct DocumentOperations
         CancellationToken cancellationToken)
     {
         ValidateQueryJsonPath(jsonPath);
-
-        ArgumentNullException.ThrowIfNull(value);
+        ValidateQueryValue(value);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
         var sql = SqlGenerator.GenerateQueryByJsonPathSql(tableName, jsonPath);
 
-        // Same binding hazard as the structured API, so the same normalizer — otherwise a
-        // DateTime, Guid, decimal, float, byte[] or huge ulong here matches nothing.
-        var bound = DocumentQuery<T>.NormalizeBoundValue(value);
+        // Same binding hazard as the structured API, so the same binder: the value is written
+        // the way the serializer wrote the path, with the default shape as the fallback.
+        var bound = ValueBinder.BindQueryValue(
+            typeof(T),
+            SqlGenerator.ValidateJsonPath(jsonPath, nameof(jsonPath)),
+            element: false,
+            value,
+            DocumentQuery<T>.NormalizeBoundValue(value),
+            ranged: false,
+            _serializerOptions,
+            nameof(value));
 
         var rows = await _connection.QueryStringPairsAsync(sql, cancellationToken, ("Value", bound))
             .ConfigureAwait(false);
         return DeserializeResults<T>(rows, tableName);
     }
+
+    // The builder cannot see how the serializer writes a path; the metadata can, so each bound
+    // value is rewritten into the stored shape here (ValueBinder). Rebuilt per execution: the
+    // query is immutable and shared, and the resolution itself is cached.
+    private IReadOnlyList<QueryPredicate> ResolvePredicates<T>(IReadOnlyList<QueryPredicate> predicates)
+    {
+        if (predicates.Count == 0)
+        {
+            return predicates;
+        }
+
+        var resolved = new QueryPredicate[predicates.Count];
+        for (var i = 0; i < predicates.Count; i++)
+        {
+            var predicate = predicates[i];
+            var ranged = predicate.Operator is QueryOperator.GreaterThan or QueryOperator.GreaterThanOrEqual
+                or QueryOperator.LessThan or QueryOperator.LessThanOrEqual;
+            var element = predicate.Operator == QueryOperator.ArrayContains;
+
+            if (predicate.RawValue is { } raw)
+            {
+                predicate = predicate with
+                {
+                    Value = ValueBinder.BindQueryValue(
+                        typeof(T), predicate.JsonPath, element, raw, predicate.Value!, ranged,
+                        _serializerOptions, QueryParameterName)
+                };
+            }
+            else if (predicate.RawValues is { } raws)
+            {
+                var values = new object?[raws.Count];
+                for (var j = 0; j < raws.Count; j++)
+                {
+                    values[j] = ValueBinder.BindQueryValue(
+                        typeof(T), predicate.JsonPath, element, raws[j]!, predicate.Values[j]!, ranged,
+                        _serializerOptions, QueryParameterName);
+                }
+
+                predicate = predicate with { Values = values };
+            }
+
+            resolved[i] = predicate;
+        }
+
+        return resolved;
+    }
+
+    // Every DocumentQuery-taking member names its parameter 'query'.
+    private const string QueryParameterName = "query";
 
     // The builder cannot see the type a path holds; the serializer metadata can. A DateTime or
     // DateTimeOffset path is marked so the generator orders it chronologically rather than as text.
@@ -845,7 +926,7 @@ internal readonly struct DocumentOperations
         var tableName = _tableNamingConvention.GetTableName<T>();
         var generated = SqlGenerator.GenerateQuerySql(
             tableName,
-            query.Predicates,
+            ResolvePredicates<T>(query.Predicates),
             ResolveOrderings<T>(query.Orderings),
             query.SkipCount,
             query.TakeCount);
@@ -862,7 +943,7 @@ internal readonly struct DocumentOperations
         ArgumentNullException.ThrowIfNull(query);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var generated = SqlGenerator.GenerateFilteredCountSql(tableName, query.Predicates);
+        var generated = SqlGenerator.GenerateFilteredCountSql(tableName, ResolvePredicates<T>(query.Predicates));
 
         return await _connection
             .ExecuteScalarAsync<long>(generated.Sql, cancellationToken, BindPositionally(generated))
@@ -875,7 +956,7 @@ internal readonly struct DocumentOperations
         ArgumentNullException.ThrowIfNull(query);
 
         var tableName = _tableNamingConvention.GetTableName<T>();
-        var generated = SqlGenerator.GenerateFilteredExistsSql(tableName, query.Predicates);
+        var generated = SqlGenerator.GenerateFilteredExistsSql(tableName, ResolvePredicates<T>(query.Predicates));
 
         return await _connection
             .ExecuteScalarAsync<bool>(generated.Sql, cancellationToken, BindPositionally(generated))
@@ -1089,13 +1170,17 @@ internal readonly struct DocumentOperations
                 .ConfigureAwait(false);
         }
 
-        // Check if column already exists using SchemaIntrospector
+        // SQLite resolves column names ignoring ASCII case, so an existing column is found the
+        // same way and then compared under its own stored spelling.
         var introspector = new SchemaIntrospector(_connection);
-        var columnExists = await introspector.ColumnExistsAsync(tableName, columnName, cancellationToken)
-            .ConfigureAwait(false);
+        var existingColumn = (await introspector.GetColumnsAsync(tableName, cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(c => string.Equals(c.Name, columnName, StringComparison.OrdinalIgnoreCase));
 
-        if (columnExists)
+        if (existingColumn is not null)
         {
+            await EnsureVirtualColumnDefinitionMatchesAsync(
+                tableName, existingColumn.Name, pathString, columnType, cancellationToken).ConfigureAwait(false);
+
             _logger.LogDebug("Column {ColumnName} already exists in table {TableName}, skipping creation",
                 columnName, tableName);
         }
@@ -2106,6 +2191,75 @@ internal readonly struct DocumentOperations
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Refuses to skip <c>ADD COLUMN</c> when the column already sitting under that name is not
+    /// the generated column the caller asked for.
+    /// </summary>
+    /// <remarks>
+    /// Skipping on the name alone kept whatever was there — a column over another path, of
+    /// another type, or not generated at all — and reported success, so raw SQL over the column
+    /// read values the caller never asked for. The comparison is textual: <c>ADD COLUMN</c>
+    /// appends its definition to the stored <c>CREATE TABLE</c> verbatim, so a column this method
+    /// added carries exactly <see cref="SqlGenerator.GenerateVirtualColumnDefinition"/>'s text,
+    /// while one a migration or raw SQL spelled differently is refused even when it is
+    /// equivalent — the same trade the index pre-check makes.
+    /// </remarks>
+    private async Task EnsureVirtualColumnDefinitionMatchesAsync(
+        string tableName,
+        string storedColumnName,
+        string jsonPath,
+        string columnType,
+        CancellationToken cancellationToken)
+    {
+        var expected = SqlGenerator.GenerateVirtualColumnDefinition(storedColumnName, jsonPath, columnType);
+        var table = await _connection.QueryFirstStringRowAsync(
+            SqlGenerator.GenerateGetTableDefinitionSql(),
+            cancellationToken,
+            ("TableName", tableName)).ConfigureAwait(false);
+
+        if (ContainsColumnDefinition(table.Text, expected))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Column '{storedColumnName}' already exists on table '{tableName}' with a different definition. " +
+            $"Requested: {expected}. " +
+            $"Existing table: {table.Text ?? "<no CREATE TABLE statement>"}. " +
+            "AddVirtualColumnAsync skips the ALTER only when an identical generated column is already " +
+            "there; drop or rename the existing column (through ExecuteRawAsync) before adding this one.");
+    }
+
+    // The definition must stand as a whole column: followed by the next column's comma or the
+    // closing parenthesis, so a column carrying further constraints after the same text is not
+    // mistaken for it.
+    internal static bool ContainsColumnDefinition(string? tableSql, string definition)
+    {
+        if (tableSql is null)
+        {
+            return false;
+        }
+
+        var start = 0;
+        while ((start = tableSql.IndexOf(definition, start, StringComparison.Ordinal)) >= 0)
+        {
+            var end = start + definition.Length;
+            while (end < tableSql.Length && char.IsWhiteSpace(tableSql[end]))
+            {
+                end++;
+            }
+
+            if (end < tableSql.Length && tableSql[end] is ',' or ')')
+            {
+                return true;
+            }
+
+            start++;
+        }
+
+        return false;
     }
 
     /// <summary>

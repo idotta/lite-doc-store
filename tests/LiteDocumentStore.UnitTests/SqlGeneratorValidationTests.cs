@@ -170,6 +170,46 @@ public class SqlGeneratorValidationTests
     }
 
     [Fact]
+    public void GenerateAddVirtualColumnSql_AddsExactlyTheGeneratedColumnDefinition()
+    {
+        // The existing-column check compares against this text, so the two must not drift.
+        var definition = SqlGenerator.GenerateVirtualColumnDefinition("email", "$.Email", "TEXT");
+
+        Assert.Equal("[email] TEXT GENERATED ALWAYS AS (json_extract(data, '$.Email')) VIRTUAL", definition);
+        Assert.Equal(
+            $"ALTER TABLE [Person] ADD COLUMN {definition}",
+            SqlGenerator.GenerateAddVirtualColumnSql("Person", "email", "$.Email"));
+    }
+
+    [Fact]
+    public void GenerateVirtualColumnDefinition_RendersThePathCanonically()
+    {
+        var definition = SqlGenerator.GenerateVirtualColumnDefinition("name", "$.\"Name\"", "TEXT");
+
+        Assert.Contains("'$.Name'", definition);
+    }
+
+    [Theory]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL)", true)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL, [d] TEXT)", true)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL \n)", true)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL NOT NULL)", false)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT)", false)]
+    [InlineData(null, false)]
+    public void ContainsColumnDefinition_RequiresTheDefinitionToEndTheColumn(string? tableSql, bool expected)
+    {
+        const string definition = "[c] TEXT GENERATED ALWAYS AS (x) VIRTUAL";
+
+        Assert.Equal(expected, DocumentOperations.ContainsColumnDefinition(tableSql, definition));
+    }
+
+    [Fact]
+    public void GenerateGetTableDefinitionSql_ComparesTheNameIgnoringCase()
+    {
+        Assert.Contains("COLLATE NOCASE", SqlGenerator.GenerateGetTableDefinitionSql());
+    }
+
+    [Fact]
     public void GenerateAddVirtualColumnSql_WithTheDocumentRoot_Throws()
     {
         var exception = Assert.Throws<ArgumentException>(
