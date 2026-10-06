@@ -90,7 +90,7 @@ IndexFilter.IsNull(path) / IndexFilter.IsNotNull(path)   .AndIsNull(path) / .And
 
 ```csharp
 await store.CreateIndexAsync<Customer>(
-    c => c.Email,
+    c => c.Email!,
     "idx_customer_email_unique",          // indexName is positional here: pass null to derive
     new IndexOptions
     {
@@ -248,6 +248,6 @@ var report = await store.ExecuteRawAsync(async (conn, ct) =>
 - An index over the CLR name when a naming policy is active is useless. Use the expression
   overload, or the serialized string path.
 - The options overloads have no default for `indexName`. Write `CreateIndexAsync<T>(x => x.A, null, opts)`.
-- An `IndexOptions` XML remark that says re-creating an existing name "skips" it is stale. A
-  differing definition throws.
+- Re-creating an existing index name with a different definition throws
+  `InvalidOperationException`. Drop it first to change its options.
 - DDL on a missing table throws a raw `SqliteException`.
