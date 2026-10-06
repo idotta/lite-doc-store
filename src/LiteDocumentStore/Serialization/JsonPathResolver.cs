@@ -101,9 +101,38 @@ internal static class JsonPathResolver
     /// </remarks>
     internal static Type? ResolvePathType(Type root, string jsonPath, JsonSerializerOptions serializerOptions)
     {
-        var current = root;
-        foreach (var member in SqlGenerator.SplitJsonPath(jsonPath, nameof(jsonPath)))
+        if (ResolvePathLeaf(root, jsonPath, serializerOptions) is not { PropertyConverter: null } leaf)
         {
+            return null;
+        }
+
+        // The built-in Nullable<T> converter wraps whatever converter the options hold for T.
+        var underlying = Nullable.GetUnderlyingType(leaf.Type);
+        return HasBuiltInConverter(leaf.Type, serializerOptions)
+            && (underlying is null || HasBuiltInConverter(underlying, serializerOptions))
+            ? leaf.Type
+            : null;
+    }
+
+    /// <summary>
+    /// Resolves the declared type a validated JSON path ends on, and the converter its property
+    /// declares, or null when the metadata does not describe the path.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="ResolvePathType"/> this tolerates a custom converter at the <em>leaf</em>
+    /// — whoever binds a value there serializes it through that converter, which is exactly how
+    /// the stored shape is learned. A custom converter on anything the path passes <em>through</em>
+    /// still fails the walk: it writes everything beneath it, so the members below are not the
+    /// metadata's to describe.
+    /// </remarks>
+    internal static PathLeaf? ResolvePathLeaf(Type root, string jsonPath, JsonSerializerOptions serializerOptions)
+    {
+        var current = root;
+        JsonConverter? propertyConverter = null;
+        var segments = SqlGenerator.SplitJsonPath(jsonPath, nameof(jsonPath));
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var member = segments[i];
             JsonTypeInfo typeInfo;
             try
             {
@@ -129,7 +158,17 @@ internal static class JsonPathResolver
                 case (JsonTypeInfoKind.Object, not null):
                     var property = typeInfo.Properties
                         .FirstOrDefault(p => string.Equals(p.Name, member, StringComparison.Ordinal));
-                    next = property is { CustomConverter: null } ? property.PropertyType : null;
+                    if (property?.CustomConverter is { } converter)
+                    {
+                        if (i != segments.Count - 1)
+                        {
+                            return null;
+                        }
+
+                        propertyConverter = converter;
+                    }
+
+                    next = property?.PropertyType;
                     break;
                 default:
                     next = null;
@@ -144,12 +183,7 @@ internal static class JsonPathResolver
             current = next;
         }
 
-        // The built-in Nullable<T> converter wraps whatever converter the options hold for T.
-        var underlying = Nullable.GetUnderlyingType(current);
-        return HasBuiltInConverter(current, serializerOptions)
-            && (underlying is null || HasBuiltInConverter(underlying, serializerOptions))
-            ? current
-            : null;
+        return new PathLeaf(current, propertyConverter);
     }
 
     private static bool HasBuiltInConverter(Type type, JsonSerializerOptions serializerOptions)
@@ -297,3 +331,8 @@ internal static class JsonPathResolver
         return name;
     }
 }
+
+/// <summary>
+/// The declared type a JSON path ends on, and the converter its property declares, if any.
+/// </summary>
+internal readonly record struct PathLeaf(Type Type, JsonConverter? PropertyConverter);

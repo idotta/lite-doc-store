@@ -412,6 +412,128 @@ public class VirtualColumnIntegrationTests : IDisposable
 
     #endregion
 
+    #region Existing Column Definition Tests
+
+    private Task AddPlainColumnAsync(string columnName) =>
+        _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"ALTER TABLE [{ProductTable}] ADD COLUMN [{columnName}] TEXT";
+            await command.ExecuteNonQueryAsync(ct);
+        });
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenTheIdenticalColumnExists_IsANoOp()
+    {
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category", createIndex: true);
+
+        await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category", createIndex: true);
+        await _store.AddVirtualColumnAsync<Product>("$.Category", "category", createIndex: true);
+
+        Assert.True(await IntrospectAsync(i => i.ColumnExistsAsync(ProductTable, "category")));
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenTheColumnDiffersOnlyInNameCase_IsANoOp()
+    {
+        // SQLite treats the two names as one column, so the existing one is compared under its
+        // own stored spelling rather than refused for the caller's.
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>(p => p.Category, "Category");
+
+        await _store.AddVirtualColumnAsync<Product>(p => p.Category, "category");
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenTheColumnProjectsAnotherPath_Throws()
+    {
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>(p => p.Name, "label");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.AddVirtualColumnAsync<Product>(p => p.Category, "label"));
+
+        Assert.Contains("'label'", exception.Message);
+        Assert.Contains("$.Category", exception.Message);
+        Assert.Contains("$.Name", exception.Message);
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenTheColumnHasAnotherType_Throws()
+    {
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>(p => p.Price, "price", columnType: "REAL");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.AddVirtualColumnAsync<Product>(p => p.Price, "price", columnType: "INTEGER"));
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenAPlainColumnHoldsTheName_Throws()
+    {
+        await _store.CreateTableAsync<Product>();
+        await AddPlainColumnAsync("category");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.AddVirtualColumnAsync<Product>(p => p.Category, "category"));
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenAPlainColumnHasTheDefinitionInAComment_Throws()
+    {
+        // A table a migration created by hand, quoting the generated definition in a comment.
+        var table = $"{ProductTable}_commented";
+        var definition = SqlGenerator.GenerateVirtualColumnDefinition("category", "$.Category", "TEXT");
+        await _store.ExecuteRawAsync(async (connection, ct) =>
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                $"CREATE TABLE [{table}] (id TEXT PRIMARY KEY, data BLOB NOT NULL, " +
+                $"version INTEGER NOT NULL DEFAULT 1, [category] TEXT /* {definition}, */)";
+            await command.ExecuteNonQueryAsync(ct);
+        });
+
+        var options = DocumentStoreOptions.ForFile(_testDbPath);
+        options.TableNamingConvention = new FixedTableName(table);
+        await using var store = await new DocumentStoreFactory().CreateAsync(options);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.AddVirtualColumnAsync<Product>(p => p.Category, "category"));
+    }
+
+    private sealed class FixedTableName(string name) : ITableNamingConvention
+    {
+        public string GetTableName<T>() => name;
+
+        public string GetTableName(Type type) => name;
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_WhenRefused_CreatesNoIndex()
+    {
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>(p => p.Name, "label");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _store.AddVirtualColumnAsync<Product>(p => p.Category, "label", createIndex: true));
+
+        Assert.Empty(await IntrospectAsync(i => i.GetIndexesAsync(ProductTable)));
+    }
+
+    [Fact]
+    public async Task AddVirtualColumnAsync_OnATransaction_RefusesADifferentColumnToo()
+    {
+        await _store.CreateTableAsync<Product>();
+        await _store.AddVirtualColumnAsync<Product>(p => p.Name, "label");
+
+        await using var transaction = await _store.BeginTransactionAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => transaction.AddVirtualColumnAsync<Product>(p => p.Category, "label"));
+    }
+
+    #endregion
+
     #region Test Models
 
     private sealed class Product

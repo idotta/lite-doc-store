@@ -913,10 +913,42 @@ internal static class SqlGenerator
         jsonPath = ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
         var validatedType = ValidateColumnType(columnType);
 
+        return $"ALTER TABLE [{tableName}] ADD COLUMN {GenerateVirtualColumnDefinition(columnName, jsonPath, validatedType)}";
+    }
+
+    /// <summary>
+    /// Generates the column definition <see cref="GenerateAddVirtualColumnSql"/> adds, on its own.
+    /// </summary>
+    /// <remarks>
+    /// <c>ALTER TABLE … ADD COLUMN</c> appends the definition to the table's stored
+    /// <c>CREATE TABLE</c> text verbatim, so this is also what an existing column is compared
+    /// against — one generator produces both sides, the way the index generators do.
+    /// </remarks>
+    /// <param name="columnName">The generated column's name</param>
+    /// <param name="jsonPath">The JSON path expression, below the document root</param>
+    /// <param name="columnType">The SQLite column type</param>
+    public static string GenerateVirtualColumnDefinition(string columnName, string jsonPath, string columnType)
+    {
+        ValidateIdentifier(columnName, nameof(columnName));
+        jsonPath = ValidateJsonPath(jsonPath, nameof(jsonPath), allowRoot: false);
+        var validatedType = ValidateColumnType(columnType);
+
         // VIRTUAL columns are computed on read and don't take up storage space
         // STORED columns are computed on write and stored, but take space
         // We use VIRTUAL as it's more storage-efficient for JSON extraction
-        return $"ALTER TABLE [{tableName}] ADD COLUMN [{columnName}] {validatedType} GENERATED ALWAYS AS (json_extract(data, '{jsonPath}')) VIRTUAL";
+        return $"[{columnName}] {validatedType} GENERATED ALWAYS AS (json_extract(data, '{jsonPath}')) VIRTUAL";
+    }
+
+    /// <summary>
+    /// Generates SQL to read a table's stored <c>CREATE TABLE</c> text.
+    /// </summary>
+    /// <remarks>
+    /// The name is compared ignoring ASCII case, the way SQLite resolves identifiers. No row means
+    /// no such table.
+    /// </remarks>
+    public static string GenerateGetTableDefinitionSql()
+    {
+        return "SELECT sql FROM sqlite_master WHERE type='table' AND name=@TableName COLLATE NOCASE";
     }
 
     /// <summary>

@@ -21,9 +21,13 @@ namespace LiteDocumentStore;
 /// match the default System.Text.Json serialization.
 /// </para>
 /// <para>
-/// A value is normalized to the representation System.Text.Json wrote into the document, the
-/// same way <see cref="DocumentQuery{T}"/> normalizes a bound value, so a patched field still
-/// matches a query over it. <see cref="bool"/>, <see cref="decimal"/> and a <see cref="ulong"/>
+/// A value is written as the store's serializer writes it: when the patch runs, its path is
+/// resolved through the serializer's metadata for <typeparamref name="T"/>, and a value of the
+/// member's own type is serialized by it — converters included — and stored as that JSON, so a
+/// string enum is patched as its name and a patched field still matches a query over it. A path
+/// the metadata does not describe, or a value of another type, falls back to the default
+/// serialization's shape, the way <see cref="DocumentQuery{T}"/> does, and an enum there is
+/// refused. On that fallback <see cref="bool"/>, <see cref="decimal"/> and a <see cref="ulong"/>
 /// above <see cref="long.MaxValue"/> are additionally written as JSON text: SQLite has no
 /// boolean type, so a bound <c>true</c> would store the number <c>1</c>, and both wide numeric
 /// types would round through a REAL and lose digits.
@@ -179,11 +183,12 @@ public sealed class DocumentPatch<T>
         };
 
         return asJson is not null
-            ? new PatchOperation(path, PatchOperationKind.Set, asJson, AsJson: true)
+            ? new PatchOperation(path, PatchOperationKind.Set, asJson, AsJson: true) { RawValue = value }
             : new PatchOperation(
                 path,
                 PatchOperationKind.Set,
                 DocumentQuery<T>.ValidateValue(value, nameof(value)),
-                AsJson: false);
+                AsJson: false)
+            { RawValue = value };
     }
 }

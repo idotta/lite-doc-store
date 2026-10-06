@@ -170,6 +170,61 @@ public class SqlGeneratorValidationTests
     }
 
     [Fact]
+    public void GenerateAddVirtualColumnSql_AddsExactlyTheGeneratedColumnDefinition()
+    {
+        // The existing-column check compares against this text, so the two must not drift.
+        var definition = SqlGenerator.GenerateVirtualColumnDefinition("email", "$.Email", "TEXT");
+
+        Assert.Equal("[email] TEXT GENERATED ALWAYS AS (json_extract(data, '$.Email')) VIRTUAL", definition);
+        Assert.Equal(
+            $"ALTER TABLE [Person] ADD COLUMN {definition}",
+            SqlGenerator.GenerateAddVirtualColumnSql("Person", "email", "$.Email"));
+    }
+
+    [Fact]
+    public void GenerateVirtualColumnDefinition_RendersThePathCanonically()
+    {
+        var definition = SqlGenerator.GenerateVirtualColumnDefinition("name", "$.\"Name\"", "TEXT");
+
+        Assert.Contains("'$.Name'", definition);
+    }
+
+    [Theory]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL)", true)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL, [d] TEXT)", true)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL \n)", true)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL NOT NULL)", false)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT)", false)]
+    [InlineData(null, false)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT /* [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL, */)", false)]
+    [InlineData("CREATE TABLE t (id TEXT, [c] TEXT -- [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL,\n)", false)]
+    [InlineData("CREATE TABLE t (id TEXT /* note */, [c] TEXT GENERATED ALWAYS AS (x) VIRTUAL)", true)]
+    public void ContainsColumnDefinition_RequiresTheDefinitionToEndTheColumn(string? tableSql, bool expected)
+    {
+        const string definition = "[c] TEXT GENERATED ALWAYS AS (x) VIRTUAL";
+
+        Assert.Equal(expected, DocumentOperations.ContainsColumnDefinition(tableSql, definition));
+    }
+
+    [Theory]
+    [InlineData("a /* b */ c", "a   c")]
+    [InlineData("a -- b\nc", "a  \nc")]
+    [InlineData("a /* unterminated", "a  ")]
+    [InlineData("'x /* y */ z' w", "'x /* y */ z' w")]
+    [InlineData("'it''s -- not' w", "'it''s -- not' w")]
+    [InlineData("\"q /*\" [r -- ] `s */` t", "\"q /*\" [r -- ] `s */` t")]
+    public void StripSqlComments_RemovesOnlyCommentsOutsideQuotes(string sql, string expected)
+    {
+        Assert.Equal(expected, DocumentOperations.StripSqlComments(sql));
+    }
+
+    [Fact]
+    public void GenerateGetTableDefinitionSql_ComparesTheNameIgnoringCase()
+    {
+        Assert.Contains("COLLATE NOCASE", SqlGenerator.GenerateGetTableDefinitionSql());
+    }
+
+    [Fact]
     public void GenerateAddVirtualColumnSql_WithTheDocumentRoot_Throws()
     {
         var exception = Assert.Throws<ArgumentException>(

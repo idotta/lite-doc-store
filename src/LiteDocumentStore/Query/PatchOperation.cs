@@ -36,4 +36,11 @@ internal sealed record PatchOperation(
     string JsonPath,
     PatchOperationKind Kind,
     object? Value,
-    bool AsJson);
+    bool AsJson)
+{
+    /// <summary>
+    /// The caller's value before normalization, so execution can rewrite it as the JSON the
+    /// serializer writes at the path (<see cref="ValueBinder"/>); null for a remove or a null set.
+    /// </summary>
+    public object? RawValue { get; init; }
+}

@@ -5,9 +5,9 @@ namespace LiteDocumentStore;
 /// </summary>
 /// <remarks>
 /// Passed through an <em>overload</em> of the write methods rather than an inserted parameter, so
-/// callers that pass a trailing <see cref="CancellationToken"/> positionally still compile. The
-/// cost is that <c>PutBlobAsync(id, data, default)</c> becomes ambiguous — <c>default</c> matches
-/// both this type and <see cref="CancellationToken"/> — and needs a cast to say which it means.
+/// callers that pass a trailing <see cref="CancellationToken"/> positionally still compile. A bare
+/// <c>PutBlobAsync(id, data, default)</c> binds to the token overload — C# prefers the candidate
+/// that needs no default-argument substitution — and so records no content type.
 /// </remarks>
 public sealed class BlobWriteOptions
 {

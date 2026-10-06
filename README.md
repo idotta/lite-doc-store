@@ -101,6 +101,16 @@ var removed = await store.DeleteAsync(DocumentQuery<Reading>.All().OrderBy("$.Ti
 
 Predicates combine with AND only.
 
+**Values bind the way your serializer writes them.** The store resolves each query or patch path
+through the configured `SerializerOptions` metadata and serializes the value through it, so a string
+enum (`JsonStringEnumConverter`, `UseStringEnumConverter`, or a `[JsonConverter]` on the property),
+a naming policy or a custom scalar converter needs nothing special: `Where("$.Status",
+QueryOperator.Equal, Status.Active)` matches documents that store `"Active"`. Paths name the
+*serialized* key, so under a camelCase policy that is `$.status`. An enum on a path the
+metadata cannot describe (a key only a derived type writes, a `Dictionary<string, object>` entry) is
+refused rather than guessed — bind the stored form instead. A range over an enum stored as its name is
+refused too, since names do not sort by value.
+
 **Range over time as an integer.** A UTC or Local `DateTime`, or a `DateTimeOffset`, is refused by
 `>`, `>=`, `<` and `<=`: the serializer writes `…00Z` for a whole second and `…00.5Z` for half past,
 and the text sorts the second one first, so the range would silently drop documents. Store

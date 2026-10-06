@@ -614,7 +614,10 @@ public interface IDocumentOperations
     /// Thrown when an index of that name already exists with a different definition. The derived
     /// name is not injective — two distinct JSON paths, or a virtual column and the expression
     /// index for the same member, can claim one name — and different
-    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first. Also
+    /// thrown when a column of that name (compared ignoring ASCII case) already exists but is not
+    /// the identical generated column — another path, another type, or a column a migration or raw
+    /// SQL spelled differently; it must be dropped or renamed first
     /// </exception>
     Task AddVirtualColumnAsync<T>(
         Expression<Func<T, object>> jsonPath,
@@ -649,7 +652,10 @@ public interface IDocumentOperations
     /// Thrown when an index of that name already exists with a different definition. The derived
     /// name is not injective — two distinct JSON paths, or a virtual column and the expression
     /// index for the same member, can claim one name — and different
-    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first
+    /// <see cref="IndexOptions"/> reuse it too; the existing index must be dropped first. Also
+    /// thrown when a column of that name (compared ignoring ASCII case) already exists but is not
+    /// the identical generated column — another path, another type, or a column a migration or raw
+    /// SQL spelled differently; it must be dropped or renamed first
     /// </exception>
     Task AddVirtualColumnAsync<T>(
         string jsonPath,
