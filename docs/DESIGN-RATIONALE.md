@@ -1,10 +1,10 @@
 # Design rationale
 
-Why the rules in `CLAUDE.md` are what they are: the measured evidence behind each one, the
+Why the rules in `CLAUDE.md` / `docs/ARCHITECTURE.md` are what they are: the measured evidence behind each one, the
 alternatives that were rejected, and what a regression would look like.
 
-`CLAUDE.md` states the rule and links here. **The rule is binding; this file is the evidence.**
-Where the two conflict, the source wins, then `CLAUDE.md`, then this file.
+`docs/ARCHITECTURE.md` states the rule and links here. **The rule is binding; this file is the evidence.**
+Where the two conflict, the source wins, then `docs/ARCHITECTURE.md`, then this file.
 
 Measurements were taken against SQLite 3.53.3 / Microsoft.Data.Sqlite 10.0.x on .NET 10 unless
 stated otherwise. "Measured" means it was executed, not reasoned about; anything reasoned rather
