@@ -84,7 +84,9 @@ await tx.CommitAsync();       // without this, the dispose at end of scope rolls
 
 Why it matters: in a Deferred transaction that reads first, if another connection commits
 before your first write, that write fails with `SqliteException` extended code **517
-(`SQLITE_BUSY_SNAPSHOT`)**. Waiting cannot fix it, so the whole transaction must be redone.
+(`SQLITE_BUSY_SNAPSHOT`)**. Waiting cannot fix it, so the whole transaction must be redone. It
+does not fail fast: the provider retries until its command timeout (derived from `BusyTimeoutMs`)
+runs out, so it first looks like a hang.
 `Immediate` makes this impossible. The cost is that concurrent writers serialize for the whole
 transaction, so use it only when needed.
 
@@ -147,6 +149,8 @@ The escape hatch for joins, aggregates, OR logic, projections, views and your ow
   PRAGMA, `ATTACH` or TEMP table you set never leaks to later operations, so nothing needs
   restoring.
 - **On a transaction**, the callback gets the transaction's connection, so commands enlist in it.
+  That connection is retired when the transaction completes: one physical open per transaction,
+  however many callbacks it ran.
 - The connection is valid only inside the callback. Never store it.
 - **Build commands with `connection.CreateCommand()`.** `new SqliteCommand(sql, conn)` has no
   transaction attached and fails when one is pending, which is always the case inside

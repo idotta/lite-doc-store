@@ -39,8 +39,10 @@ public sealed record VersionedDocument<T>(T Data, long Version);
 ## CRUD and batches
 
 ```csharp
-// The same Customer record SKILL.md declares
+// Example types used in this file
 public sealed record Customer(string Id, string Name, string City, int Age, string? Email, string[] Tags);
+public sealed record Person(string Name);
+public sealed record Account(string Owner, decimal Balance);
 
 await store.CreateTableAsync<Customer>();                    // required first; idempotent
 
@@ -96,7 +98,7 @@ coherent: a holder of an older version conflicts.
 
 | Call | `expectedVersion = 0` | `expectedVersion = n > 0` | Missing id |
 |---|---|---|---|
-| `UpsertWithVersionAsync` | Insert; the id must not exist (else `AlreadyExists`) | Update only if stored == n (else `VersionMismatch`) | 0: inserts. n: `DocumentNotFound`. |
+| `UpsertWithVersionAsync` | Insert; the id must not exist (else `AlreadyExists`). A row stored at version 0 (raw SQL) is updated and lifted to 1 instead | Update only if stored == n (else `VersionMismatch`) | 0: inserts. n: `DocumentNotFound`. |
 | `DeleteWithVersionAsync` | Matches only a row stored at version 0 (no insert meaning) | Delete only if stored == n | Always `DocumentNotFound`. It does **not** return false. |
 | `PatchWithVersionAsync` | Matches only a row stored at version 0 (a patch never inserts) | Patch only if stored == n | `DocumentNotFound` |
 
@@ -128,8 +130,8 @@ await store.DeleteWithVersionAsync<Person>("p1", v2);
 transaction the row may change in between, so treat them as a hint for the retry strategy.
 Inside a transaction they are exact.
 
-`ActualVersion` is also how to learn a row's version without reading its payload: a CAS delete
-with a guessed version reports the real one and leaves the row alone.
+To learn a row's version, use `GetWithVersionAsync`. Never probe with a guessed-version CAS
+delete: if the guess matches, the row is deleted.
 
 ## CAS retry loop
 
@@ -180,7 +182,7 @@ apart from a stored default. Use `ExistsAsync` or `GetWithVersionAsync` instead.
 - `ExistsAsync<T>(null!)` and `DeleteAsync<T>(null!)` are ambiguous between the string and
   `DocumentQuery<T>` overloads and do not compile.
 - The document type is the static `T`: upserting a derived object through a base-typed or
-  interface variable uses the base table and drops the derived members. See SKILL.md rule 23.
+  interface variable uses the base table and drops the derived members. See SKILL.md rule 13.
 - Each store call commits on its own. For atomic multi-document work, use a transaction and call
   operations on it.
 - A user-added `UNIQUE` index violation surfaces as an untranslated `SqliteException`.

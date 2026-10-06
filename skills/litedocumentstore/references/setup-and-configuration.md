@@ -85,19 +85,19 @@ does nothing.
 var options = DocumentStoreOptions.Builder()            // or Builder(connectionString), or new DocumentStoreOptionsBuilder()
     .UseFile("data/app.db")                             // UseInMemory() / UseSharedInMemory(name) / WithConnectionString(cs)
     .WithSynchronousMode(SynchronousMode.Normal)
-    .WithWalMode(false)                                 // required for a hand-written in-memory connection string
-    .WithCacheSize(-8000)                               // raw PRAGMA cache_size: >0 pages, <0 KiB
     .WithTableNamingConvention(new SimpleTypeNameConvention())
     .WithBusyTimeout(2000)
     .WithMaxPoolSize(8)
     .WithPoolWaitTimeout(10_000)
-    .WithCacheSizeMb(16)                                // stores -16*1024 KiB
+    .WithCacheSizeMb(16)                                // stores -16*1024 KiB; or WithCacheSize(raw): >0 pages, <0 KiB
     .WithPageSize(4096)                                 // 0 = keep the file's
     .WithForeignKeys(true)
     .AddPragma("PRAGMA temp_store = MEMORY")            // a blank pragma is silently ignored
     .WithSerializerOptions(new JsonSerializerOptions { TypeInfoResolver = AppJsonContext.Default })
     .Build();                                           // InvalidOperationException if no connection string; ArgumentException if invalid
 ```
+
+A hand-written in-memory connection string also needs `.WithWalMode(false)`.
 
 Shortcuts:
 - `OptimizeForPerformance()` sets WAL on, Synchronous Normal, PageSize 8192 and CacheSize -4000.
@@ -227,6 +227,7 @@ internal sealed class SimpleTypeNameConvention : ITableNamingConvention
     public string GetTableName<T>() => GetTableName(typeof(T));
     public string GetTableName(Type type) => type.Name;   // MUST be deterministic for the store's lifetime
 }
+// type.Name of a generic type is "Box`1", which the identifier screen rejects; handle generics separately.
 
 var options = DocumentStoreOptions.ForFile("app.db");
 options.TableNamingConvention = new SimpleTypeNameConvention();

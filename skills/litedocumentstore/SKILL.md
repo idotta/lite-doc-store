@@ -1,14 +1,20 @@
 ---
 name: litedocumentstore
-description: How to use the LiteDocumentStore .NET library (NuGet `LiteDocumentStore`) correctly from application code - a hybrid document + relational store over a single SQLite file using JSONB. Use whenever code references LiteDocumentStore, IDocumentStore, IDocumentOperations, IDocumentTransaction, DocumentStoreOptions, DocumentStoreFactory, AddLiteDocumentStore, DocumentQuery<T>, DocumentPatch<T>, IndexOptions, SqlMigration/IMigration, PutBlobAsync/OpenBlobReadAsync, ConcurrencyException or UpsertWithVersionAsync, or when the task is storing C# objects as JSON documents in SQLite from .NET (document CRUD, JSON-path queries, optimistic concurrency, expression indexes, blobs, migrations, Native AOT).
+description: How to use the LiteDocumentStore .NET library (NuGet `LiteDocumentStore`) from application code. Use whenever code references LiteDocumentStore or its types (IDocumentStore, DocumentQuery<T>, DocumentPatch<T>, AddLiteDocumentStore, ...), or the task is storing C# objects as JSON documents in SQLite from .NET.
 ---
 
 # LiteDocumentStore
 
-Stores C# objects as SQLite **JSONB** in uniform tables (`id TEXT PRIMARY KEY, data BLOB, version
-INTEGER`); the same tables stay open to raw SQL through `ExecuteRawAsync`. `net10.0`, SQLite 3.45+
-(bundled), Native-AOT compatible. Namespace `LiteDocumentStore`; exceptions in
-`LiteDocumentStore.Exceptions`.
+A hybrid document + relational store over a single SQLite file. Stores C# objects as SQLite **JSONB**
+in uniform tables (`id TEXT PRIMARY KEY, data BLOB, version INTEGER`); the same tables stay open to raw
+SQL through `ExecuteRawAsync`. `net10.0`, SQLite 3.45+ (bundled), Native-AOT compatible. Namespace
+`LiteDocumentStore`; exceptions in `LiteDocumentStore.Exceptions`.
+
+Covers document CRUD, JSON-path queries, optimistic concurrency, expression indexes, blobs, migrations
+and Native AOT. Key types: `IDocumentStore`, `IDocumentOperations`, `IDocumentTransaction`,
+`DocumentStoreOptions`, `DocumentStoreFactory`, `AddLiteDocumentStore`, `DocumentQuery<T>`,
+`DocumentPatch<T>`, `IndexOptions`, `SqlMigration`/`IMigration`, `PutBlobAsync`/`OpenBlobReadAsync`,
+`UpsertWithVersionAsync`, `ConcurrencyException`.
 
 ## Setup
 
@@ -82,7 +88,8 @@ long n = await store.ExecuteRawAsync(async (conn, ct) =>
 13. **The document type is the static `T`**: upserting a `Dog` through an `Animal` variable stores an
     `Animal`. Pass `<Dog>` or configure STJ polymorphism.
 14. **Under AOT/trimming**, supply a source-generated `JsonSerializerContext` with every document type.
-15. **Dispose `OpenBlobReadAsync` streams** — each holds a connection and a read lock.
+15. **Dispose `OpenBlobReadAsync` streams** — each holds a connection and pins the WAL. Open streams
+    have their own budget of `MaxPoolSize` slots; exhausting it throws `TimeoutException`.
 16. **Pass mode/options explicitly**: a bare `default` binds to the `CancellationToken` overload.
 
 ## Exceptions

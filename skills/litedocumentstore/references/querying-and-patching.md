@@ -41,9 +41,11 @@ Mistakes and what they do:
 - These are refused with `ArgumentException`:
   - an empty path, or a bare `$.`;
   - an apostrophe or `U+0000` anywhere;
-  - a quoted member that itself contains `"`.
+  - a `"` inside a member that needs quotes (contains `.` or `[`, is empty, or starts with `"`).
 
-  For such keys, use `ExecuteRawAsync` with a bound path parameter.
+  A key containing an apostrophe is reachable through `ExecuteRawAsync` with the path bound as a
+  parameter. A key containing `U+0000`, or a quoted key containing `"`, cannot be addressed at
+  all: binding the path silently reads a different key.
 - `$` (the root) is allowed in queries and ordering, but refused in patches and index DDL.
 - Redundant quotes are dropped: `$."Name"` is the same as `$.Name`.
 
@@ -122,7 +124,8 @@ through it. So bind values as your C# type and let the store match the stored fo
   `UseStringEnumConverter` on a source-generated context, or `[JsonConverter]` on the property).
   A patch writes the enum the same way.
 - A custom scalar converter (e.g. `DateTime` as epoch millis) is honoured for equality and patches.
-- `NumberHandling.WriteAsString`, naming policies (paths use the serialized name) work.
+- `NumberHandling.WriteAsString`, naming policies (paths use the serialized name) work. Under
+  `WriteAsString`, ranges and `OrderBy` compare numbers as text (`"10" < "9"`).
 
 Fallback, when the path does not resolve (typo, a key only a derived type writes,
 `Dictionary<string, object>`, `object` members) or the value's type differs from the member's

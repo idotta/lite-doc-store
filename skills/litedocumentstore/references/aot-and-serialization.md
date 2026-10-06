@@ -87,7 +87,8 @@ await store.CreateIndexAsync<Person>(p => p.Email);                         // r
   that fallback is refused.
 - Enums are stored as numbers by default. Add `JsonStringEnumConverter<T>` (AOT-safe), or
   `UseStringEnumConverter = true` on the source-generated context, to store names; query with the
-  enum value itself either way.
+  enum value itself either way. An enum stored as a name supports only `Equal`/`In`; a range
+  over it throws.
 
 ## What is not available
 

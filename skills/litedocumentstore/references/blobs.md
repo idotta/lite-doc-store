@@ -146,8 +146,10 @@ await store.ExecuteInTransactionAsync(async tx =>
 ## Compare-and-swap
 
 The rules are the same as for documents:
-- `expectedVersion = 0` on a put means "insert, the id must be free" (else `AlreadyExists`).
-- A non-zero value means "only if the stored version matches" (else `VersionMismatch`).
+- `expectedVersion = 0` on a put means "insert, the id must be free" (else `AlreadyExists`). A
+  row stored at version 0 (raw SQL) is updated and lifted to 1 instead.
+- A non-zero value means "only if the stored version matches" (else `VersionMismatch`, or
+  `DocumentNotFound` when the blob is missing).
 - The return value is the stored version.
 - `DeleteBlobWithVersionAsync` on a missing blob throws `ConcurrencyException`
   (`DocumentNotFound`), whereas `DeleteBlobAsync` returns false.
